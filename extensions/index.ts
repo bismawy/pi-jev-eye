@@ -446,9 +446,11 @@ const REVIEW_CONTRACT = [
   "[pi-jev-eye] The operator asked for a Jev review of this turn.",
   "Answer in the report format already used in this workflow, in the operator's language:",
   "1. machine-verified facts first (tool output, counts, exit codes) with no judgment mixed in,",
-  "2. then a Jev table: one row per item per dimension, every number as `value (probability)` plus its level label,",
+  "2. then one short Jev table: header spells the scale out in plain words, never a terse `P(ya)` —",
+  '   ID `Peluang jawaban "ya" (0-1) · tinggi = sinyal kuat`, EN `Chance the answer is "yes" (0-1) · higher = stronger`, ZH `回答"是"的概率 (0-1) · 越高越强`;',
+  "   the yes/no word follows the operator's language (ya/tidak, yes/no, 是/否), one row per item per dimension, each cell `value (probability)` plus its level label,",
   "3. then the threshold line that turns those numbers into a decision,",
-  "4. keep judgment and fact in separate blocks; never present a Jev probability as proof.",
+  "4. no preamble or closing prose; one facts block plus one judgment block; if nothing needs judgment, say so in one line and stop.",
   "The write gate will also judge this turn's code against the request text.",
 ].join("\n");
 
