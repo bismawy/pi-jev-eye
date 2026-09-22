@@ -24,6 +24,12 @@ pi-jev-eye supervises the agent in the background across three lean layers:
 
 ## Install
 
+From npm:
+
+```bash
+pi install npm:@bismawy/pi-jev-eye
+```
+
 From GitHub:
 
 ```bash
