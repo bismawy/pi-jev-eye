@@ -120,7 +120,6 @@ const JEV_PROVIDERS: JevProvider[] = [
 const EYE_DIR = join(homedir(), ".pi", "agent", "pi-jev-eye");
 const AUTH_PATH = join(EYE_DIR, "auth.json");
 const OWN_USAGE_PATH = join(EYE_DIR, "usage.json");
-const TYPESAFE_USAGE_PATH = join(homedir(), ".pi", "agent", "pi-typesafe", "usage.json");
 const LEGACY_AUTH_PATH = join(homedir(), ".pi", "agent", "pi-typesafe", "auth.json");
 const USD_PER_MTOK = 0.042; // mirrors pi-typesafe's default input-token rate
 
@@ -152,15 +151,17 @@ interface JevAuth {
 }
 
 function resolveJevAuth(): JevAuth | undefined {
+  // Environment first: an explicit export (headless run, CI, shared machine) must win over a stored key,
+  // the same precedence pi-typesafe uses.
+  for (const provider of JEV_PROVIDERS) {
+    const fromEnv = process.env[provider.keyEnv]?.trim();
+    if (fromEnv) return { provider, key: fromEnv, source: `$${provider.keyEnv}` };
+  }
+
   const stored = readJsonFile(AUTH_PATH, true);
   const storedKey = typeof stored?.apiKey === "string" ? stored.apiKey.trim() : "";
   if (storedKey) {
     return { provider: providerById(String(stored.provider)) ?? JEV_PROVIDERS[0], key: storedKey, source: "/jev-eye login" };
-  }
-
-  for (const provider of JEV_PROVIDERS) {
-    const fromEnv = process.env[provider.keyEnv]?.trim();
-    if (fromEnv) return { provider, key: fromEnv, source: `$${provider.keyEnv}` };
   }
 
   // Back-compat: keep working for anyone who already logged in with pi-typesafe installed.
@@ -286,7 +287,11 @@ const loginFlow = async (ctx: any): Promise<void> => {
   writeFileSync(AUTH_PATH, `${JSON.stringify({ version: 1, provider: provider.id, apiKey: key }, null, 2)}\n`, {
     mode: 0o600,
   });
-  ctx.ui.notify(`[pi-jev-eye] Logged in via ${provider.label}: ${probe.detail}. Stored in ${AUTH_PATH} (0600).`, "info");
+  const shadows = process.env[provider.keyEnv]?.trim() ? ` Note: $${provider.keyEnv} is set and takes precedence over this stored key.` : "";
+  ctx.ui.notify(
+    `[pi-jev-eye] Logged in via ${provider.label}: ${probe.detail}. Stored in ${AUTH_PATH} (0600).${shadows}`,
+    "info"
+  );
 };
 
 const logoutFlow = async (ctx: any): Promise<void> => {
@@ -310,23 +315,49 @@ const logoutFlow = async (ctx: any): Promise<void> => {
   }
 };
 
-// Our own usage ledger, so stats keep working without pi-typesafe installed.
-type DayTotals = { requests: number; ok: number; failed: number; inputTokens: number; outputTokens: number };
+// Our own usage ledger: pi-jev-eye stands alone, nothing is read from other packages for display.
+type DayTotals = { requests: number; ok: number; failed: number; inputTokens: number; outputTokens: number; cost: number };
+const EMPTY_TOTALS: DayTotals = { requests: 0, ok: 0, failed: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
 
 const today = (): string => {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 };
 
+/** A missing counter reads as 0; an entry written before the cost field existed is estimated instead of shown as free. */
+function normalizeTotals(raw: any): DayTotals {
+  const totals = { ...EMPTY_TOTALS };
+  for (const key of Object.keys(totals) as (keyof DayTotals)[]) totals[key] = Number(raw?.[key]) || 0;
+  if (raw?.cost === undefined && totals.inputTokens > 0) totals.cost = (totals.inputTokens * USD_PER_MTOK) / 1e6;
+  return totals;
+}
+
 function readOwnUsage(): DayTotals | undefined {
-  return readJsonFile(OWN_USAGE_PATH)?.days?.[today()];
+  const raw = readJsonFile(OWN_USAGE_PATH)?.days?.[today()];
+  return raw ? normalizeTotals(raw) : undefined;
+}
+
+/** Every day in the ledger that belongs to the current calendar month. */
+function readMonthUsage(): DayTotals | undefined {
+  const days = readJsonFile(OWN_USAGE_PATH)?.days;
+  if (!days || typeof days !== "object") return undefined;
+  const prefix = today().slice(0, 7);
+  const totals = { ...EMPTY_TOTALS };
+  let found = false;
+  for (const [date, value] of Object.entries(days)) {
+    if (!date.startsWith(prefix)) continue;
+    found = true;
+    const dayTotals = normalizeTotals(value);
+    for (const key of Object.keys(totals) as (keyof DayTotals)[]) totals[key] += dayTotals[key];
+  }
+  return found ? totals : undefined;
 }
 
 function recordOwnUsage(patch: Partial<DayTotals>): void {
   try {
     const file = readJsonFile(OWN_USAGE_PATH) ?? { version: 1, days: {} };
     const days = file.days && typeof file.days === "object" ? file.days : {};
-    const current: DayTotals = { requests: 0, ok: 0, failed: 0, inputTokens: 0, outputTokens: 0, ...days[today()] };
+    const current: DayTotals = { ...EMPTY_TOTALS, ...days[today()] };
     for (const [key, value] of Object.entries(patch)) {
       (current as any)[key] = (Number((current as any)[key]) || 0) + (Number(value) || 0);
     }
@@ -337,6 +368,57 @@ function recordOwnUsage(patch: Partial<DayTotals>): void {
   } catch {
     // Stats must never break a judgment call.
   }
+}
+
+// Account balance: only OpenRouter exposes one; TypeSafe's API has no balance route (every /v1/* guess 404s).
+let balanceCache: { provider: string; at: number; text: string } | undefined;
+
+async function fetchBalanceText(auth: JevAuth): Promise<string> {
+  const usd = (value: number) => `$${value.toFixed(4)}`;
+  const get = (path: string) =>
+    fetch(`https://openrouter.ai/api/v1/${path}`, {
+      headers: { Authorization: `Bearer ${auth.key}` },
+      signal: AbortSignal.timeout(4000),
+    });
+
+  if (auth.provider.id !== "openrouter") return "not exposed by api.typesafe.ai (spend above is ledger-based)";
+
+  try {
+    const keyRes = await get("key");
+    if (keyRes.ok) {
+      const data: any = (await keyRes.json())?.data;
+      const used = Number(data?.usage);
+      const limit = data?.limit === null || data?.limit === undefined ? undefined : Number(data.limit);
+      const remaining = data?.limit_remaining === null || data?.limit_remaining === undefined ? undefined : Number(data.limit_remaining);
+      if (Number.isFinite(remaining)) {
+        return `${usd(remaining as number)} left${Number.isFinite(limit) ? ` of ${usd(limit as number)}` : " on this key"}${Number.isFinite(used) ? ` (used ${usd(used)})` : ""}`;
+      }
+      if (Number.isFinite(used)) return `no per-key limit set; ${usd(used)} used on this key`;
+    }
+
+    const creditsRes = await get("credits");
+    if (creditsRes.ok) {
+      const data: any = (await creditsRes.json())?.data;
+      const total = Number(data?.total_credits);
+      const used = Number(data?.total_usage);
+      if (Number.isFinite(total) && Number.isFinite(used)) return `${usd(total - used)} left of ${usd(total)} (used ${usd(used)})`;
+    }
+
+    return `unavailable (HTTP ${keyRes.status} from /api/v1/key)`;
+  } catch (error) {
+    return `unavailable (${(error as Error)?.message ?? "network error"})`;
+  }
+}
+
+async function balanceText(auth: JevAuth | undefined): Promise<string> {
+  if (!auth) return "no account — run `/jev-eye login`";
+  const now = Date.now();
+  if (balanceCache && balanceCache.provider === auth.provider.id && now - balanceCache.at < 300_000) {
+    return balanceCache.text;
+  }
+  const text = await fetchBalanceText(auth);
+  balanceCache = { provider: auth.provider.id, at: now, text };
+  return text;
 }
 
 // --- TypeSafe consent store: Enable all / Enable per folder / Disable ---
@@ -375,25 +457,6 @@ function consentLabel(consent: Consent): string {
   if (consent.mode === "all") return "all folders";
   if (consent.mode === "off") return "disabled";
   return `${consent.folders.length} folder(s)`;
-}
-
-// Today's totals written by pi-typesafe itself; read-only, never rewritten by us.
-function readTypeSafeUsage(): { requests: number; ok: number; failed: number; inputTokens: number; outputTokens: number } | null {
-  try {
-    const now = new Date();
-    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-    const totals = JSON.parse(readFileSync(TYPESAFE_USAGE_PATH, "utf8"))?.days?.[day];
-    if (!totals) return null;
-    return {
-      requests: Number(totals.requestsStarted) || 0,
-      ok: Number(totals.requestsSucceeded) || 0,
-      failed: Number(totals.requestsFailed) || 0,
-      inputTokens: Number(totals.inputTokens) || 0,
-      outputTokens: Number(totals.outputTokens) || 0,
-    };
-  } catch {
-    return null;
-  }
 }
 
 // --- Layer 3 budget & thresholds (Jev usage discipline) ---
@@ -457,11 +520,14 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
       return null;
     }
     const json: any = await res.json();
+    const inputTokens = Number(json?.usage?.input_tokens) || 0;
+    const reportedCost = Number(json?.usage?.cost); // OpenRouter reports real cost; TypeSafe does not
     recordOwnUsage({
       requests: 1,
       ok: 1,
-      inputTokens: Number(json?.usage?.input_tokens) || 0,
+      inputTokens,
       outputTokens: Number(json?.usage?.output_tokens) || 0,
+      cost: Number.isFinite(reportedCost) ? reportedCost : (inputTokens * USD_PER_MTOK) / 1e6,
     });
     return {
       has_slop: json?.answers?.has_slop?.noul ?? null,
@@ -616,59 +682,34 @@ export default function (pi: ExtensionAPI) {
   });
 
   // --- `/jev-eye` command (alias: `/eye`) ---
-  const buildStatus = (ctx: any): string => {
+  const buildStatus = async (ctx: any): Promise<string> => {
     const auth = resolveJevAuth();
     const consent = readConsent();
-    const own = readOwnUsage();
-    const legacyUsage = readJsonFile(TYPESAFE_USAGE_PATH)?.days?.[today()];
-    const contextTokens = ctx?.getContextUsage?.()?.tokens;
-    const pad = (label: string) => label.padEnd(31);
-    const usd = (tokens: number) => `~$${((tokens * USD_PER_MTOK) / 1e6).toFixed(6)}`;
+    const n = (value: number) => value.toLocaleString("en-US");
+    const usd = (value: number) => `$${value.toFixed(6)}`;
+    const window = (label: string, period: string, totals: DayTotals | undefined) =>
+      totals
+        ? `${label.padEnd(8)}${period} · ${totals.requests} requests (${totals.ok} ok / ${totals.failed} failed) · ${n(totals.inputTokens)} in / ${n(totals.outputTokens)} out · ${usd(totals.cost)}`
+        : `${label.padEnd(8)}${period} · no requests`;
 
     const lines = [
       "=== pi-jev-eye status ===",
-      `Supervisor: ${state.enabled ? "ENABLED" : "DISABLED"}  (layers 1-2 are local: 0 token, 0 request)`,
-      `Layer 3 (Jev semantic gate): ${auth ? "READY" : "OFFLINE (no Jev key)"}`,
-      `  account: ${auth ? `${auth.provider.label} · key from ${auth.source}` : "none — run `/jev-eye login`"}`,
-      `  endpoint: ${auth ? auth.provider.url : "—"}`,
-      `  threshold p≥${JEV_BLOCK_THRESHOLD}, min ${JEV_MIN_DIFF_LINES} lines`,
-      `  consent: ${consentLabel(consent)}`,
-      `  this folder: ${consentAllows(ctx.cwd, consent) ? "ALLOWED" : "not allowed"}  (${ctx.cwd})`,
-      `  session budget: ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} Jev requests used`,
-      `  pi-typesafe present: ${process.env.PI_TYPESAFE_ENABLED !== undefined || legacyUsage ? "yes" : "no"}  (PI_TYPESAFE_ENABLED=${process.env.PI_TYPESAFE_ENABLED ?? "unset"})`,
+      `Supervisor: ${state.enabled ? "ENABLED" : "DISABLED"} (layers 1-2 local: 0 token, 0 request)`,
+      `Jev gate: ${auth ? `READY · ${auth.provider.label} · key from ${auth.source}` : "OFFLINE (no key) — run `/jev-eye login`"}`,
+      `  p≥${JEV_BLOCK_THRESHOLD} · min ${JEV_MIN_DIFF_LINES} lines · consent ${consentLabel(consent)} · this folder ${consentAllows(ctx.cwd, consent) ? "ALLOWED" : "not allowed"} · ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} requests this session`,
       "",
-      "--- Jev usage today ---",
+      "--- Jev usage ---",
+      window("Today", today(), readOwnUsage()),
+      window("Month", today().slice(0, 7), readMonthUsage()),
+      `Balance ${await balanceText(auth)}`,
+      "",
+      "--- Interception (this session) ---",
+      `blocked ${state.stats.destructiveBlocked} dangerous · ${state.stats.secretsBlocked} secrets · ${state.stats.slopBlocked} Jev slop · ${state.stats.verificationReminders} unverified-done warnings`,
     ];
 
-    lines.push(
-      own
-        ? `pi-jev-eye: ${own.requests} requests (${own.ok} ok, ${own.failed} failed), ${own.inputTokens} in / ${own.outputTokens} out (${usd(own.inputTokens)} input-only rate)`
-        : "pi-jev-eye: no requests today"
-    );
-    if (legacyUsage) {
-      lines.push(
-        `pi-typesafe ledger: ${legacyUsage.requestsStarted} requests (${legacyUsage.requestsSucceeded} ok, ${legacyUsage.requestsFailed} failed), ${legacyUsage.inputTokens} in / ${legacyUsage.outputTokens} out (${usd(legacyUsage.inputTokens)})`
-      );
-    }
-    if (own || legacyUsage) {
-      const combined = (own?.requests ?? 0) + (legacyUsage?.requestsStarted ?? 0);
-      lines.push(`Both ledgers today: ${combined} requests — two independent budgets (${JEV_MAX_REQUESTS}/session here + whatever pi-typesafe's own cap is).`);
-    }
-    if (typeof contextTokens === "number") {
-      lines.push(`Model context now: ${contextTokens} tokens`);
-    }
-
-    lines.push(
-      "",
-      "--- Interception stats (this session) ---",
-      pad("Dangerous commands blocked:") + state.stats.destructiveBlocked,
-      pad("Secret leaks blocked:") + state.stats.secretsBlocked,
-      pad("Slop writes blocked (Jev):") + state.stats.slopBlocked,
-      pad("Warnings without verification:") + state.stats.verificationReminders,
-      "",
-      "Menu: `/jev-eye` with no arguments. Direct: `/jev-eye status|login|logout|on|off`."
-    );
-
+    const contextTokens = ctx?.getContextUsage?.()?.tokens;
+    if (typeof contextTokens === "number") lines.push(`Model context: ${n(contextTokens)} tokens`);
+    lines.push("", "Menu: `/jev-eye` · direct: status|login|logout|on|off");
     return lines.join("\n");
   };
 
@@ -742,7 +783,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    ctx.ui.notify(buildStatus(ctx), "info");
+    ctx.ui.notify(await buildStatus(ctx), "info");
   };
 
   const eyeHandler = async (args: string, ctx: any) => {
@@ -783,7 +824,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    ctx.ui.notify(buildStatus(ctx), "info");
+    ctx.ui.notify(await buildStatus(ctx), "info");
   };
 
   const completions = (prefix: string): AutocompleteItem[] | null => {

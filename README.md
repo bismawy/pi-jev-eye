@@ -68,7 +68,7 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 | TypeSafe account | `api.typesafe.ai/v1/systemone` | `jev-latest` | console.typesafe.ai → API Keys |
 | OpenRouter account | `openrouter.ai/api/alpha/decisions` | `typesafe/jev-1.13` | openrouter.ai/settings/keys |
 
-Key lookup order: `/jev-eye login` store → `TYPESAFE_API_KEY` → `OPENROUTER_API_KEY` → a key already stored by **pi-typesafe** (`~/.pi/agent/pi-typesafe/auth.json`), so an existing install keeps working without logging in again. `/jev-eye logout` deletes only pi-jev-eye's own key and tells you what still applies.
+Key lookup order: `TYPESAFE_API_KEY` → `OPENROUTER_API_KEY` → the `/jev-eye login` store → a key already stored by **pi-typesafe** (`~/.pi/agent/pi-typesafe/auth.json`), so an existing install keeps working without logging in again. An exported env var wins on purpose (headless runs, CI), and login says so when it is set. `/jev-eye logout` deletes only pi-jev-eye's own key and tells you what still applies.
 
 ### TypeSafe consent (`Enable all` / `Enable per folder` / `Disable`)
 
@@ -82,7 +82,11 @@ The built-in `typesafe_evaluate` tool owns its own per-session gate (`/typesafe 
 
 ### Usage stats
 
-`/jev-eye status` shows today's requests (ok/failed), input/output tokens and estimated input cost from pi-jev-eye's own ledger (`~/.pi/agent/pi-jev-eye/usage.json`), plus pi-typesafe's ledger side by side when that package is installed (read-only), the session's Jev request budget, and the current model context size.
+`/jev-eye status` is built only from pi-jev-eye's own ledger (`~/.pi/agent/pi-jev-eye/usage.json`) — nothing is read from other packages:
+
+- **Today** and **Month** (calendar month, summed from the daily ledger): requests with ok/failed, input/output tokens, total cost. Cost is the provider's real `usage.cost` when it reports one (OpenRouter), otherwise estimated at the TypeSafe input-only rate (0.042 $/Mtok).
+- **Balance**: remaining account credit. OpenRouter is queried live (`/api/v1/key`, cached 5 minutes, falling back to `/api/v1/credits`); TypeSafe's API exposes no balance route, so the line says exactly that instead of guessing.
+- Session Jev budget, current model context size, and the session's interception counters.
 
 ## How it works
 
