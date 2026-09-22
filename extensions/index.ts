@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -57,7 +58,7 @@ const VERIFICATION_COMMAND_PATTERNS = [
   /\bvitest\b/i,
 ];
 
-// --- Layer 3: Helper TypeSafe Jev ---
+// --- Layer 3: TypeSafe Jev helper ---
 function getTypeSafeApiKey(): string | undefined {
   if (process.env.TYPESAFE_API_KEY?.trim()) {
     return process.env.TYPESAFE_API_KEY.trim();
@@ -67,7 +68,7 @@ function getTypeSafeApiKey(): string | undefined {
   try {
     if (process.platform !== "win32") {
       const mode = statSync(authPath).mode;
-      if ((mode & 0o077) !== 0) return undefined; // Keamanan permission
+      if ((mode & 0o077) !== 0) return undefined; // Permission safety check
     }
     const data = JSON.parse(readFileSync(authPath, "utf8"));
     return typeof data.apiKey === "string" && data.apiKey.trim() ? data.apiKey.trim() : undefined;
@@ -81,13 +82,13 @@ async function checkSlopWithJev(codeSnippet: string, apiKey: string): Promise<nu
     const payload = {
       model: "jev-latest",
       state: {
-        code: codeSnippet.slice(0, 4000), // Pangkas state (Signal-over-noise)
+        code: codeSnippet.slice(0, 4000), // Trim state (signal over noise)
       },
       questions: {
         has_slop: {
           type: "noul",
           instructions:
-            "Apakah kode ini berisi stub pemalas, implementasi kosong, atau komentar TODO yang belum diselesaikan?",
+            "Does this code contain lazy stubs, empty implementations, or unresolved TODO comments?",
         },
       },
     };
@@ -106,9 +107,15 @@ async function checkSlopWithJev(codeSnippet: string, apiKey: string): Promise<nu
     const json: any = await res.json();
     return json?.answers?.has_slop?.noul ?? null;
   } catch {
-    return null; // Fail-open jika Jev timeout / offline
+    return null; // Fail-open when Jev times out or is offline
   }
 }
+
+const EYE_SUBCOMMANDS = [
+  { value: "status", label: "status", description: "Show supervisor status, layers, and interception stats" },
+  { value: "on", label: "on", description: "Enable the supervisor" },
+  { value: "off", label: "off", description: "Disable the supervisor" },
+];
 
 export default function (pi: ExtensionAPI) {
   // Reset turn tracking
@@ -117,47 +124,47 @@ export default function (pi: ExtensionAPI) {
     state.verifiedThisTurn = false;
   });
 
-  // --- Layer 1 & 3: Intersepsi tool_call ---
+  // --- Layer 1 & 3: tool_call interception ---
   pi.on("tool_call", async (event, ctx) => {
     if (!state.enabled) return;
 
-    // 1. Cek Bash
+    // 1. Check bash
     if (event.toolName === "bash") {
       const cmd = typeof event.input?.command === "string" ? event.input.command : "";
 
-      // Track apakah perintah verifikasi dijalankan
+      // Track whether a verification command ran
       if (VERIFICATION_COMMAND_PATTERNS.some((p) => p.test(cmd))) {
         state.verifiedThisTurn = true;
       }
 
-      // Deteksi aksi destruktif
+      // Detect destructive actions
       for (const pattern of DESTRUCTIVE_BASH_PATTERNS) {
         if (pattern.test(cmd)) {
           state.stats.destructiveBlocked++;
-          ctx.ui.notify(`[pi-jev-eye] DIBLOKIR: Perintah berbahaya terdeteksi (${pattern})`, "error");
+          ctx.ui.notify(`[pi-jev-eye] BLOCKED: dangerous command detected (${pattern})`, "error");
           return {
             block: true,
-            reason: `[pi-jev-eye] Perintah diblokir demi keselamatan: "${cmd}". Dilarang menjalankan aksi destruktif tanpa konfirmasi eksplisit.`,
+            reason: `[pi-jev-eye] Command blocked for safety: "${cmd}". Destructive actions require explicit user confirmation.`,
             terminate: true,
           };
         }
       }
 
-      // Deteksi kebocoran secret di argumen command
+      // Detect secret leaks in the command arguments
       for (const pattern of SECRET_PATTERNS) {
         if (pattern.test(cmd)) {
           state.stats.secretsBlocked++;
-          ctx.ui.notify("[pi-jev-eye] DIBLOKIR: Kebocoran API key/secret di perintah bash!", "error");
+          ctx.ui.notify("[pi-jev-eye] BLOCKED: API key/secret leak in bash command!", "error");
           return {
             block: true,
-            reason: "[pi-jev-eye] Perintah diblokir: Terdeteksi API key/kredensial privat pada baris perintah.",
+            reason: "[pi-jev-eye] Command blocked: an API key or private credential was detected on the command line.",
             terminate: true,
           };
         }
       }
     }
 
-    // 2. Cek Write & Edit
+    // 2. Check write & edit
     if (event.toolName === "write" || event.toolName === "edit") {
       state.modifiedFilesThisTurn = true;
 
@@ -168,29 +175,30 @@ export default function (pi: ExtensionAPI) {
           ? event.input.edits.map((e: any) => e.newText || "").join("\n")
           : "";
 
-      // Deteksi kebocoran secret dalam kode yang akan disimpan
+      // Detect secret leaks in the content about to be written
       for (const pattern of SECRET_PATTERNS) {
         if (pattern.test(contentToCheck)) {
           state.stats.secretsBlocked++;
-          ctx.ui.notify("[pi-jev-eye] DIBLOKIR: Terdeteksi hardcoded secret dalam file!", "error");
+          ctx.ui.notify("[pi-jev-eye] BLOCKED: hardcoded secret detected in file!", "error");
           return {
             block: true,
-            reason: "[pi-jev-eye] Penulisan file diblokir: Jangan menulis API key atau kredensial langsung ke dalam kode. Gunakan environment variable.",
+            reason:
+              "[pi-jev-eye] File write blocked: never write API keys or credentials into source code. Use environment variables.",
           };
         }
       }
 
-      // Layer 3: Cek Slop Jev jika kode baru > 10 baris
+      // Layer 3: check Jev slop when the new code exceeds 10 lines
       if (state.semanticGate && contentToCheck.split("\n").length >= 10) {
         const apiKey = getTypeSafeApiKey();
         if (apiKey) {
           const slopProb = await checkSlopWithJev(contentToCheck, apiKey);
           if (slopProb !== null && slopProb >= 0.85) {
             state.stats.slopBlocked++;
-            ctx.ui.notify(`[pi-jev-eye] DIBLOKIR JEV: Terdeteksi kode slop/stub (p=${slopProb.toFixed(2)})`, "warning");
+            ctx.ui.notify(`[pi-jev-eye] JEV BLOCK: slop/stub code detected (p=${slopProb.toFixed(2)})`, "warning");
             return {
               block: true,
-              reason: `[pi-jev-eye] Penulisan diblokir oleh Jev (p=${slopProb.toFixed(2)}): Terdeteksi kode slop/stub/TODO yang belum selesai diimplementasikan. Harap lengkapi kode nyata sebelum menyimpan.`,
+              reason: `[pi-jev-eye] Write blocked by Jev (p=${slopProb.toFixed(2)}): slop/stub/unfinished TODO code detected. Implement the real thing before saving.`,
             };
           }
         }
@@ -198,12 +206,12 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // --- Layer 2: State Tracker "Done-Check" pada Akhir Turn ---
+  // --- Layer 2: "Done-Check" state tracker at turn end ---
   pi.on("message_end", async (event, ctx) => {
     if (!state.enabled) return;
     if (event.message.role !== "assistant") return;
 
-    // Periksa apakah agent menyatakan selesai tapi belum verifikasi
+    // Check whether the agent claims completion without verifying
     if (state.modifiedFilesThisTurn && !state.verifiedThisTurn) {
       const text = Array.isArray(event.message.content)
         ? event.message.content.map((c: any) => c.text || "").join(" ")
@@ -214,46 +222,50 @@ export default function (pi: ExtensionAPI) {
       if (claimsDone) {
         state.stats.verificationReminders++;
         ctx.ui.notify(
-          "[pi-jev-eye] Peringatan: File telah dimodifikasi tetapi belum ada verifikasi (test/lint/build)!",
+          "[pi-jev-eye] Warning: files were modified but no verification (test/lint/build) ran!",
           "warning"
         );
       }
     }
   });
 
-  // --- Perintah CLI `/eye` ---
+  // --- `/eye` CLI command ---
   pi.registerCommand("eye", {
-    description: "Pengawas pi-jev-eye: status, toggle, dan statistik",
+    description: "pi-jev-eye supervisor: status, toggle, and stats",
+    getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
+      const items: AutocompleteItem[] = EYE_SUBCOMMANDS.filter((s) => s.value.startsWith(prefix.toLowerCase()));
+      return items.length > 0 ? items : null;
+    },
     handler: async (args, ctx) => {
       const sub = args.trim().toLowerCase();
 
       if (sub === "on") {
         state.enabled = true;
-        ctx.ui.notify("[pi-jev-eye] Supervisor diaktifkan.", "info");
+        ctx.ui.notify("[pi-jev-eye] Supervisor enabled.", "info");
         return;
       }
 
       if (sub === "off") {
         state.enabled = false;
-        ctx.ui.notify("[pi-jev-eye] Supervisor dinonaktifkan.", "warning");
+        ctx.ui.notify("[pi-jev-eye] Supervisor disabled.", "warning");
         return;
       }
 
       const apiKey = getTypeSafeApiKey();
       const statusText = [
-        "=== Status pi-jev-eye ===",
-        `Status: ${state.enabled ? "AKTIF" : "NONAKTIF"}`,
-        `Layer 1 (Regex Filter): AKTIF`,
-        `Layer 2 (Done-Check Tracker): AKTIF`,
-        `Layer 3 (Jev Semantic Gate): ${apiKey ? "SIAP (Key tervalidasi)" : "OFFLINE (Kunci TypeSafe tidak ditemukan)"}`,
+        "=== pi-jev-eye status ===",
+        `Status: ${state.enabled ? "ENABLED" : "DISABLED"}`,
+        `Layer 1 (Regex filter): ENABLED`,
+        `Layer 2 (Done-check tracker): ENABLED`,
+        `Layer 3 (Jev semantic gate): ${apiKey ? "READY (key validated)" : "OFFLINE (no TypeSafe key found)"}`,
         "",
-        "--- Statistik Intersepsi ---",
-        `Perintah Berbahaya Dicegat: ${state.stats.destructiveBlocked}`,
-        `Kebocoran Secret Dicegat:   ${state.stats.secretsBlocked}`,
-        `Kode Slop Dicegat (Jev):    ${state.stats.slopBlocked}`,
-        `Peringatan Tanpa Verifikasi: ${state.stats.verificationReminders}`,
+        "--- Interception stats ---",
+        `Dangerous commands blocked:`.padEnd(31) + state.stats.destructiveBlocked,
+        `Secret leaks blocked:`.padEnd(31) + state.stats.secretsBlocked,
+        `Slop writes blocked (Jev):`.padEnd(31) + state.stats.slopBlocked,
+        `Warnings without verification:`.padEnd(31) + state.stats.verificationReminders,
         "",
-        "Gunakan: `/eye on` atau `/eye off` untuk mengontrol.",
+        "Use: `/eye on` or `/eye off` to control.",
       ].join("\n");
 
       ctx.ui.notify(statusText, "info");
