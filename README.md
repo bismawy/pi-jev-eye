@@ -63,7 +63,7 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 | `jev` in a prompt (or `@jev`, `/jev-review`) | Reviewed turn: report-format contract + `answers_request` judgment on the next write |
 | `/jev-eye` → **Routing** | Per-turn model routing: light model for chores, heavy model for review |
 
-The `on`/`off` subcommands are gone — the keybinding replaces them, and the footer carries both the state and the action: `supervisor ON · ctrl+shift+e disables supervisor`. The footer is repainted at session start, at every turn start, and on every `/jev-eye` invocation, so another extension clearing statuses cannot leave it blank.
+The `on`/`off` subcommands are gone — the keybinding replaces them, and the Pi status bar carries the state and both keys: `supervisor ON · gate all folders · ctrl+shift+e on/off · ctrl+shift+g gate`. It is repainted at session start, at every turn start, and on every `/jev-eye` invocation, so another extension clearing statuses cannot leave it blank; the same line also sits at the bottom of the `/jev-eye status` panel.
 
 ### Accounts (pi-typesafe is optional)
 
@@ -84,7 +84,12 @@ Cycled with `ctrl+shift+g` or chosen from the menu, and stored in `~/.pi/agent/p
 supervisor ON · gate all folders · ctrl+shift+e on/off · ctrl+shift+g gate
 ```
 
-In `/jev-eye status` the default stays one short line — `Jev gate: READY · … · all folders` — and only a restricted value adds the folder breakdown (`scope: … · this folder ON|off`).
+In `/jev-eye status` the default stays one short line — `Jev gate: READY · … · all folders` — and only a restricted value adds the folder breakdown (`scope: … · this folder ON|off`). The panel closes with its own footer line carrying the live state and both keybindings:
+
+```
+supervisor ON · ctrl+shift+e on/off · ctrl+shift+g gate · gate value: all folders
+Menu: `/jev-eye` · direct: status|login|logout|routing [on|off]
+```
 
 - **Enable all folder** — the Jev gate runs in every folder. This is the same meaning the optional `pi-typesafe` package gives its own `PI_TYPESAFE_ENABLED=1` consent flag (that env var belongs to that package, not to TypeSafe's API).
 - **Enable this folder** — only the listed folders (and their subfolders) run the Jev gate; picking it again toggles the current folder, and removing the last one falls back to Disabled.

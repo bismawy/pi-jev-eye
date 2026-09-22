@@ -1143,7 +1143,12 @@ export default function (pi: ExtensionAPI) {
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
     if (typeof contextTokens === "number") lines.push(`Model context: ${n(contextTokens)} tokens`);
-    lines.push("", "Menu: `/jev-eye` · direct: status|login|logout|routing [on|off]");
+    // Footer of the status panel: the live supervisor state plus every global keybinding.
+    lines.push(
+      "",
+      `${state.enabled ? "supervisor ON" : "supervisor OFF"} · ${TOGGLE_KEY} on/off · ${GATE_KEY} gate · gate value: ${consentShort(consent)}`,
+      "Menu: `/jev-eye` · direct: status|login|logout|routing [on|off]"
+    );
     return lines.join("\n");
   };
 
