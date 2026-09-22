@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { readFileSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 interface EyeState {
   enabled: boolean;
@@ -33,9 +33,11 @@ const state: EyeState = {
 };
 
 // --- Layer 1: Local Regex Patterns (0 ms, 0 Token) ---
+// Path must be catastrophic itself: root, home, or a parent hop — not merely an absolute path (rm -rf /tmp/x is not a wipe).
+const WIPE_TARGET = /(?:\/\*?|~\/?|\$HOME\/?|\.\.\/?)(?=[\s"';&|]|$)/;
 const DESTRUCTIVE_BASH_PATTERNS = [
-  /\brm\s+-[rfRF]{1,4}\s+([/~]|\$HOME|\.\.)/i,
-  /\brm\s+--recursive\s+--force\s+([/~]|\$HOME|\.\.)/i,
+  new RegExp(`\\brm\\s+-[rfRF]{1,4}\\s+${WIPE_TARGET.source}`, "i"),
+  new RegExp(`\\brm\\s+--recursive\\s+--force\\s+${WIPE_TARGET.source}`, "i"),
   /\bgit\s+push\s+.*--force.*(main|master)\b/i,
   /\bgit\s+push\s+-f\s+.*(main|master)\b/i,
   /\bgit\s+reset\s+--hard\b/i,
@@ -76,6 +78,66 @@ function getTypeSafeApiKey(): string | undefined {
     return typeof data.apiKey === "string" && data.apiKey.trim() ? data.apiKey.trim() : undefined;
   } catch {
     return undefined;
+  }
+}
+
+// --- TypeSafe consent store: Enable all / Enable per folder / Disable ---
+type ConsentMode = "all" | "folders" | "off";
+interface Consent {
+  mode: ConsentMode;
+  folders: string[];
+}
+
+const CONSENT_DIR = join(homedir(), ".pi", "agent", "pi-jev-eye");
+const CONSENT_PATH = join(CONSENT_DIR, "consent.json");
+const TYPESAFE_USAGE_PATH = join(homedir(), ".pi", "agent", "pi-typesafe", "usage.json");
+const USD_PER_MTOK = 0.042; // mirrors pi-typesafe's default input-token rate
+
+// Default keeps the previous behaviour (gate on wherever a key exists) until the operator chooses otherwise.
+function readConsent(): Consent {
+  try {
+    const parsed = JSON.parse(readFileSync(CONSENT_PATH, "utf8"));
+    const mode: ConsentMode = parsed?.mode === "off" || parsed?.mode === "folders" ? parsed.mode : "all";
+    const folders = Array.isArray(parsed?.folders) ? parsed.folders.filter((f: unknown) => typeof f === "string") : [];
+    return { mode, folders };
+  } catch {
+    return { mode: "all", folders: [] };
+  }
+}
+
+function writeConsent(consent: Consent): void {
+  mkdirSync(CONSENT_DIR, { recursive: true });
+  writeFileSync(CONSENT_PATH, `${JSON.stringify({ version: 1, ...consent }, null, 2)}\n`, { mode: 0o600 });
+}
+
+function consentAllows(cwd: string, consent: Consent): boolean {
+  if (consent.mode === "all") return true;
+  if (consent.mode === "off") return false;
+  return consent.folders.some((f) => cwd === f || cwd.startsWith(f.endsWith(sep) ? f : f + sep));
+}
+
+function consentLabel(consent: Consent): string {
+  if (consent.mode === "all") return "all folders";
+  if (consent.mode === "off") return "disabled";
+  return `${consent.folders.length} folder(s)`;
+}
+
+// Today's totals written by pi-typesafe itself; read-only, never rewritten by us.
+function readTypeSafeUsage(): { requests: number; ok: number; failed: number; inputTokens: number; outputTokens: number } | null {
+  try {
+    const now = new Date();
+    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const totals = JSON.parse(readFileSync(TYPESAFE_USAGE_PATH, "utf8"))?.days?.[day];
+    if (!totals) return null;
+    return {
+      requests: Number(totals.requestsStarted) || 0,
+      ok: Number(totals.requestsSucceeded) || 0,
+      failed: Number(totals.requestsFailed) || 0,
+      inputTokens: Number(totals.inputTokens) || 0,
+      outputTokens: Number(totals.outputTokens) || 0,
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -225,7 +287,8 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Layer 3: Jev semantic gate, only for diffs above the line threshold
-      if (state.semanticGate && contentToCheck.split("\n").length >= JEV_MIN_DIFF_LINES) {
+      const consent = readConsent();
+      if (state.semanticGate && consentAllows(ctx.cwd, consent) && contentToCheck.split("\n").length >= JEV_MIN_DIFF_LINES) {
         const apiKey = getTypeSafeApiKey();
         if (apiKey) {
           if (state.stats.jevRequests >= JEV_MAX_REQUESTS) {
@@ -283,47 +346,157 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // --- `/eye` CLI command ---
+  // --- `/jev-eye` command (alias: `/eye`) ---
+  const buildStatus = (ctx: any): string => {
+    const apiKey = getTypeSafeApiKey();
+    const consent = readConsent();
+    const usage = readTypeSafeUsage();
+    const contextTokens = ctx?.getContextUsage?.()?.tokens;
+    const pad = (label: string) => label.padEnd(31);
+
+    const lines = [
+      "=== pi-jev-eye status ===",
+      `Supervisor: ${state.enabled ? "ENABLED" : "DISABLED"}  (layers 1-2 are local: 0 token, 0 request)`,
+      `Layer 3 (Jev semantic gate): ${apiKey ? "READY (key validated)" : "OFFLINE (no TypeSafe key found)"}`,
+      `  threshold p≥${JEV_BLOCK_THRESHOLD}, min ${JEV_MIN_DIFF_LINES} lines`,
+      `  consent: ${consentLabel(consent)}`,
+      `  this folder: ${consentAllows(ctx.cwd, consent) ? "ALLOWED" : "not allowed"}  (${ctx.cwd})`,
+      `  session budget: ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} Jev requests used`,
+      `  built-in tool gate: PI_TYPESAFE_ENABLED=${process.env.PI_TYPESAFE_ENABLED ?? "unset"} (pi-typesafe reads it at session start)`,
+      "",
+      "--- TypeSafe usage today (ledger read-only: ~/.pi/agent/pi-typesafe/usage.json) ---",
+      usage
+        ? `Requests: ${usage.requests} started (${usage.ok} ok, ${usage.failed} failed)`
+        : "Requests: no ledger entry for today",
+    ];
+
+    if (usage) {
+      const usd = (usage.inputTokens * USD_PER_MTOK) / 1e6;
+      lines.push(`Tokens: ${usage.inputTokens} in / ${usage.outputTokens} out  (~$${usd.toFixed(6)} input-only rate)`);
+    }
+    if (typeof contextTokens === "number") {
+      lines.push(`Model context now: ${contextTokens} tokens`);
+    }
+
+    lines.push(
+      "",
+      "--- Interception stats (this session) ---",
+      pad("Dangerous commands blocked:") + state.stats.destructiveBlocked,
+      pad("Secret leaks blocked:") + state.stats.secretsBlocked,
+      pad("Slop writes blocked (Jev):") + state.stats.slopBlocked,
+      pad("Warnings without verification:") + state.stats.verificationReminders,
+      "",
+      "Menu: `/jev-eye` with no arguments. Direct: `/jev-eye status|on|off`."
+    );
+
+    return lines.join("\n");
+  };
+
+  // Interactive menu: Enable all / Enable per folder / Disable / Status
+  const openMenu = async (ctx: any): Promise<void> => {
+    const consent = readConsent();
+    const thisFolderOn = consentAllows(ctx.cwd, consent);
+    const folderOption =
+      consent.mode === "all"
+        ? `Scope to this folder only ·  ${ctx.cwd}`
+        : thisFolderOn
+        ? `Remove this folder    ·  ${ctx.cwd}`
+        : `Add this folder       ·  ${ctx.cwd}`;
+    const options = [
+      `Enable all folders    ·  gate on in every folder`,
+      folderOption,
+      `Disable TypeSafe gate ·  layers 1-2 stay on`,
+      `Show status`,
+    ];
+
+    const choice = await ctx.ui.select("pi-jev-eye · TypeSafe gate", options);
+    if (!choice) return;
+
+    if (choice === options[0]) {
+      writeConsent({ mode: "all", folders: consent.folders });
+      ctx.ui.notify("[pi-jev-eye] TypeSafe gate: ENABLED for all folders.", "info");
+      return;
+    }
+
+    if (choice === options[1]) {
+      let next: Consent;
+      let verb: string;
+
+      if (consent.mode === "all") {
+        next = { mode: "folders", folders: [ctx.cwd] };
+        verb = "SCOPED to";
+      } else if (thisFolderOn) {
+        const folders = consent.folders.filter((f) => f !== ctx.cwd);
+        // Removing the last folder while in per-folder mode leaves the gate off everywhere.
+        next = { mode: folders.length > 0 ? "folders" : "off", folders };
+        verb = "REMOVED";
+      } else {
+        const folders = [...new Set([...consent.folders, ctx.cwd])];
+        next = { mode: "folders", folders };
+        verb = "ADDED";
+      }
+
+      writeConsent(next);
+      ctx.ui.notify(
+        `[pi-jev-eye] TypeSafe gate: ${verb} ${ctx.cwd} — now ${consentLabel(next)}.`,
+        verb === "ADDED" ? "info" : "warning"
+      );
+      return;
+    }
+
+    if (choice === options[2]) {
+      writeConsent({ mode: "off", folders: consent.folders });
+      ctx.ui.notify(
+        "[pi-jev-eye] TypeSafe gate: DISABLED (layers 1-2 still on). The built-in typesafe_evaluate tool owns its own gate — stop it with `/typesafe disable`.",
+        "warning"
+      );
+      return;
+    }
+
+    ctx.ui.notify(buildStatus(ctx), "info");
+  };
+
+  const eyeHandler = async (args: string, ctx: any) => {
+    const sub = args.trim().toLowerCase();
+
+    if (sub === "on") {
+      state.enabled = true;
+      ctx.ui.notify("[pi-jev-eye] Supervisor enabled.", "info");
+      return;
+    }
+
+    if (sub === "off") {
+      state.enabled = false;
+      ctx.ui.notify("[pi-jev-eye] Supervisor disabled.", "warning");
+      return;
+    }
+
+    if (sub === "") {
+      await openMenu(ctx);
+      return;
+    }
+
+    if (sub !== "status") {
+      ctx.ui.notify(`[pi-jev-eye] Unknown argument "${sub}". Use: status | on | off, or no argument for the menu.`, "warning");
+      return;
+    }
+
+    ctx.ui.notify(buildStatus(ctx), "info");
+  };
+
+  const completions = (prefix: string): AutocompleteItem[] | null => {
+    const items: AutocompleteItem[] = EYE_SUBCOMMANDS.filter((s) => s.value.startsWith(prefix.toLowerCase()));
+    return items.length > 0 ? items : null;
+  };
+
+  pi.registerCommand("jev-eye", {
+    description: "pi-jev-eye supervisor: menu (Enable all / per folder / Disable), status, usage stats",
+    getArgumentCompletions: completions,
+    handler: eyeHandler,
+  });
   pi.registerCommand("eye", {
-    description: "pi-jev-eye supervisor: status, toggle, and stats",
-    getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
-      const items: AutocompleteItem[] = EYE_SUBCOMMANDS.filter((s) => s.value.startsWith(prefix.toLowerCase()));
-      return items.length > 0 ? items : null;
-    },
-    handler: async (args, ctx) => {
-      const sub = args.trim().toLowerCase();
-
-      if (sub === "on") {
-        state.enabled = true;
-        ctx.ui.notify("[pi-jev-eye] Supervisor enabled.", "info");
-        return;
-      }
-
-      if (sub === "off") {
-        state.enabled = false;
-        ctx.ui.notify("[pi-jev-eye] Supervisor disabled.", "warning");
-        return;
-      }
-
-      const apiKey = getTypeSafeApiKey();
-      const statusText = [
-        "=== pi-jev-eye status ===",
-        `Status: ${state.enabled ? "ENABLED" : "DISABLED"}`,
-        `Layer 1 (Regex filter): ENABLED`,
-        `Layer 2 (Done-check tracker): ENABLED`,
-        `Layer 3 (Jev semantic gate): ${apiKey ? "READY (key validated)" : "OFFLINE (no TypeSafe key found)"}`,
-        `  threshold p≥${JEV_BLOCK_THRESHOLD}, min ${JEV_MIN_DIFF_LINES} lines, budget ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} requests used`,
-        "",
-        "--- Interception stats ---",
-        `Dangerous commands blocked:`.padEnd(31) + state.stats.destructiveBlocked,
-        `Secret leaks blocked:`.padEnd(31) + state.stats.secretsBlocked,
-        `Slop writes blocked (Jev):`.padEnd(31) + state.stats.slopBlocked,
-        `Warnings without verification:`.padEnd(31) + state.stats.verificationReminders,
-        "",
-        "Use: `/eye on` or `/eye off` to control.",
-      ].join("\n");
-
-      ctx.ui.notify(statusText, "info");
-    },
+    description: "pi-jev-eye supervisor (alias of /jev-eye)",
+    getArgumentCompletions: completions,
+    handler: eyeHandler,
   });
 }

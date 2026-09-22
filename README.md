@@ -52,9 +52,24 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 
 | Command | Action |
 | :--- | :--- |
-| `/eye` or `/eye status` | View supervisor status, active layers, key state, and interception stats |
-| `/eye on` | Enable supervisor |
-| `/eye off` | Temporarily disable supervisor |
+| `/jev-eye` | Interactive menu: **Enable all** · **Enable per folder** · **Disable** · Show status (`/eye` is a working alias) |
+| `/jev-eye status` | Status: layers, key state, consent, Jev budget, today's usage, interception stats |
+| `/jev-eye on` | Enable the supervisor |
+| `/jev-eye off` | Temporarily disable the supervisor |
+
+### TypeSafe consent (`Enable all` / `Enable per folder` / `Disable`)
+
+Chosen from the menu and stored in `~/.pi/agent/pi-jev-eye/consent.json`:
+
+- **Enable all** — the Jev gate runs in every folder.
+- **Enable per folder** — only listed folders (and their subfolders) run the Jev gate; pick the folder option again to add or remove the current one.
+- **Disable** — Jev gate off, layers 1–2 (local, zero cost) stay on.
+
+The built-in `typesafe_evaluate` tool owns its own per-session gate (`/typesafe enable`, or `PI_TYPESAFE_ENABLED=1`); `/jev-eye status` reports its state but never changes it.
+
+### Usage stats
+
+`/jev-eye status` reads the ledger pi-typesafe writes (`~/.pi/agent/pi-typesafe/usage.json`, read-only) and shows today's requests (ok/failed), input/output tokens and estimated input cost, plus this session's Jev budget use and current model context size.
 
 ## How it works
 
