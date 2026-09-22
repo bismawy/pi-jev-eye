@@ -338,9 +338,11 @@ class RoutingPicker {
       const cursor = rows[this.index] === model;
       const slots = [this.pending.light === ref ? "light" : "", this.pending.heavy === ref ? "heavy" : ""].filter(Boolean);
       const mark = slots.length ? t.fg("success", ` ✓ (${slots.join(", ")})`) : "";
+      // The whole highlighted row — arrow, id and provider tag — takes the accent colour, like the reference panel.
+      const prefix = cursor ? t.fg("accent", "→ ") : "  ";
       const name = t.fg(cursor ? "accent" : "text", model.id);
-      const provider = t.fg("muted", `[${model.provider}]`);
-      lines.push(`${cursor ? "→ " : "  "}${name} ${provider}${mark}`);
+      const provider = t.fg(cursor ? "accent" : "muted", `[${model.provider}]`);
+      lines.push(`${prefix}${name} ${provider}${mark}`);
     }
 
     const position = rows.length === 0 ? 0 : Math.min(this.index + 1, rows.length);
