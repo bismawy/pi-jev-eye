@@ -1,5 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Container, CURSOR_MARKER, Input, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+  Container,
+  CURSOR_MARKER,
+  Input,
+  Key,
+  matchesKey,
+  type SelectItem,
+  SelectList,
+  Text,
+  truncateToWidth,
+} from "@earendil-works/pi-tui";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -678,7 +688,7 @@ const EYE_SUBCOMMANDS = [
   { value: "status", label: "status", description: "Show supervisor status, account, usage, and interception stats" },
   { value: "login", label: "login", description: "Store a Jev key: TypeSafe account or OpenRouter account" },
   { value: "logout", label: "logout", description: "Delete the key stored by /jev-eye login" },
-  { value: "routing", label: "routing", description: "Open the routing menu, or set it directly: routing on | routing off" },
+  { value: "routing", label: "routing", description: "Routing models menu, or direct: routing light | routing heavy | routing on | routing off" },
 ];
 
 export default function (pi: ExtensionAPI) {
@@ -934,48 +944,108 @@ export default function (pi: ExtensionAPI) {
     return lines.join("\n");
   };
 
-  const openRoutingMenu = async (ctx: any): Promise<void> => {
+  const applySlot = (ctx: any, slot: "light" | "heavy", ref: string): void => {
+    const next: Routing = { ...readRouting(), [slot]: ref };
+    // Without both targets there is nothing to route between, so routing does not stay on.
+    if (!next.light || !next.heavy) next.enabled = false;
+    writeRouting(next);
+    ctx.ui.notify(
+      `[pi-jev-eye] ${slot === "light" ? "Light" : "Heavy"} model: ${ref || "(none)"}${
+        next.enabled ? "" : " — routing stays off until both targets are set"
+      }.`,
+      ref ? "info" : "warning"
+    );
+  };
+
+  /** One searchable screen, vision-watcher style: type to filter, `✓` marks the current target. */
+  const pickModel = async (ctx: any, slot: "light" | "heavy"): Promise<string | null> => {
+    const routing = readRouting();
+    const available: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
+    if (available.length === 0) {
+      ctx.ui.notify("[pi-jev-eye] No authenticated models found to route to.", "error");
+      return null;
+    }
+
+    const current = slot === "light" ? routing.light : routing.heavy;
+    const items: SelectItem[] = [{ value: "", label: "(none)", description: `clear the ${slot} target` }];
+    for (const model of available) {
+      const ref = `${model.provider}/${model.id}`;
+      const alsoUsed = [routing.light === ref ? "light" : "", routing.heavy === ref ? "heavy" : ""].filter(Boolean);
+      items.push({
+        value: ref,
+        label: `${ref === current ? "✓ " : "  "}${model.id}  [${model.provider}]`,
+        description: alsoUsed.length ? `currently ${alsoUsed.join(" + ")}` : undefined,
+      });
+    }
+
+    if (typeof ctx.ui.custom !== "function") {
+      const picked = await ctx.ui.select(`${slot} turn model`, items.map((i) => i.value || "(none)"));
+      return picked === undefined || picked === "(none)" ? "" : picked;
+    }
+
+    return await ctx.ui.custom<string | null>((tui: any, theme: any, _kb: any, done: (value: string | null) => void) => {
+      const container = new Container();
+      container.addChild(new Text(theme.fg("accent", theme.bold(`pi-jev-eye · ${slot} turn model`)), 1, 0));
+      container.addChild(
+        new Text(theme.fg("muted", `Routing ${routing.enabled ? "ON" : "OFF"} · light ${routing.light || "(unset)"} · heavy ${routing.heavy || "(unset)"}`), 1, 0)
+      );
+
+      const list = new SelectList(items, Math.min(items.length, 12), {
+        selectedPrefix: (text: string) => theme.fg("accent", text),
+        selectedText: (text: string) => theme.fg("accent", text),
+        description: (text: string) => theme.fg("muted", text),
+        scrollInfo: (text: string) => theme.fg("dim", text),
+        noMatch: (text: string) => theme.fg("warning", text),
+      });
+      list.onSelect = (item: SelectItem) => done(item.value ?? null);
+      list.onCancel = () => done(null);
+      container.addChild(list);
+      container.addChild(
+        new Text(theme.fg("dim", `↑↓ move · type to filter · enter assign · esc cancel · ${available.length} models available`), 1, 0)
+      );
+
+      return {
+        render: (width: number) => container.render(width),
+        invalidate: () => container.invalidate(),
+        handleInput: (data: string) => {
+          list.handleInput(data);
+          tui.requestRender();
+        },
+      };
+    });
+  };
+
+  const openRoutingMenu = async (ctx: any, slot?: "light" | "heavy"): Promise<void> => {
+    if (slot) {
+      const picked = await pickModel(ctx, slot);
+      if (picked !== null) applySlot(ctx, slot, picked);
+      return;
+    }
+
     const routing = readRouting();
     const options = [
+      `Light model  ·  ${routing.light || "(unset)"}`,
+      `Heavy model  ·  ${routing.heavy || "(unset)"}`,
       `Routing ${routing.enabled ? "ON" : "OFF"}  ·  turn it ${routing.enabled ? "off" : "on"}`,
-      `Light model  ·  ${routing.light || "(not set)"}`,
-      `Heavy model  ·  ${routing.heavy || "(not set)"}`,
     ];
 
     const choice = await ctx.ui.select("pi-jev-eye · routing models", options);
     if (!choice) return;
 
-    if (choice === options[0]) {
-      const enabled = !routing.enabled;
-      writeRouting({ ...routing, enabled });
-      ctx.ui.notify(
-        enabled
-          ? `[pi-jev-eye] Routing ON · light ${routing.light || "(unset)"} · heavy ${routing.heavy || "(unset)"}.`
-          : "[pi-jev-eye] Routing OFF; turns keep the current model.",
-        enabled && (!routing.light || !routing.heavy) ? "warning" : "info"
-      );
+    if (choice === options[0] || choice === options[1]) {
+      const target = choice === options[0] ? "light" : "heavy";
+      const picked = await pickModel(ctx, target);
+      if (picked !== null) applySlot(ctx, target, picked);
       return;
     }
 
-    const slot = choice === options[1] ? "light" : "heavy";
-    const models: string[] = (ctx?.modelRegistry?.getAvailable?.() ?? []).map((m: any) => `${m.provider}/${m.id}`);
-    if (models.length === 0) {
-      ctx.ui.notify("[pi-jev-eye] No authenticated models found to route to.", "error");
-      return;
-    }
-
-    const picked = await ctx.ui.select(`${slot} turn model`, ["(none)", ...models]);
-    if (!picked) return;
-
-    const next: Routing = { ...routing, [slot]: picked === "(none)" ? "" : picked };
-    // Without both targets there is nothing to route between, so routing does not stay on.
-    if (!next.light || !next.heavy) next.enabled = false;
-    writeRouting(next);
+    const enabled = !routing.enabled;
+    writeRouting({ ...routing, enabled });
     ctx.ui.notify(
-      `[pi-jev-eye] ${slot === "light" ? "Light" : "Heavy"} model: ${next[slot] || "(none)"}${
-        next.enabled ? "" : " — routing stays off until both targets are set"
-      }.`,
-      next[slot] ? "info" : "warning"
+      enabled
+        ? `[pi-jev-eye] Routing ON · light ${routing.light || "(unset)"} · heavy ${routing.heavy || "(unset)"}${!routing.light || !routing.heavy ? " — set both targets first" : ""}.`
+        : "[pi-jev-eye] Routing OFF; turns keep the current model.",
+      enabled && (!routing.light || !routing.heavy) ? "warning" : enabled ? "info" : "warning"
     );
   };
 
@@ -1052,6 +1122,10 @@ export default function (pi: ExtensionAPI) {
 
     if (sub === "routing" || sub.startsWith("routing ")) {
       const value = sub.slice("routing".length).trim();
+      if (value === "light" || value === "heavy") {
+        await openRoutingMenu(ctx, value);
+        return;
+      }
       if (value === "on" || value === "off") {
         const routing = readRouting();
         writeRouting({ ...routing, enabled: value === "on" });
