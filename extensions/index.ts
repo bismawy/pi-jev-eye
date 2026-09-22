@@ -438,7 +438,8 @@ function readConsent(): Consent {
     const raw = String(parsed?.mode ?? "all");
     const mode: ConsentMode = raw === "disabled" || raw === "off" ? "disabled" : raw === "folder" || raw === "folders" ? "folder" : "all";
     const folders = Array.isArray(parsed?.folders) ? parsed.folders.filter((f: unknown) => typeof f === "string") : [];
-    return { mode, folders };
+    // "this folder" with no folder left has nothing to run in, so it reads as Disabled instead of a puzzling empty list.
+    return { mode: mode === "folder" && folders.length === 0 ? "disabled" : mode, folders };
   } catch {
     return { mode: "all", folders: [] };
   }
