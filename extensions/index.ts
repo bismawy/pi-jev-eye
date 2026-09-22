@@ -303,6 +303,19 @@ class RoutingPicker {
       this.pending = { ...this.pending, enabled: !this.pending.enabled };
       return;
     }
+    // ctrl+t cycles thinking levels: light (low/off/...) and heavy (high/max/...)
+    if (matchesKey(data, "ctrl+t")) {
+      const cycle = (cur: ThinkingLevel | undefined, def: ThinkingLevel): ThinkingLevel => {
+        const idx = THINKING_LEVELS.indexOf(cur ?? def);
+        return THINKING_LEVELS[(idx + 1) % THINKING_LEVELS.length];
+      };
+      this.pending = {
+        ...this.pending,
+        lightThinking: cycle(this.pending.lightThinking, "low"),
+        heavyThinking: cycle(this.pending.heavyThinking, "high"),
+      };
+      return;
+    }
     if (matchesKey(data, Key.backspace)) {
       this.query = this.query.slice(0, -1);
       this.index = 0;
@@ -361,16 +374,16 @@ class RoutingPicker {
       }`
     );
     lines.push(
-      `${t.fg("dim", "Light model: ")}${this.pending.light ? t.fg("text", this.labelFor(this.pending.light)) : t.fg("muted", "(unset)")}`
+      `${t.fg("dim", "Light model: ")}${this.pending.light ? t.fg("text", this.labelFor(this.pending.light)) : t.fg("muted", "(unset)")} ${t.fg("muted", `[thinking: ${this.pending.lightThinking ?? "low"}]`)}`
     );
     lines.push(
-      `${t.fg("dim", "Heavy model: ")}${this.pending.heavy ? t.fg("text", this.labelFor(this.pending.heavy)) : t.fg("muted", "(unset)")}`
+      `${t.fg("dim", "Heavy model: ")}${this.pending.heavy ? t.fg("text", this.labelFor(this.pending.heavy)) : t.fg("muted", "(unset)")} ${t.fg("muted", `[thinking: ${this.pending.heavyThinking ?? "high"}]`)}`
     );
     lines.push("");
     lines.push(
       t.fg(
         "dim",
-        `enter = done · space = select light models · ctrl+r = routing on/off · ctrl+h = select heavy models · esc = cancel · total ${this.models.length} models`
+        `enter=done | space=select light models | ctrl+r=routing on/off | ctrl+h=select heavy models | esc=cancel | total ${this.models.length} models`
       )
     );
     lines.push(border());
@@ -613,10 +626,15 @@ const REVIEW_CONTRACT = [
 ].join("\n");
 
 // --- Per-turn model routing: cheap model for chores, best model for real review ---
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 interface Routing {
   enabled: boolean;
   light: string; // "provider/modelId" as listed by ctx.modelRegistry.getAvailable()
   heavy: string;
+  lightThinking?: ThinkingLevel;
+  heavyThinking?: ThinkingLevel;
 }
 
 const ROUTING_PATH = join(EYE_DIR, "routing.json");
@@ -628,6 +646,8 @@ function readRouting(): Routing {
     enabled: raw?.enabled === true,
     light: typeof raw?.light === "string" ? raw.light : "",
     heavy: typeof raw?.heavy === "string" ? raw.heavy : "",
+    lightThinking: THINKING_LEVELS.includes(raw?.lightThinking) ? raw.lightThinking : "low",
+    heavyThinking: THINKING_LEVELS.includes(raw?.heavyThinking) ? raw.heavyThinking : "high",
   };
 }
 
@@ -903,7 +923,12 @@ export default function (pi: ExtensionAPI) {
     }
 
     const current = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
+    const targetThinking = target === "light" ? (routing.lightThinking ?? "low") : (routing.heavyThinking ?? "high");
+
     if (current === ref) {
+      if (typeof pi.setThinkingLevel === "function") {
+        pi.setThinkingLevel(targetThinking);
+      }
       if (target === "light") state.stats.lightTurns++;
       else state.stats.heavyTurns++;
       return;
@@ -911,9 +936,12 @@ export default function (pi: ExtensionAPI) {
 
     const switched = await pi.setModel(model);
     if (switched) {
+      if (typeof pi.setThinkingLevel === "function") {
+        pi.setThinkingLevel(targetThinking);
+      }
       if (target === "light") state.stats.lightTurns++;
       else state.stats.heavyTurns++;
-      ctx.ui.notify(`[pi-jev-eye] ${target === "light" ? "Light" : "Heavy"} turn → ${ref}`, "info");
+      ctx.ui.notify(`[pi-jev-eye] ${target === "light" ? "Light" : "Heavy"} turn → ${ref} (${targetThinking} thinking)`, "info");
     }
 
     return contract;
