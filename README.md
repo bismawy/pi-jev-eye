@@ -120,10 +120,10 @@ Route light chores to a cheap model and real review to the strongest one. ctrl+r
   (3/9)
 
 Routing: ON
-Light model: Gemini 3 Flash (Antigravity)
-Heavy model: Gemini 2.5 Flash (Antigravity)
+Light model: Gemini 3 Flash (Antigravity) [thinking: low]
+Heavy model: Gemini 2.5 Flash (Antigravity) [thinking: high]
 
-enter = done · space = select light models · ctrl+r = routing on/off · ctrl+h = select heavy models · esc = cancel · total 9 models
+enter=done | space=select light models | ctrl+r=routing on/off | ctrl+h=select heavy models | ctrl+t=light thinking | ctrl+shift+t=heavy thinking | esc=cancel | total 9 models
 ────────────────────────────────────────────────────────────────────
 ```
 
@@ -136,6 +136,8 @@ Framing and colours come from the Pi theme, the same tokens the `/vision-watcher
 | `space` | assign the highlighted model as the **light** target (again to clear it) |
 | `ctrl+h` | assign it as the **heavy** target (again to clear; `ctrl+q` is an alias) |
 | `ctrl+r` | routing on/off without leaving the screen |
+| `ctrl+t` | walk the **light** target's thinking level (`off → minimal → low → medium → high → xhigh → max`) |
+| `ctrl+shift+t` | walk the **heavy** target's thinking level, independently |
 | `enter` | save; without both targets the value is saved with routing off |
 | `esc` | discard everything from this screen |
 

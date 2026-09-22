@@ -293,6 +293,14 @@ class RoutingPicker {
     this.pending = { ...this.pending, [slot]: this.pending[slot] === ref ? "" : ref };
   }
 
+  /** Walks off → minimal → low → medium → high → xhigh → max → off for one slot only. */
+  private cycleThinking(slot: "light" | "heavy"): void {
+    const field = slot === "light" ? "lightThinking" : "heavyThinking";
+    const current = (this.pending[field as keyof Routing] as ThinkingLevel | undefined) ?? (slot === "light" ? "low" : "high");
+    const next = THINKING_LEVELS[(THINKING_LEVELS.indexOf(current) + 1) % THINKING_LEVELS.length];
+    this.pending = { ...this.pending, [field]: next };
+  }
+
   handleInput(data: string): void {
     if (matchesKey(data, Key.up)) return this.move(-1);
     if (matchesKey(data, Key.down)) return this.move(1);
@@ -303,19 +311,9 @@ class RoutingPicker {
       this.pending = { ...this.pending, enabled: !this.pending.enabled };
       return;
     }
-    // ctrl+t cycles thinking levels: light (low/off/...) and heavy (high/max/...)
-    if (matchesKey(data, "ctrl+t")) {
-      const cycle = (cur: ThinkingLevel | undefined, def: ThinkingLevel): ThinkingLevel => {
-        const idx = THINKING_LEVELS.indexOf(cur ?? def);
-        return THINKING_LEVELS[(idx + 1) % THINKING_LEVELS.length];
-      };
-      this.pending = {
-        ...this.pending,
-        lightThinking: cycle(this.pending.lightThinking, "low"),
-        heavyThinking: cycle(this.pending.heavyThinking, "high"),
-      };
-      return;
-    }
+    // Two separate thinking keys: ctrl+t walks the light level, ctrl+shift+t the heavy one.
+    if (matchesKey(data, "ctrl+shift+t")) return this.cycleThinking("heavy");
+    if (matchesKey(data, "ctrl+t")) return this.cycleThinking("light");
     if (matchesKey(data, Key.backspace)) {
       this.query = this.query.slice(0, -1);
       this.index = 0;
@@ -383,7 +381,7 @@ class RoutingPicker {
     lines.push(
       t.fg(
         "dim",
-        `enter=done | space=select light models | ctrl+r=routing on/off | ctrl+h=select heavy models | esc=cancel | total ${this.models.length} models`
+        `enter=done | space=select light models | ctrl+r=routing on/off | ctrl+h=select heavy models | ctrl+t=light thinking | ctrl+shift+t=heavy thinking | esc=cancel | total ${this.models.length} models`
       )
     );
     lines.push(border());
