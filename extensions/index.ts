@@ -650,6 +650,10 @@ export default function (pi: ExtensionAPI) {
         `pi-typesafe ledger: ${legacyUsage.requestsStarted} requests (${legacyUsage.requestsSucceeded} ok, ${legacyUsage.requestsFailed} failed), ${legacyUsage.inputTokens} in / ${legacyUsage.outputTokens} out (${usd(legacyUsage.inputTokens)})`
       );
     }
+    if (own || legacyUsage) {
+      const combined = (own?.requests ?? 0) + (legacyUsage?.requestsStarted ?? 0);
+      lines.push(`Both ledgers today: ${combined} requests — two independent budgets (${JEV_MAX_REQUESTS}/session here + whatever pi-typesafe's own cap is).`);
+    }
     if (typeof contextTokens === "number") {
       lines.push(`Model context now: ${contextTokens} tokens`);
     }
