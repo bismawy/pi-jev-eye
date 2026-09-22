@@ -52,10 +52,23 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 
 | Command | Action |
 | :--- | :--- |
-| `/jev-eye` | Interactive menu: **Enable all** · **Enable per folder** · **Disable** · Show status (`/eye` is a working alias) |
-| `/jev-eye status` | Status: layers, key state, consent, Jev budget, today's usage, interception stats |
+| `/jev-eye` | Interactive menu: **Log in/out** · **Enable all** · **Enable per folder** · **Disable** · Show status (`/eye` is a working alias) |
+| `/jev-eye login` | Store a Jev key: **TypeSafe account** or **OpenRouter account** |
+| `/jev-eye logout` | Delete the key stored by `/jev-eye login` |
+| `/jev-eye status` | Status: layers, account, consent, Jev budget, today's usage, interception stats |
 | `/jev-eye on` | Enable the supervisor |
 | `/jev-eye off` | Temporarily disable the supervisor |
+
+### Accounts (pi-typesafe is optional)
+
+`/jev-eye login` asks where your Jev key comes from, hides it while you type, verifies it with one small request, and only then writes `~/.pi/agent/pi-jev-eye/auth.json` (owner-only, `0600`).
+
+| Choice | Endpoint | Model | Key from |
+| :--- | :--- | :--- | :--- |
+| TypeSafe account | `api.typesafe.ai/v1/systemone` | `jev-latest` | console.typesafe.ai → API Keys |
+| OpenRouter account | `openrouter.ai/api/alpha/decisions` | `typesafe/jev-1.13` | openrouter.ai/settings/keys |
+
+Key lookup order: `/jev-eye login` store → `TYPESAFE_API_KEY` → `OPENROUTER_API_KEY` → a key already stored by **pi-typesafe** (`~/.pi/agent/pi-typesafe/auth.json`), so an existing install keeps working without logging in again. `/jev-eye logout` deletes only pi-jev-eye's own key and tells you what still applies.
 
 ### TypeSafe consent (`Enable all` / `Enable per folder` / `Disable`)
 
@@ -69,7 +82,7 @@ The built-in `typesafe_evaluate` tool owns its own per-session gate (`/typesafe 
 
 ### Usage stats
 
-`/jev-eye status` reads the ledger pi-typesafe writes (`~/.pi/agent/pi-typesafe/usage.json`, read-only) and shows today's requests (ok/failed), input/output tokens and estimated input cost, plus this session's Jev budget use and current model context size.
+`/jev-eye status` shows today's requests (ok/failed), input/output tokens and estimated input cost from pi-jev-eye's own ledger (`~/.pi/agent/pi-jev-eye/usage.json`), plus pi-typesafe's ledger side by side when that package is installed (read-only), the session's Jev request budget, and the current model context size.
 
 ## How it works
 
