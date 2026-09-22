@@ -549,7 +549,9 @@ function updateStatusBar(ctx: any): void {
   try {
     ctx?.ui?.setStatus?.(
       "pi-jev-eye",
-      state.enabled ? `eye ON · ${TOGGLE_KEY} to pause` : `eye OFF · ${TOGGLE_KEY} to resume`
+      state.enabled
+        ? `supervisor ON · ${TOGGLE_KEY} disables supervisor`
+        : `supervisor OFF · ${TOGGLE_KEY} enables supervisor`
     );
   } catch {
     // A session without a status bar must not break the toggle.
@@ -723,11 +725,10 @@ export default function (pi: ExtensionAPI) {
 
     const lines = [
       "=== pi-jev-eye status ===",
-      `Supervisor: ${state.enabled ? "ENABLED" : "DISABLED"} · toggle ${TOGGLE_KEY} (live in the footer)`,
+      `Supervisor: ${state.enabled ? "ENABLED" : "DISABLED"}`,
       `Jev gate: ${auth ? `READY · ${auth.provider.label} · key from ${auth.source}` : "OFFLINE (no key) — run `/jev-eye login`"}`,
       `  value: ${consentLabel(consent)}${consent.mode === "folder" ? ` → ${consent.folders.join(", ") || "(none)"}` : ""} · this folder ${consentAllows(ctx.cwd, consent) ? "ON" : "off"}`,
       `  p≥${JEV_BLOCK_THRESHOLD} · min ${JEV_MIN_DIFF_LINES} lines · ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} requests this session`,
-      `  built-in tool: PI_TYPESAFE_ENABLED=${process.env.PI_TYPESAFE_ENABLED ?? "unset"} → ${process.env.PI_TYPESAFE_ENABLED === "1" ? "Enable all folder" : "Disabled (needs /typesafe enable each session)"}`,
       "",
       "--- Jev usage ---",
       window("Today", today(), readOwnUsage()),
@@ -740,7 +741,7 @@ export default function (pi: ExtensionAPI) {
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
     if (typeof contextTokens === "number") lines.push(`Model context: ${n(contextTokens)} tokens`);
-    lines.push("", `Menu: \`/jev-eye\` · direct: status|login|logout · toggle ${TOGGLE_KEY}`);
+    lines.push("", "Menu: `/jev-eye` · direct: status|login|logout");
     return lines.join("\n");
   };
 

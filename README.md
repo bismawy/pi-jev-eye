@@ -58,7 +58,7 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 | `/jev-eye status` | Status: supervisor, account, gate value, usage today/month, balance, interception stats |
 | `ctrl+shift+e` | Toggle the supervisor on/off; the footer status line flips instantly |
 
-The `on`/`off` subcommands are gone — the keybinding replaces them, and the footer carries the state (`eye ON · ctrl+shift+e to pause`).
+The `on`/`off` subcommands are gone — the keybinding replaces them, and the footer carries both the state and the action: `supervisor ON · ctrl+shift+e disables supervisor`.
 
 ### Accounts (pi-typesafe is optional)
 
@@ -75,11 +75,11 @@ Key lookup order: `TYPESAFE_API_KEY` → `OPENROUTER_API_KEY` → the `/jev-eye 
 
 Chosen from the menu and stored in `~/.pi/agent/pi-jev-eye/consent.json`:
 
-- **Enable all folder** — the Jev gate runs in every folder (also what `PI_TYPESAFE_ENABLED=1` means for the built-in tool).
+- **Enable all folder** — the Jev gate runs in every folder. This is the same meaning the optional `pi-typesafe` package gives its own `PI_TYPESAFE_ENABLED=1` consent flag (that env var belongs to that package, not to TypeSafe's API).
 - **Enable this folder** — only the listed folders (and their subfolders) run the Jev gate; picking it again toggles the current folder, and removing the last one falls back to Disabled.
 - **Disabled** — Jev gate off, layers 1–2 (local, zero cost) stay on.
 
-Values written by older versions (`folders`, `off`) migrate on read. The built-in `typesafe_evaluate` tool has its own per-session gate; `/jev-eye status` reports it in the same vocabulary (`Enable all folder` / `Disabled`) but never changes it.
+Values written by older versions (`folders`, `off`) migrate on read. The `typesafe_evaluate` tool belongs to the optional `pi-typesafe` package and has its own per-session gate; pi-jev-eye never touches it or reads its files for display (`/jev-eye status` shows only pi-jev-eye's own state).
 
 ### Usage stats
 
