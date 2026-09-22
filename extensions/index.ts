@@ -1,15 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-  Container,
-  CURSOR_MARKER,
-  Input,
-  Key,
-  matchesKey,
-  type SelectItem,
-  SelectList,
-  Text,
-  truncateToWidth,
-} from "@earendil-works/pi-tui";
+import { Container, CURSOR_MARKER, Input, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -232,6 +222,142 @@ class SecretInput extends Input {
     const cursor = this.focused ? `${CURSOR_MARKER}\x1b[7m \x1b[27m` : "";
     return [truncateToWidth(bullets + cursor, width, "")];
   }
+}
+
+/**
+ * One screen for the routing targets, keybind-driven: type to filter, `space` assigns the
+ * highlighted model as the light target, `ctrl+h` as the heavy target, `enter` saves,
+ * `esc` discards. Rows carry `✓ (light)` / `✓ (heavy)` so both slots stay visible at once.
+ */
+class RoutingPicker {
+  private pending: Routing;
+  private query = "";
+  private index = 0;
+  private readonly models: any[];
+  private readonly theme: any;
+  private readonly done: (value: Routing | null) => void;
+  private static readonly WINDOW = 10;
+
+  constructor(theme: any, models: any[], initial: Routing, focus: "light" | "heavy", done: (value: Routing | null) => void) {
+    this.theme = theme;
+    this.models = models;
+    this.pending = { ...initial };
+    this.done = done;
+    const preferred = focus === "light" ? initial.light : initial.heavy;
+    const at = models.findIndex((m) => this.ref(m) === preferred);
+    this.index = at >= 0 ? at : 0;
+  }
+
+  private ref(model: any): string {
+    return `${model.provider}/${model.id}`;
+  }
+
+  /** Human label used in the status block: model name, provider capitalized. */
+  private label(model: any): string {
+    const name = typeof model?.name === "string" && model.name.trim() ? model.name : model.id;
+    const provider = String(model.provider ?? "");
+    return `${name} (${provider ? provider[0].toUpperCase() + provider.slice(1) : "unknown"})`;
+  }
+
+  private labelFor(ref: string): string {
+    const model = this.models.find((m) => this.ref(m) === ref);
+    return model ? this.label(model) : ref;
+  }
+
+  private filtered(): any[] {
+    const terms = this.query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return this.models;
+    return this.models.filter((m) => {
+      const haystack = `${m.id} ${m.provider} ${m.name ?? ""}`.toLowerCase();
+      return terms.every((t) => haystack.includes(t));
+    });
+  }
+
+  private move(delta: number): void {
+    const rows = this.filtered();
+    if (rows.length === 0) return;
+    this.index = (this.index + delta + rows.length) % rows.length;
+  }
+
+  private assign(slot: "light" | "heavy"): void {
+    const row = this.filtered()[this.index];
+    if (!row) return;
+    const ref = this.ref(row);
+    this.pending = { ...this.pending, [slot]: this.pending[slot] === ref ? "" : ref };
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.up)) return this.move(-1);
+    if (matchesKey(data, Key.down)) return this.move(1);
+    if (matchesKey(data, Key.space) || data === " ") return this.assign("light");
+    // ctrl+h is the documented heavy key; ctrl+q is kept as an alias for terminals that eat it.
+    if (matchesKey(data, "ctrl+h") || matchesKey(data, "ctrl+q")) return this.assign("heavy");
+    if (matchesKey(data, "ctrl+r")) {
+      this.pending = { ...this.pending, enabled: !this.pending.enabled };
+      return;
+    }
+    if (matchesKey(data, Key.backspace)) {
+      this.query = this.query.slice(0, -1);
+      this.index = 0;
+      return;
+    }
+    if (matchesKey(data, Key.enter)) {
+      // Without both targets there is nothing to route between, so routing does not stay on.
+      const both = !!this.pending.light && !!this.pending.heavy;
+      return this.done({ ...this.pending, enabled: this.pending.enabled && both });
+    }
+    if (matchesKey(data, Key.escape)) return this.done(null);
+    if (data.length === 1 && data >= " ") {
+      this.query += data;
+      this.index = 0;
+    }
+  }
+
+  render(width: number): string[] {
+    const t = this.theme;
+    const rows = this.filtered();
+    const lines: string[] = [];
+
+    lines.push(t.fg("accent", t.bold("Jev Eye - Routing")));
+    lines.push(
+      t.fg("muted", "Route light chores to a cheap model and real review to the strongest one. ctrl+r turns routing on/off.")
+    );
+    lines.push("");
+    lines.push(`${t.fg("accent", "> ")}${this.query}${this.query ? "" : t.fg("dim", "type to filter")}`);
+    lines.push("");
+
+    const start = Math.max(0, Math.min(this.index - Math.floor(RoutingPicker.WINDOW / 2), Math.max(0, rows.length - RoutingPicker.WINDOW)));
+    const slice = rows.slice(start, start + RoutingPicker.WINDOW);
+    if (slice.length === 0) lines.push(t.fg("warning", "  no model matches this filter"));
+
+    for (const model of slice) {
+      const ref = this.ref(model);
+      const cursor = rows[this.index] === model;
+      const slots = [this.pending.light === ref ? "light" : "", this.pending.heavy === ref ? "heavy" : ""].filter(Boolean);
+      const mark = slots.length ? t.fg("success", ` ✓ (${slots.join(", ")})`) : "";
+      const name = t.fg(cursor ? "accent" : "text", model.id);
+      const provider = t.fg("muted", `[${model.provider}]`);
+      lines.push(`${cursor ? "→ " : "  "}${name} ${provider}${mark}`);
+    }
+
+    const position = rows.length === 0 ? 0 : Math.min(this.index + 1, rows.length);
+    lines.push(t.fg("dim", `  (${position}/${rows.length})`));
+    lines.push("");
+    lines.push(
+      `${t.fg("muted", "Routing: ")}${this.pending.enabled ? t.fg("success", "ON") : t.fg("dim", "off")}${
+        this.pending.enabled && (!this.pending.light || !this.pending.heavy) ? t.fg("warning", "  (needs both targets)") : ""
+      }`
+    );
+    lines.push(`${t.fg("muted", "Light model: ")}${this.pending.light ? this.labelFor(this.pending.light) : t.fg("dim", "(unset)")}`);
+    lines.push(`${t.fg("muted", "Heavy model: ")}${this.pending.heavy ? this.labelFor(this.pending.heavy) : t.fg("dim", "(unset)")}`);
+    lines.push("");
+    lines.push(
+      t.fg("dim", `enter = done · space = select light models · ctrl+h = select heavy models · esc = cancel · total ${this.models.length} models`)
+    );
+    return lines;
+  }
+
+  invalidate(): void {}
 }
 
 class SecretPrompt extends Container {
@@ -944,109 +1070,55 @@ export default function (pi: ExtensionAPI) {
     return lines.join("\n");
   };
 
-  const applySlot = (ctx: any, slot: "light" | "heavy", ref: string): void => {
-    const next: Routing = { ...readRouting(), [slot]: ref };
-    // Without both targets there is nothing to route between, so routing does not stay on.
-    if (!next.light || !next.heavy) next.enabled = false;
+  const saveRouting = (ctx: any, next: Routing): void => {
     writeRouting(next);
     ctx.ui.notify(
-      `[pi-jev-eye] ${slot === "light" ? "Light" : "Heavy"} model: ${ref || "(none)"}${
+      `[pi-jev-eye] Routing ${next.enabled ? "ON" : "OFF"} · light ${next.light || "(unset)"} · heavy ${next.heavy || "(unset)"}${
         next.enabled ? "" : " — routing stays off until both targets are set"
       }.`,
-      ref ? "info" : "warning"
+      next.enabled ? "info" : "warning"
     );
   };
 
-  /** One searchable screen, vision-watcher style: type to filter, `✓` marks the current target. */
-  const pickModel = async (ctx: any, slot: "light" | "heavy"): Promise<string | null> => {
-    const routing = readRouting();
+  /** The whole routing screen: one keybind-driven picker for both targets. */
+  const openRoutingMenu = async (ctx: any, focus: "light" | "heavy" = "light"): Promise<void> => {
     const available: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
     if (available.length === 0) {
       ctx.ui.notify("[pi-jev-eye] No authenticated models found to route to.", "error");
-      return null;
+      return;
     }
 
-    const current = slot === "light" ? routing.light : routing.heavy;
-    const items: SelectItem[] = [{ value: "", label: "(none)", description: `clear the ${slot} target` }];
-    for (const model of available) {
-      const ref = `${model.provider}/${model.id}`;
-      const alsoUsed = [routing.light === ref ? "light" : "", routing.heavy === ref ? "heavy" : ""].filter(Boolean);
-      items.push({
-        value: ref,
-        label: `${ref === current ? "✓ " : "  "}${model.id}  [${model.provider}]`,
-        description: alsoUsed.length ? `currently ${alsoUsed.join(" + ")}` : undefined,
-      });
-    }
+    const current = readRouting();
 
     if (typeof ctx.ui.custom !== "function") {
-      const picked = await ctx.ui.select(`${slot} turn model`, items.map((i) => i.value || "(none)"));
-      return picked === undefined || picked === "(none)" ? "" : picked;
+      // Headless fallback keeps the same semantics with two plain lists.
+      const refs = ["(none)", ...available.map((m: any) => `${m.provider}/${m.id}`)];
+      const light = await ctx.ui.select("Light model", refs);
+      if (light === undefined) return;
+      const heavy = await ctx.ui.select("Heavy model", refs);
+      if (heavy === undefined) return;
+      const next = { light: light === "(none)" ? "" : light, heavy: heavy === "(none)" ? "" : heavy, enabled: current.enabled };
+      saveRouting(ctx, { ...next, enabled: next.enabled && !!next.light && !!next.heavy });
+      return;
     }
 
-    return await ctx.ui.custom<string | null>((tui: any, theme: any, _kb: any, done: (value: string | null) => void) => {
-      const container = new Container();
-      container.addChild(new Text(theme.fg("accent", theme.bold(`pi-jev-eye · ${slot} turn model`)), 1, 0));
-      container.addChild(
-        new Text(theme.fg("muted", `Routing ${routing.enabled ? "ON" : "OFF"} · light ${routing.light || "(unset)"} · heavy ${routing.heavy || "(unset)"}`), 1, 0)
-      );
-
-      const list = new SelectList(items, Math.min(items.length, 12), {
-        selectedPrefix: (text: string) => theme.fg("accent", text),
-        selectedText: (text: string) => theme.fg("accent", text),
-        description: (text: string) => theme.fg("muted", text),
-        scrollInfo: (text: string) => theme.fg("dim", text),
-        noMatch: (text: string) => theme.fg("warning", text),
-      });
-      list.onSelect = (item: SelectItem) => done(item.value ?? null);
-      list.onCancel = () => done(null);
-      container.addChild(list);
-      container.addChild(
-        new Text(theme.fg("dim", `↑↓ move · type to filter · enter assign · esc cancel · ${available.length} models available`), 1, 0)
-      );
-
+    const result = await ctx.ui.custom<Routing | null>((tui: any, theme: any, _kb: any, done: (value: Routing | null) => void) => {
+      const picker = new RoutingPicker(theme, available, current, focus, done);
       return {
-        render: (width: number) => container.render(width),
-        invalidate: () => container.invalidate(),
+        render: (width: number) => picker.render(width),
+        invalidate: () => picker.invalidate(),
         handleInput: (data: string) => {
-          list.handleInput(data);
+          picker.handleInput(data);
           tui.requestRender();
         },
       };
     });
-  };
 
-  const openRoutingMenu = async (ctx: any, slot?: "light" | "heavy"): Promise<void> => {
-    if (slot) {
-      const picked = await pickModel(ctx, slot);
-      if (picked !== null) applySlot(ctx, slot, picked);
+    if (!result) {
+      ctx.ui.notify("[pi-jev-eye] Routing unchanged.", "info");
       return;
     }
-
-    const routing = readRouting();
-    const options = [
-      `Light model  ·  ${routing.light || "(unset)"}`,
-      `Heavy model  ·  ${routing.heavy || "(unset)"}`,
-      `Routing ${routing.enabled ? "ON" : "OFF"}  ·  turn it ${routing.enabled ? "off" : "on"}`,
-    ];
-
-    const choice = await ctx.ui.select("pi-jev-eye · routing models", options);
-    if (!choice) return;
-
-    if (choice === options[0] || choice === options[1]) {
-      const target = choice === options[0] ? "light" : "heavy";
-      const picked = await pickModel(ctx, target);
-      if (picked !== null) applySlot(ctx, target, picked);
-      return;
-    }
-
-    const enabled = !routing.enabled;
-    writeRouting({ ...routing, enabled });
-    ctx.ui.notify(
-      enabled
-        ? `[pi-jev-eye] Routing ON · light ${routing.light || "(unset)"} · heavy ${routing.heavy || "(unset)"}${!routing.light || !routing.heavy ? " — set both targets first" : ""}.`
-        : "[pi-jev-eye] Routing OFF; turns keep the current model.",
-      enabled && (!routing.light || !routing.heavy) ? "warning" : enabled ? "info" : "warning"
-    );
+    saveRouting(ctx, result);
   };
 
   // Interactive menu: account · Enable all folder / Enable this folder / Disabled · status

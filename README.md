@@ -97,18 +97,38 @@ Word-boundary guard: `pi-jev-eye` and `jev-eye` never trigger it. The request is
 
 ### Model routing (optional)
 
-Menu entry **Routing** picks two targets from pi's own authenticated model list (`ctx.modelRegistry.getAvailable()`). The picker is one searchable screen (`SelectList`, the same shape `/vision-watcher` uses): type to filter, `✓` marks the target already stored, each row shows its `[provider]`, and the footer lists the keys:
+`/jev-eye routing` opens one keybind-driven screen over pi's own authenticated models (`ctx.modelRegistry.getAvailable()`):
 
 ```
-pi-jev-eye · light turn model
-Routing OFF · light (unset) · heavy (unset)
-  ✓ deepseek-v4.1-flash:free  [tokenharbor]   currently light
-    gemini-3.8-flash  [antigravity]
-    (none)                                     clear the light target
-↑↓ move · type to filter · enter assign · esc cancel · 3 models available
+Jev Eye - Routing
+Route light chores to a cheap model and real review to the strongest one. ctrl+r turns routing on/off.
+
+> type to filter
+
+  gemini-3.1-flash-lite [antigravity]
+  gemini-3-flash [antigravity] ✓ (light)
+→ gemini-2.5-flash [antigravity] ✓ (heavy)
+  claude-sonnet-4-6 [antigravity]
+  (3/9)
+
+Routing: ON
+Light model: Gemini 3 Flash (Antigravity)
+Heavy model: Gemini 2.5 Flash (Antigravity)
+
+enter = done · space = select light models · ctrl+h = select heavy models · esc = cancel · total 9 models
 ```
 
-Without a TUI it falls back to a plain `ui.select` list of `provider/modelId` refs.
+| Key | Action |
+| :--- | :--- |
+| type | filter rows (matches id, provider, name; backspace widens) |
+| `↑` `↓` | move the cursor |
+| `space` | assign the highlighted model as the **light** target (again to clear it) |
+| `ctrl+h` | assign it as the **heavy** target (again to clear; `ctrl+q` is an alias) |
+| `ctrl+r` | routing on/off without leaving the screen |
+| `enter` | save; without both targets the value is saved with routing off |
+| `esc` | discard everything from this screen |
+
+A row can carry both slots (`✓ (light, heavy)`). Status labels use the model name with the provider capitalized, falling back to the id when a model has no name. Without a TUI it degrades to two plain `ui.select` lists of `provider/modelId` refs with the same outcome.
 
 
 - **Light model** — chores. A prompt that is plainly a repository chore (`commit`, `push`, `pull`, `status`, `log`, `diff`, `stash`, `branch`, …) is routed here with **zero Jev requests**.
