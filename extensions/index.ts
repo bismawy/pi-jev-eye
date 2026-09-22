@@ -678,6 +678,7 @@ const EYE_SUBCOMMANDS = [
   { value: "status", label: "status", description: "Show supervisor status, account, usage, and interception stats" },
   { value: "login", label: "login", description: "Store a Jev key: TypeSafe account or OpenRouter account" },
   { value: "logout", label: "logout", description: "Delete the key stored by /jev-eye login" },
+  { value: "routing", label: "routing", description: "Open the routing menu, or set it directly: routing on | routing off" },
 ];
 
 export default function (pi: ExtensionAPI) {
@@ -760,9 +761,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Reset turn tracking
-  pi.on("turn_start", () => {
+  pi.on("turn_start", (_event: any, ctx: any) => {
     state.modifiedFilesThisTurn = false;
     state.verifiedThisTurn = false;
+    // Cheap repaint per turn: another extension or a UI reset must not be able to leave the footer blank.
+    updateStatusBar(ctx);
   });
 
   // --- Layer 1 & 3: tool_call interception ---
@@ -927,7 +930,7 @@ export default function (pi: ExtensionAPI) {
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
     if (typeof contextTokens === "number") lines.push(`Model context: ${n(contextTokens)} tokens`);
-    lines.push("", "Menu: `/jev-eye` · direct: status|login|logout");
+    lines.push("", "Menu: `/jev-eye` · direct: status|login|logout|routing [on|off]");
     return lines.join("\n");
   };
 
@@ -939,7 +942,7 @@ export default function (pi: ExtensionAPI) {
       `Heavy model  ·  ${routing.heavy || "(not set)"}`,
     ];
 
-    const choice = await ctx.ui.select("pi-jev-eye · model routing", options);
+    const choice = await ctx.ui.select("pi-jev-eye · routing models", options);
     if (!choice) return;
 
     if (choice === options[0]) {
@@ -1039,9 +1042,31 @@ export default function (pi: ExtensionAPI) {
 
   const eyeHandler = async (args: string, ctx: any) => {
     const sub = args.trim().toLowerCase();
+    // Any invocation also repaints the footer, so its shortcut hint can never go missing.
+    updateStatusBar(ctx);
 
     if (sub === "") {
       await openMenu(ctx);
+      return;
+    }
+
+    if (sub === "routing" || sub.startsWith("routing ")) {
+      const value = sub.slice("routing".length).trim();
+      if (value === "on" || value === "off") {
+        const routing = readRouting();
+        writeRouting({ ...routing, enabled: value === "on" });
+        const missing = value === "on" && (!routing.light || !routing.heavy);
+        ctx.ui.notify(
+          value === "on"
+            ? `[pi-jev-eye] Routing ON · light ${routing.light || "(unset)"} · heavy ${routing.heavy || "(unset)"}${
+                missing ? " — set both targets with `/jev-eye routing`" : ""
+              }.`
+            : "[pi-jev-eye] Routing OFF; turns keep the current model.",
+          missing ? "warning" : value === "on" ? "info" : "warning"
+        );
+        return;
+      }
+      await openRoutingMenu(ctx);
       return;
     }
 
@@ -1057,7 +1082,7 @@ export default function (pi: ExtensionAPI) {
 
     if (sub !== "status") {
       ctx.ui.notify(
-        `[pi-jev-eye] Unknown argument "${sub}". Use: status | login | logout, or no argument for the menu (on/off moved to ${TOGGLE_KEY}).`,
+        `[pi-jev-eye] Unknown argument "${sub}". Use: status | login | logout | routing [on|off], or no argument for the menu (supervisor on/off is ${TOGGLE_KEY}).`,
         "warning"
       );
       return;

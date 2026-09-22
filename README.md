@@ -56,11 +56,12 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 | `/jev-eye login` | Store a Jev key: **TypeSafe account** or **OpenRouter account** |
 | `/jev-eye logout` | Delete the key stored by `/jev-eye login` |
 | `/jev-eye status` | Status: supervisor, account, gate value, usage today/month, balance, interception stats |
+| `/jev-eye routing` | Routing models menu (light + heavy target); `routing on` / `routing off` sets it directly |
 | `ctrl+shift+e` | Toggle the supervisor on/off; the footer status line flips instantly |
 | `jev` in a prompt (or `@jev`, `/jev-review`) | Reviewed turn: report-format contract + `answers_request` judgment on the next write |
 | `/jev-eye` → **Routing** | Per-turn model routing: light model for chores, heavy model for review |
 
-The `on`/`off` subcommands are gone — the keybinding replaces them, and the footer carries both the state and the action: `supervisor ON · ctrl+shift+e disables supervisor`.
+The `on`/`off` subcommands are gone — the keybinding replaces them, and the footer carries both the state and the action: `supervisor ON · ctrl+shift+e disables supervisor`. The footer is repainted at session start, at every turn start, and on every `/jev-eye` invocation, so another extension clearing statuses cannot leave it blank.
 
 ### Accounts (pi-typesafe is optional)
 
