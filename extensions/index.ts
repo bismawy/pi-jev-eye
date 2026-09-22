@@ -14,6 +14,7 @@ interface EyeState {
     secretsBlocked: number;
     slopBlocked: number;
     verificationReminders: number;
+    jevRequests: number;
   };
 }
 
@@ -27,6 +28,7 @@ const state: EyeState = {
     secretsBlocked: 0,
     slopBlocked: 0,
     verificationReminders: 0,
+    jevRequests: 0,
   },
 };
 
@@ -77,35 +79,69 @@ function getTypeSafeApiKey(): string | undefined {
   }
 }
 
-async function checkSlopWithJev(codeSnippet: string, apiKey: string): Promise<number | null> {
+// --- Layer 3 budget & thresholds (Jev usage discipline) ---
+const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+const JEV_MIN_DIFF_LINES = 10; // Skip tiny diffs: the same question repeated per write is what burns the quota
+const JEV_BLOCK_THRESHOLD = 0.85; // P(yes) needed to block a write
+const JEV_MAX_REQUESTS = 20; // Hard per-session cap: one request = all dimensions, never one per question
+const JEV_MAX_STATE_CHARS = 4000; // Pruned state (signal over noise), far below the 64 KiB limit
+const JEV_TIMEOUT_MS = 5000;
+
+// Machine-checkable facts first: Jev judges, it does not verify.
+function codeFacts(code: string) {
+  return {
+    lines: code.split("\n").length,
+    placeholder_markers: (code.match(/\b(?:TODO|FIXME|XXX|not implemented|NotImplementedError)\b/gi) ?? []).length,
+    empty_bodies: (code.match(/\{\s*\}/g) ?? []).length,
+    ellipsis_only_lines: (code.match(/^\s*\.\.\.\s*$/gm) ?? []).length,
+  };
+}
+
+interface JevVerdict {
+  has_slop: number | null;
+  has_unfinished_todo: number | null;
+}
+
+// Two independent dimensions, batched into ONE request.
+async function askJev(codeSnippet: string, apiKey: string): Promise<JevVerdict | null> {
   try {
     const payload = {
       model: "jev-latest",
       state: {
-        code: codeSnippet.slice(0, 4000), // Trim state (signal over noise)
+        code: codeSnippet.slice(0, JEV_MAX_STATE_CHARS),
+        facts: codeFacts(codeSnippet),
       },
       questions: {
         has_slop: {
           type: "noul",
           instructions:
-            "Does this code contain lazy stubs, empty implementations, or unresolved TODO comments?",
+            "Does `code` contain a lazy stub, an empty body, or a placeholder standing in for real logic? `facts` are machine-counted and are not proof either way.",
+        },
+        has_unfinished_todo: {
+          type: "noul",
+          instructions:
+            "Does `code` leave work explicitly unfinished, such that callers of this code would hit a missing implementation? `facts.placeholder_markers` and `facts.ellipsis_only_lines` are machine-counted.",
         },
       },
     };
 
-    const res = await fetch("https://api.typesafe.ai/v1/systemone", {
+    state.stats.jevRequests++;
+    const res = await fetch(JEV_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
     });
 
     if (!res.ok) return null;
     const json: any = await res.json();
-    return json?.answers?.has_slop?.noul ?? null;
+    return {
+      has_slop: json?.answers?.has_slop?.noul ?? null,
+      has_unfinished_todo: json?.answers?.has_unfinished_todo?.noul ?? null,
+    };
   } catch {
     return null; // Fail-open when Jev times out or is offline
   }
@@ -188,18 +224,36 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      // Layer 3: check Jev slop when the new code exceeds 10 lines
-      if (state.semanticGate && contentToCheck.split("\n").length >= 10) {
+      // Layer 3: Jev semantic gate, only for diffs above the line threshold
+      if (state.semanticGate && contentToCheck.split("\n").length >= JEV_MIN_DIFF_LINES) {
         const apiKey = getTypeSafeApiKey();
         if (apiKey) {
-          const slopProb = await checkSlopWithJev(contentToCheck, apiKey);
-          if (slopProb !== null && slopProb >= 0.85) {
-            state.stats.slopBlocked++;
-            ctx.ui.notify(`[pi-jev-eye] JEV BLOCK: slop/stub code detected (p=${slopProb.toFixed(2)})`, "warning");
-            return {
-              block: true,
-              reason: `[pi-jev-eye] Write blocked by Jev (p=${slopProb.toFixed(2)}): slop/stub/unfinished TODO code detected. Implement the real thing before saving.`,
-            };
+          if (state.stats.jevRequests >= JEV_MAX_REQUESTS) {
+            if (state.stats.jevRequests === JEV_MAX_REQUESTS) {
+              state.stats.jevRequests++; // notify once, then stay silent
+              ctx.ui.notify(
+                `[pi-jev-eye] Jev request budget for this session is used up (${JEV_MAX_REQUESTS}); semantic gate now fails open.`,
+                "warning"
+              );
+            }
+          } else {
+            const verdict = await askJev(contentToCheck, apiKey);
+            const hits = verdict
+              ? ([
+                  ["has_slop", verdict.has_slop],
+                  ["has_unfinished_todo", verdict.has_unfinished_todo],
+                ] as const).filter(([, p]) => p !== null && p >= JEV_BLOCK_THRESHOLD)
+              : [];
+
+            if (hits.length > 0) {
+              state.stats.slopBlocked++;
+              const detail = hits.map(([dim, p]) => `${dim} p=${(p as number).toFixed(2)}`).join(", ");
+              ctx.ui.notify(`[pi-jev-eye] JEV BLOCK: ${detail}`, "warning");
+              return {
+                block: true,
+                reason: `[pi-jev-eye] Write blocked by a Jev model judgment (${detail}, threshold p≥${JEV_BLOCK_THRESHOLD}). This is a calibrated estimate, not proof. Finish the implementation before saving.`,
+              };
+            }
           }
         }
       }
@@ -258,6 +312,7 @@ export default function (pi: ExtensionAPI) {
         `Layer 1 (Regex filter): ENABLED`,
         `Layer 2 (Done-check tracker): ENABLED`,
         `Layer 3 (Jev semantic gate): ${apiKey ? "READY (key validated)" : "OFFLINE (no TypeSafe key found)"}`,
+        `  threshold p≥${JEV_BLOCK_THRESHOLD}, min ${JEV_MIN_DIFF_LINES} lines, budget ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} requests used`,
         "",
         "--- Interception stats ---",
         `Dangerous commands blocked:`.padEnd(31) + state.stats.destructiveBlocked,
