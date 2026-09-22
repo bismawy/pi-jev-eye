@@ -1,18 +1,36 @@
 {
-  "name": "pi-jev-eye",
+  "name": "@bismawy/pi-jev-eye",
   "version": "0.1.0",
+  "type": "module",
   "description": "Ultra-lean, high-precision supervisor for Pi coding agent using local regex filters, verification state tracking, and TypeSafe Jev semantic gate.",
   "keywords": [
     "pi-package",
+    "pi-extension",
+    "pi",
+    "pi-coding-agent",
     "typesafe",
     "jev",
     "guardrail",
     "supervisor",
     "security"
   ],
-  "author": "Bisma",
+  "author": "bismawy",
   "license": "MIT",
-  "main": "extensions/index.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "extensions",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bismawy/pi-jev-eye.git"
+  },
+  "homepage": "https://github.com/bismawy/pi-jev-eye#readme",
+  "bugs": {
+    "url": "https://github.com/bismawy/pi-jev-eye/issues"
+  },
   "pi": {
     "extensions": [
       "./extensions/index.ts"
