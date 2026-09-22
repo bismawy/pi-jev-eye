@@ -317,7 +317,10 @@ class RoutingPicker {
     const t = this.theme;
     const rows = this.filtered();
     const lines: string[] = [];
+    // Framing follows the same rule as the vision-watcher panel: a full-width border in the theme accent.
+    const border = () => t.fg("accent", "─".repeat(Math.max(1, width)));
 
+    lines.push(border());
     lines.push(t.fg("accent", t.bold("Jev Eye - Routing")));
     lines.push(
       t.fg("muted", "Route light chores to a cheap model and real review to the strongest one. ctrl+r turns routing on/off.")
@@ -341,19 +344,27 @@ class RoutingPicker {
     }
 
     const position = rows.length === 0 ? 0 : Math.min(this.index + 1, rows.length);
-    lines.push(t.fg("dim", `  (${position}/${rows.length})`));
+    lines.push(t.fg("muted", `  (${position}/${rows.length})`));
     lines.push("");
     lines.push(
-      `${t.fg("muted", "Routing: ")}${this.pending.enabled ? t.fg("success", "ON") : t.fg("dim", "off")}${
+      `${t.fg("dim", "Routing: ")}${this.pending.enabled ? t.fg("success", "ON") : t.fg("muted", "off")}${
         this.pending.enabled && (!this.pending.light || !this.pending.heavy) ? t.fg("warning", "  (needs both targets)") : ""
       }`
     );
-    lines.push(`${t.fg("muted", "Light model: ")}${this.pending.light ? this.labelFor(this.pending.light) : t.fg("dim", "(unset)")}`);
-    lines.push(`${t.fg("muted", "Heavy model: ")}${this.pending.heavy ? this.labelFor(this.pending.heavy) : t.fg("dim", "(unset)")}`);
+    lines.push(
+      `${t.fg("dim", "Light model: ")}${this.pending.light ? t.fg("text", this.labelFor(this.pending.light)) : t.fg("muted", "(unset)")}`
+    );
+    lines.push(
+      `${t.fg("dim", "Heavy model: ")}${this.pending.heavy ? t.fg("text", this.labelFor(this.pending.heavy)) : t.fg("muted", "(unset)")}`
+    );
     lines.push("");
     lines.push(
-      t.fg("dim", `enter = done · space = select light models · ctrl+h = select heavy models · esc = cancel · total ${this.models.length} models`)
+      t.fg(
+        "dim",
+        `enter = done · space = select light models · ctrl+r = routing on/off · ctrl+h = select heavy models · esc = cancel · total ${this.models.length} models`
+      )
     );
+    lines.push(border());
     return lines;
   }
 
