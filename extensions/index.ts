@@ -851,18 +851,7 @@ const TOGGLE_KEY = "ctrl+shift+e";
 // Second keybinding for the gate value (all folders / this folder / disabled), announced in the same footer.
 const GATE_KEY = "ctrl+shift+g";
 
-function updateStatusBar(ctx: any): void {
-  try {
-    const gate = consentShort(readConsent());
-    ctx?.ui?.setStatus?.(
-      "pi-jev-eye",
-      `${state.enabled ? "supervisor ON" : "supervisor OFF"} · gate ${gate} · ${TOGGLE_KEY} on/off · ${GATE_KEY} gate`
-    );
-  } catch {
-    // A session without a status bar must not break the toggle.
-  }
-}
-
+// The live state and both keybindings live in the `/jev-eye status` panel footer, not in Pi's status bar.
 const EYE_SUBCOMMANDS = [
   { value: "status", label: "status", description: "Show supervisor status, account, usage, and interception stats" },
   { value: "login", label: "login", description: "Store a Jev key: TypeSafe account or OpenRouter account" },
@@ -871,7 +860,6 @@ const EYE_SUBCOMMANDS = [
 ];
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_start", (_event, ctx) => updateStatusBar(ctx));
 
   // Route the turn before the agent loop starts: chores to the cheap model, real work to the best one.
   pi.on("before_agent_start", async (event: any, ctx: any) => {
@@ -949,7 +937,6 @@ export default function (pi: ExtensionAPI) {
     description: "Toggle the pi-jev-eye supervisor",
     handler: async (ctx: any) => {
       state.enabled = !state.enabled;
-      updateStatusBar(ctx);
       ctx.ui.notify(
         `[pi-jev-eye] Supervisor ${state.enabled ? "enabled" : "disabled"}. Toggle again with ${TOGGLE_KEY}.`,
         state.enabled ? "info" : "warning"
@@ -962,7 +949,6 @@ export default function (pi: ExtensionAPI) {
     handler: async (ctx: any) => {
       const next = nextConsent(readConsent(), ctx.cwd);
       writeConsent(next);
-      updateStatusBar(ctx);
       ctx.ui.notify(
         `[pi-jev-eye] Jev gate: ${consentLabel(next)} · this folder ${consentAllows(ctx.cwd, next) ? "ON" : "off"}. ${GATE_KEY} cycles again.`,
         next.mode === "disabled" ? "warning" : "info"
@@ -971,11 +957,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Reset turn tracking
-  pi.on("turn_start", (_event: any, ctx: any) => {
+  pi.on("turn_start", () => {
     state.modifiedFilesThisTurn = false;
     state.verifiedThisTurn = false;
-    // Cheap repaint per turn: another extension or a UI reset must not be able to leave the footer blank.
-    updateStatusBar(ctx);
   });
 
   // --- Layer 1 & 3: tool_call interception ---
@@ -1266,8 +1250,6 @@ export default function (pi: ExtensionAPI) {
 
   const eyeHandler = async (args: string, ctx: any) => {
     const sub = args.trim().toLowerCase();
-    // Any invocation also repaints the footer, so its shortcut hint can never go missing.
-    updateStatusBar(ctx);
 
     if (sub === "") {
       await openMenu(ctx);
