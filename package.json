@@ -1,0 +1,24 @@
+{
+  "name": "pi-jev-eye",
+  "version": "0.1.0",
+  "description": "Ultra-lean, high-precision supervisor for Pi coding agent using local regex filters, verification state tracking, and TypeSafe Jev semantic gate.",
+  "keywords": [
+    "pi-package",
+    "typesafe",
+    "jev",
+    "guardrail",
+    "supervisor",
+    "security"
+  ],
+  "author": "Bisma",
+  "license": "MIT",
+  "main": "extensions/index.ts",
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
