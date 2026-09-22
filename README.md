@@ -56,7 +56,8 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 | `/jev-eye login` | Store a Jev key: **TypeSafe account** or **OpenRouter account** |
 | `/jev-eye logout` | Delete the key stored by `/jev-eye login` |
 | `/jev-eye status` | Status: supervisor, account, gate value, usage today/month, balance, interception stats |
-| `/jev-eye routing` | Routing models menu (light + heavy target); `routing on` / `routing off` sets it directly |
+| `/jev-eye routing` | Routing menu: **Light model** · **Heavy model** · **Routing on/off** |
+| `/jev-eye routing light` / `routing heavy` | Open the model picker for that target directly; `routing on` / `routing off` sets it without the picker |
 | `ctrl+shift+e` | Toggle the supervisor on/off; the footer status line flips instantly |
 | `jev` in a prompt (or `@jev`, `/jev-review`) | Reviewed turn: report-format contract + `answers_request` judgment on the next write |
 | `/jev-eye` → **Routing** | Per-turn model routing: light model for chores, heavy model for review |
@@ -96,7 +97,19 @@ Word-boundary guard: `pi-jev-eye` and `jev-eye` never trigger it. The request is
 
 ### Model routing (optional)
 
-Menu entry **Routing** picks two targets from pi's own authenticated model list (`ctx.modelRegistry.getAvailable()`):
+Menu entry **Routing** picks two targets from pi's own authenticated model list (`ctx.modelRegistry.getAvailable()`). The picker is one searchable screen (`SelectList`, the same shape `/vision-watcher` uses): type to filter, `✓` marks the target already stored, each row shows its `[provider]`, and the footer lists the keys:
+
+```
+pi-jev-eye · light turn model
+Routing OFF · light (unset) · heavy (unset)
+  ✓ deepseek-v4.1-flash:free  [tokenharbor]   currently light
+    gemini-3.8-flash  [antigravity]
+    (none)                                     clear the light target
+↑↓ move · type to filter · enter assign · esc cancel · 3 models available
+```
+
+Without a TUI it falls back to a plain `ui.select` list of `provider/modelId` refs.
+
 
 - **Light model** — chores. A prompt that is plainly a repository chore (`commit`, `push`, `pull`, `status`, `log`, `diff`, `stash`, `branch`, …) is routed here with **zero Jev requests**.
 - **Heavy model** — turns that need real review. One Jev `choice` judgment on the prompt decides `light` / `heavy` / `unclear`; `unclear` keeps whatever model is active.
