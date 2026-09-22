@@ -252,11 +252,18 @@ class RoutingPicker {
     return `${model.provider}/${model.id}`;
   }
 
-  /** Human label used in the status block: model name, provider capitalized. */
+  /** Human label used in the status block: model name, provider capitalized (avoiding duplicate vendor names). */
   private label(model: any): string {
-    const name = typeof model?.name === "string" && model.name.trim() ? model.name : model.id;
-    const provider = String(model.provider ?? "");
-    return `${name} (${provider ? provider[0].toUpperCase() + provider.slice(1) : "unknown"})`;
+    const name = typeof model?.name === "string" && model.name.trim() ? model.name.trim() : model.id;
+    const providerRaw = String(model.provider ?? "").trim();
+    const provider = providerRaw ? providerRaw[0].toUpperCase() + providerRaw.slice(1) : "unknown";
+
+    // Model display names often already carry the vendor/provider in parentheses or suffix
+    // e.g. "Claude Sonnet 4.6 (Antigravity)" -> avoid "Claude Sonnet 4.6 (Antigravity) (Antigravity)"
+    if (name.toLowerCase().includes(provider.toLowerCase())) {
+      return name;
+    }
+    return `${name} (${provider})`;
   }
 
   private labelFor(ref: string): string {
