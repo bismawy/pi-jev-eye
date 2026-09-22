@@ -100,6 +100,7 @@ Word-boundary guard: `pi-jev-eye` and `jev-eye` never trigger it. The request is
 `/jev-eye routing` opens one keybind-driven screen over pi's own authenticated models (`ctx.modelRegistry.getAvailable()`):
 
 ```
+────────────────────────────────────────────────────────────────────
 Jev Eye - Routing
 Route light chores to a cheap model and real review to the strongest one. ctrl+r turns routing on/off.
 
@@ -115,8 +116,11 @@ Routing: ON
 Light model: Gemini 3 Flash (Antigravity)
 Heavy model: Gemini 2.5 Flash (Antigravity)
 
-enter = done · space = select light models · ctrl+h = select heavy models · esc = cancel · total 9 models
+enter = done · space = select light models · ctrl+r = routing on/off · ctrl+h = select heavy models · esc = cancel · total 9 models
+────────────────────────────────────────────────────────────────────
 ```
+
+Framing and colours come from the Pi theme, the same tokens the `/vision-watcher` panel uses: both borders and the title in `accent`, the provider tag in `muted`, the cursor row in `accent`, other rows in `text`, `✓ (light)` / `✓ (heavy)` in `success`, the counter and status labels in `muted`/`dim`, and the keybar in `dim` — no hardcoded colours, so every theme (including light ones) renders correctly.
 
 | Key | Action |
 | :--- | :--- |
