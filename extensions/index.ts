@@ -357,7 +357,14 @@ function recordOwnUsage(patch: Partial<DayTotals>): void {
   try {
     const file = readJsonFile(OWN_USAGE_PATH) ?? { version: 1, days: {} };
     const days = file.days && typeof file.days === "object" ? file.days : {};
-    const current: DayTotals = { ...EMPTY_TOTALS, ...days[today()] };
+    // A day started by an older version has tokens but no cost; seed the estimate once, or today's total
+    // would keep counting tokens while the cost stays behind.
+    const stored = days[today()];
+    const seeded =
+      stored && stored.cost === undefined
+        ? { ...stored, cost: ((Number(stored.inputTokens) || 0) * USD_PER_MTOK) / 1e6 }
+        : stored;
+    const current: DayTotals = { ...EMPTY_TOTALS, ...seeded };
     for (const [key, value] of Object.entries(patch)) {
       (current as any)[key] = (Number((current as any)[key]) || 0) + (Number(value) || 0);
     }
