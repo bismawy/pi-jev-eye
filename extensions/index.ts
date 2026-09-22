@@ -442,6 +442,8 @@ async function balanceText(auth: JevAuth | undefined): Promise<string> {
 const REVIEW_TRIGGER = /(?<![-\w])@?jev(?![\w-])|\/jev-review\b/i;
 
 // The injected contract is what makes the reply arrive in the report shape this workflow already uses.
+// Deliberately self-contained: the package never reads a skill file, so it works for anyone who installs it.
+// The same wording rules also live in ~/.pi/agent/skills/arnative-jev (section 6) — change that one too.
 const REVIEW_CONTRACT = [
   "[pi-jev-eye] The operator asked for a Jev review of this turn.",
   "Answer in the report format already used in this workflow, in the operator's language:",
