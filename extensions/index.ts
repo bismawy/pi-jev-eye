@@ -720,6 +720,20 @@ function consentLabel(consent: Consent): string {
   return `Enable this folder (${consent.folders.length})`;
 }
 
+/** One-word form for the footer, where the long label would not fit. */
+function consentShort(consent: Consent): string {
+  if (consent.mode === "all") return "all folders";
+  if (consent.mode === "disabled") return "disabled";
+  return `${consent.folders.length} folder(s)`;
+}
+
+/** all folders → this folder (cwd added) → disabled → all folders. */
+function nextConsent(consent: Consent, cwd: string): Consent {
+  if (consent.mode === "all") return { mode: "folder", folders: [...new Set([...consent.folders, cwd])] };
+  if (consent.mode === "folder") return { mode: "disabled", folders: consent.folders };
+  return { mode: "all", folders: consent.folders };
+}
+
 // --- Layer 3 budget & thresholds (Jev usage discipline) ---
 const JEV_MIN_DIFF_LINES = 10; // Skip tiny diffs: the same question repeated per write is what burns the quota
 const JEV_BLOCK_THRESHOLD = 0.85; // P(yes) needed to block a write
@@ -816,14 +830,15 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
 
 // on/off moved out of the command: one keybinding toggles it and the footer shows the state live.
 const TOGGLE_KEY = "ctrl+shift+e";
+// Second keybinding for the gate value (all folders / this folder / disabled), announced in the same footer.
+const GATE_KEY = "ctrl+shift+g";
 
 function updateStatusBar(ctx: any): void {
   try {
+    const gate = consentShort(readConsent());
     ctx?.ui?.setStatus?.(
       "pi-jev-eye",
-      state.enabled
-        ? `supervisor ON · ${TOGGLE_KEY} disables supervisor`
-        : `supervisor OFF · ${TOGGLE_KEY} enables supervisor`
+      `${state.enabled ? "supervisor ON" : "supervisor OFF"} · gate ${gate} · ${TOGGLE_KEY} on/off · ${GATE_KEY} gate`
     );
   } catch {
     // A session without a status bar must not break the toggle.
@@ -912,6 +927,19 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(
         `[pi-jev-eye] Supervisor ${state.enabled ? "enabled" : "disabled"}. Toggle again with ${TOGGLE_KEY}.`,
         state.enabled ? "info" : "warning"
+      );
+    },
+  });
+
+  pi.registerShortcut(GATE_KEY, {
+    description: "Cycle the Jev gate value: all folders / this folder / disabled",
+    handler: async (ctx: any) => {
+      const next = nextConsent(readConsent(), ctx.cwd);
+      writeConsent(next);
+      updateStatusBar(ctx);
+      ctx.ui.notify(
+        `[pi-jev-eye] Jev gate: ${consentLabel(next)} · this folder ${consentAllows(ctx.cwd, next) ? "ON" : "off"}. ${GATE_KEY} cycles again.`,
+        next.mode === "disabled" ? "warning" : "info"
       );
     },
   });
@@ -1071,9 +1099,12 @@ export default function (pi: ExtensionAPI) {
       "=== pi-jev-eye status ===",
       `Supervisor: ${state.enabled ? "ENABLED" : "DISABLED"}`,
       `Routing: ${routing.enabled ? "ON" : "off"} · light ${routing.light || "unset"} · heavy ${routing.heavy || "unset"} · ${state.stats.lightTurns} light / ${state.stats.heavyTurns} heavy turns · ${Math.min(state.stats.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} classified`,
-      `Jev gate: ${auth ? `READY · ${auth.provider.label} · key from ${auth.source}` : "OFFLINE (no key) — run `/jev-eye login`"}`,
-      `  value: ${consentLabel(consent)}${consent.mode === "folder" ? ` → ${consent.folders.join(", ") || "(none)"}` : ""} · this folder ${consentAllows(ctx.cwd, consent) ? "ON" : "off"}`,
-      `  p≥${JEV_BLOCK_THRESHOLD} · min ${JEV_MIN_DIFF_LINES} lines · ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} requests this session`,
+      // Default (all folders) stays a single short line; the folder breakdown only appears when the gate is restricted.
+      `Jev gate: ${auth ? `READY · ${auth.provider.label} · key from ${auth.source}` : "OFFLINE (no key) — run `/jev-eye login`"} · ${consentShort(consent)}`,
+      consent.mode === "folder"
+        ? `  scope: ${consent.folders.join(", ")} · this folder ${consentAllows(ctx.cwd, consent) ? "ON" : "off"}`
+        : `  this folder ${consentAllows(ctx.cwd, consent) ? "ON" : "off"}`,
+      `  p≥${JEV_BLOCK_THRESHOLD} · min ${JEV_MIN_DIFF_LINES} lines · ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} requests this session · ${TOGGLE_KEY} on/off · ${GATE_KEY} gate`,
       "",
       "--- Jev usage ---",
       window("Today", today(), readOwnUsage()),

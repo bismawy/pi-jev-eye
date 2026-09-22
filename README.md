@@ -59,6 +59,7 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 | `/jev-eye routing` | Routing menu: **Light model** · **Heavy model** · **Routing on/off** |
 | `/jev-eye routing light` / `routing heavy` | Open the model picker for that target directly; `routing on` / `routing off` sets it without the picker |
 | `ctrl+shift+e` | Toggle the supervisor on/off; the footer status line flips instantly |
+| `ctrl+shift+g` | Cycle the Jev gate value: **Enable all folder** → **Enable this folder** (current folder added) → **Disabled** |
 | `jev` in a prompt (or `@jev`, `/jev-review`) | Reviewed turn: report-format contract + `answers_request` judgment on the next write |
 | `/jev-eye` → **Routing** | Per-turn model routing: light model for chores, heavy model for review |
 
@@ -77,13 +78,19 @@ Key lookup order: `TYPESAFE_API_KEY` → `OPENROUTER_API_KEY` → the `/jev-eye 
 
 ### Jev gate value: three values only
 
-Chosen from the menu and stored in `~/.pi/agent/pi-jev-eye/consent.json`:
+Cycled with `ctrl+shift+g` or chosen from the menu, and stored in `~/.pi/agent/pi-jev-eye/consent.json`. The footer always shows the current value next to both keybindings:
+
+```
+supervisor ON · gate all folders · ctrl+shift+e on/off · ctrl+shift+g gate
+```
+
+In `/jev-eye status` the default stays one short line — `Jev gate: READY · … · all folders` — and only a restricted value adds the folder breakdown (`scope: … · this folder ON|off`).
 
 - **Enable all folder** — the Jev gate runs in every folder. This is the same meaning the optional `pi-typesafe` package gives its own `PI_TYPESAFE_ENABLED=1` consent flag (that env var belongs to that package, not to TypeSafe's API).
 - **Enable this folder** — only the listed folders (and their subfolders) run the Jev gate; picking it again toggles the current folder, and removing the last one falls back to Disabled.
 - **Disabled** — Jev gate off, layers 1–2 (local, zero cost) stay on.
 
-Values written by older versions (`folders`, `off`) migrate on read. The `typesafe_evaluate` tool belongs to the optional `pi-typesafe` package and has its own per-session gate; pi-jev-eye never touches it or reads its files for display (`/jev-eye status` shows only pi-jev-eye's own state).
+Values written by older versions (`folders`, `off`) migrate on read, and cycling keeps folders added earlier while adding the folder you are in. The `typesafe_evaluate` tool belongs to the optional `pi-typesafe` package and has its own per-session gate; pi-jev-eye never touches it or reads its files for display (`/jev-eye status` shows only pi-jev-eye's own state).
 
 ### Reviewed turns: write `jev` in a prompt
 
