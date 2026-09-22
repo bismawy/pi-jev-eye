@@ -57,6 +57,7 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 | `/jev-eye logout` | Delete the key stored by `/jev-eye login` |
 | `/jev-eye status` | Status: supervisor, account, gate value, usage today/month, balance, interception stats |
 | `ctrl+shift+e` | Toggle the supervisor on/off; the footer status line flips instantly |
+| `jev` in a prompt (or `@jev`, `/jev-review`) | Reviewed turn: report-format contract + `answers_request` judgment on the next write |
 | `/jev-eye` → **Routing** | Per-turn model routing: light model for chores, heavy model for review |
 
 The `on`/`off` subcommands are gone — the keybinding replaces them, and the footer carries both the state and the action: `supervisor ON · ctrl+shift+e disables supervisor`.
@@ -81,6 +82,16 @@ Chosen from the menu and stored in `~/.pi/agent/pi-jev-eye/consent.json`:
 - **Disabled** — Jev gate off, layers 1–2 (local, zero cost) stay on.
 
 Values written by older versions (`folders`, `off`) migrate on read. The `typesafe_evaluate` tool belongs to the optional `pi-typesafe` package and has its own per-session gate; pi-jev-eye never touches it or reads its files for display (`/jev-eye status` shows only pi-jev-eye's own state).
+
+### Reviewed turns: write `jev` in a prompt
+
+Write `jev` (or `@jev`, or `/jev-review`) anywhere in a prompt and that turn becomes a reviewed turn. `pi-jev-eye` then:
+
+- injects a visible message telling the model to answer in the report format this workflow already uses — machine-verified facts first, then a Jev table with `value (probability)` and level labels, then the threshold line, in the operator's language;
+- remembers the prompt and adds a **third judgment** to the next write gate request: `answers_request` (does this code actually answer what was asked?). It rides along in the same API call, so a review costs no extra request, and a low confidence that the request was answered blocks the write;
+- counts the turn in `/jev-eye status` (`… · N reviewed turns`).
+
+Word-boundary guard: `pi-jev-eye` and `jev-eye` never trigger it. The request is one-shot — it covers the turn it was written in, and the prompt text (up to 600 chars) leaves the machine only for that turn.
 
 ### Model routing (optional)
 

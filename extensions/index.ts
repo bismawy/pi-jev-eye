@@ -19,7 +19,9 @@ interface EyeState {
     jevRoutingCalls: number;
     lightTurns: number;
     heavyTurns: number;
+    reviewTurns: number;
   };
+  pendingReview?: string;
 }
 
 const state: EyeState = {
@@ -36,6 +38,7 @@ const state: EyeState = {
     jevRoutingCalls: 0,
     lightTurns: 0,
     heavyTurns: 0,
+    reviewTurns: 0,
   },
 };
 
@@ -434,6 +437,21 @@ async function balanceText(auth: JevAuth | undefined): Promise<string> {
   return text;
 }
 
+// --- Explicit review request: the operator writes `jev` (or @jev, /jev-review) to open one reviewed turn ---
+// Word-boundary guard: `pi-jev-eye` and `jev-eye` must NOT trigger this.
+const REVIEW_TRIGGER = /(?<![-\w])@?jev(?![\w-])|\/jev-review\b/i;
+
+// The injected contract is what makes the reply arrive in the report shape this workflow already uses.
+const REVIEW_CONTRACT = [
+  "[pi-jev-eye] The operator asked for a Jev review of this turn.",
+  "Answer in the report format already used in this workflow, in the operator's language:",
+  "1. machine-verified facts first (tool output, counts, exit codes) with no judgment mixed in,",
+  "2. then a Jev table: one row per item per dimension, every number as `value (probability)` plus its level label,",
+  "3. then the threshold line that turns those numbers into a decision,",
+  "4. keep judgment and fact in separate blocks; never present a Jev probability as proof.",
+  "The write gate will also judge this turn's code against the request text.",
+].join("\n");
+
 // --- Per-turn model routing: cheap model for chores, best model for real review ---
 interface Routing {
   enabled: boolean;
@@ -562,29 +580,42 @@ function codeFacts(code: string) {
 interface JevVerdict {
   has_slop: number | null;
   has_unfinished_todo: number | null;
+  answers_request: number | null;
 }
 
 // Two independent dimensions, batched into ONE request.
 async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | null> {
   try {
+    const request = state.pendingReview;
+    const questions: Record<string, any> = {
+      has_slop: {
+        type: "noul",
+        instructions:
+          "Does `code` contain a lazy stub, an empty body, or a placeholder standing in for real logic? `facts` are machine-counted and are not proof either way.",
+      },
+      has_unfinished_todo: {
+        type: "noul",
+        instructions:
+          "Does `code` leave work explicitly unfinished, such that callers of this code would hit a missing implementation? `facts.placeholder_markers` and `facts.ellipsis_only_lines` are machine-counted.",
+      },
+    };
+    // A reviewed turn adds one dimension to the SAME request, so the review costs no extra call.
+    if (request) {
+      questions.answers_request = {
+        type: "noul",
+        instructions:
+          "Does `code` plausibly fulfil `request.text` rather than only touching adjacent code? Treat `code` as the whole change under review.",
+      };
+    }
+
     const payload = {
       model: auth.provider.model,
       state: {
         code: codeSnippet.slice(0, JEV_MAX_STATE_CHARS),
         facts: codeFacts(codeSnippet),
+        ...(request ? { request: { text: request } } : {}),
       },
-      questions: {
-        has_slop: {
-          type: "noul",
-          instructions:
-            "Does `code` contain a lazy stub, an empty body, or a placeholder standing in for real logic? `facts` are machine-counted and are not proof either way.",
-        },
-        has_unfinished_todo: {
-          type: "noul",
-          instructions:
-            "Does `code` leave work explicitly unfinished, such that callers of this code would hit a missing implementation? `facts.placeholder_markers` and `facts.ellipsis_only_lines` are machine-counted.",
-        },
-      },
+      questions,
     };
 
     state.stats.jevRequests++;
@@ -615,6 +646,7 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
     return {
       has_slop: json?.answers?.has_slop?.noul ?? null,
       has_unfinished_todo: json?.answers?.has_unfinished_todo?.noul ?? null,
+      answers_request: json?.answers?.answers_request?.noul ?? null,
     };
   } catch {
     recordOwnUsage({ requests: 1, failed: 1 });
@@ -650,10 +682,20 @@ export default function (pi: ExtensionAPI) {
   // Route the turn before the agent loop starts: chores to the cheap model, real work to the best one.
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     if (!state.enabled) return;
-    const routing = readRouting();
-    if (!routing.enabled || !routing.light || !routing.heavy) return;
-
     const prompt = String(event?.prompt ?? "");
+
+    // Reviewed turn: remember the request for the gate and inject the report contract for the model.
+    const reviewed = REVIEW_TRIGGER.test(prompt);
+    if (reviewed) {
+      state.pendingReview = prompt.slice(0, 600);
+      state.stats.reviewTurns++;
+      ctx.ui.notify("[pi-jev-eye] Reviewed turn: report contract injected; the write gate will compare code against this request.", "info");
+    }
+
+    const routing = readRouting();
+    if (!routing.enabled || !routing.light || !routing.heavy) {
+      return reviewed ? { message: { customType: "pi-jev-eye-review", content: REVIEW_CONTRACT, display: true } } : undefined;
+    }
     let target: "light" | "heavy" | "unclear" | null = isLightByPattern(prompt) ? "light" : null;
 
     if (!target) {
@@ -672,7 +714,8 @@ export default function (pi: ExtensionAPI) {
       target = await classifyWeight(prompt, auth);
     }
 
-    if (target !== "light" && target !== "heavy") return;
+    const contract = reviewed ? { message: { customType: "pi-jev-eye-review", content: REVIEW_CONTRACT, display: true } } : undefined;
+    if (target !== "light" && target !== "heavy") return contract;
 
     const ref = target === "light" ? routing.light : routing.heavy;
     const available: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
@@ -696,6 +739,8 @@ export default function (pi: ExtensionAPI) {
       else state.stats.heavyTurns++;
       ctx.ui.notify(`[pi-jev-eye] ${target === "light" ? "Light" : "Heavy"} turn → ${ref}`, "info");
     }
+
+    return contract;
   });
 
   pi.registerShortcut(TOGGLE_KEY, {
@@ -802,6 +847,8 @@ export default function (pi: ExtensionAPI) {
               ? ([
                   ["has_slop", verdict.has_slop],
                   ["has_unfinished_todo", verdict.has_unfinished_todo],
+                  // Not answering the request is only a block signal, never a pass signal.
+                  ["answers_request", verdict.answers_request === null ? null : 1 - verdict.answers_request],
                 ] as const).filter(([, p]) => p !== null && p >= JEV_BLOCK_THRESHOLD)
               : [];
 
@@ -824,6 +871,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_end", async (event, ctx) => {
     if (!state.enabled) return;
     if (event.message.role !== "assistant") return;
+    // One-shot: a review request covers the turn it was written in, never later writes.
+    state.pendingReview = undefined;
 
     // Check whether the agent claims completion without verifying
     if (state.modifiedFilesThisTurn && !state.verifiedThisTurn) {
@@ -869,7 +918,7 @@ export default function (pi: ExtensionAPI) {
       `Balance ${await balanceText(auth)}`,
       "",
       "--- Interception (this session) ---",
-      `blocked ${state.stats.destructiveBlocked} dangerous · ${state.stats.secretsBlocked} secrets · ${state.stats.slopBlocked} Jev slop · ${state.stats.verificationReminders} unverified-done warnings`,
+      `blocked ${state.stats.destructiveBlocked} dangerous · ${state.stats.secretsBlocked} secrets · ${state.stats.slopBlocked} Jev slop · ${state.stats.verificationReminders} unverified-done warnings · ${state.stats.reviewTurns} reviewed turns`,
     ];
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
