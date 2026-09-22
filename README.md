@@ -52,12 +52,13 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 
 | Command | Action |
 | :--- | :--- |
-| `/jev-eye` | Interactive menu: **Log in/out** · **Enable all** · **Enable per folder** · **Disable** · Show status (`/eye` is a working alias) |
+| `/jev-eye` | Interactive menu: **Log in/out** · **Enable all folder** · **Enable this folder** · **Disabled** · Show status (`/eye` is a working alias) |
 | `/jev-eye login` | Store a Jev key: **TypeSafe account** or **OpenRouter account** |
 | `/jev-eye logout` | Delete the key stored by `/jev-eye login` |
-| `/jev-eye status` | Status: layers, account, consent, Jev budget, today's usage, interception stats |
-| `/jev-eye on` | Enable the supervisor |
-| `/jev-eye off` | Temporarily disable the supervisor |
+| `/jev-eye status` | Status: supervisor, account, gate value, usage today/month, balance, interception stats |
+| `ctrl+shift+e` | Toggle the supervisor on/off; the footer status line flips instantly |
+
+The `on`/`off` subcommands are gone — the keybinding replaces them, and the footer carries the state (`eye ON · ctrl+shift+e to pause`).
 
 ### Accounts (pi-typesafe is optional)
 
@@ -70,15 +71,15 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 
 Key lookup order: `TYPESAFE_API_KEY` → `OPENROUTER_API_KEY` → the `/jev-eye login` store → a key already stored by **pi-typesafe** (`~/.pi/agent/pi-typesafe/auth.json`), so an existing install keeps working without logging in again. An exported env var wins on purpose (headless runs, CI), and login says so when it is set. `/jev-eye logout` deletes only pi-jev-eye's own key and tells you what still applies.
 
-### TypeSafe consent (`Enable all` / `Enable per folder` / `Disable`)
+### Jev gate value: three values only
 
 Chosen from the menu and stored in `~/.pi/agent/pi-jev-eye/consent.json`:
 
-- **Enable all** — the Jev gate runs in every folder.
-- **Enable per folder** — only listed folders (and their subfolders) run the Jev gate; pick the folder option again to add or remove the current one.
-- **Disable** — Jev gate off, layers 1–2 (local, zero cost) stay on.
+- **Enable all folder** — the Jev gate runs in every folder (also what `PI_TYPESAFE_ENABLED=1` means for the built-in tool).
+- **Enable this folder** — only the listed folders (and their subfolders) run the Jev gate; picking it again toggles the current folder, and removing the last one falls back to Disabled.
+- **Disabled** — Jev gate off, layers 1–2 (local, zero cost) stay on.
 
-The built-in `typesafe_evaluate` tool owns its own per-session gate (`/typesafe enable`, or `PI_TYPESAFE_ENABLED=1`); `/jev-eye status` reports its state but never changes it.
+Values written by older versions (`folders`, `off`) migrate on read. The built-in `typesafe_evaluate` tool has its own per-session gate; `/jev-eye status` reports it in the same vocabulary (`Enable all folder` / `Disabled`) but never changes it.
 
 ### Usage stats
 

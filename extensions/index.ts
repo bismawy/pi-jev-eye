@@ -421,8 +421,8 @@ async function balanceText(auth: JevAuth | undefined): Promise<string> {
   return text;
 }
 
-// --- TypeSafe consent store: Enable all / Enable per folder / Disable ---
-type ConsentMode = "all" | "folders" | "off";
+// --- Jev gate consent, three values only: Enable all folder / Enable this folder / Disabled ---
+type ConsentMode = "all" | "folder" | "disabled";
 interface Consent {
   mode: ConsentMode;
   folders: string[];
@@ -430,11 +430,13 @@ interface Consent {
 
 const CONSENT_PATH = join(EYE_DIR, "consent.json");
 
-// Default keeps the previous behaviour (gate on wherever a key exists) until the operator chooses otherwise.
+// Values written by older versions ("folders"/"off") migrate on read; anything unknown falls back to "all",
+// which is also what PI_TYPESAFE_ENABLED=1 means for the built-in tool.
 function readConsent(): Consent {
   try {
     const parsed = JSON.parse(readFileSync(CONSENT_PATH, "utf8"));
-    const mode: ConsentMode = parsed?.mode === "off" || parsed?.mode === "folders" ? parsed.mode : "all";
+    const raw = String(parsed?.mode ?? "all");
+    const mode: ConsentMode = raw === "disabled" || raw === "off" ? "disabled" : raw === "folder" || raw === "folders" ? "folder" : "all";
     const folders = Array.isArray(parsed?.folders) ? parsed.folders.filter((f: unknown) => typeof f === "string") : [];
     return { mode, folders };
   } catch {
@@ -443,20 +445,20 @@ function readConsent(): Consent {
 }
 
 function writeConsent(consent: Consent): void {
-  mkdirSync(CONSENT_DIR, { recursive: true });
+  mkdirSync(EYE_DIR, { recursive: true });
   writeFileSync(CONSENT_PATH, `${JSON.stringify({ version: 1, ...consent }, null, 2)}\n`, { mode: 0o600 });
 }
 
 function consentAllows(cwd: string, consent: Consent): boolean {
   if (consent.mode === "all") return true;
-  if (consent.mode === "off") return false;
+  if (consent.mode === "disabled") return false;
   return consent.folders.some((f) => cwd === f || cwd.startsWith(f.endsWith(sep) ? f : f + sep));
 }
 
 function consentLabel(consent: Consent): string {
-  if (consent.mode === "all") return "all folders";
-  if (consent.mode === "off") return "disabled";
-  return `${consent.folders.length} folder(s)`;
+  if (consent.mode === "all") return "Enable all folder";
+  if (consent.mode === "disabled") return "Disabled";
+  return `Enable this folder (${consent.folders.length})`;
 }
 
 // --- Layer 3 budget & thresholds (Jev usage discipline) ---
@@ -539,15 +541,41 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
   }
 }
 
+// on/off moved out of the command: one keybinding toggles it and the footer shows the state live.
+const TOGGLE_KEY = "ctrl+shift+e";
+
+function updateStatusBar(ctx: any): void {
+  try {
+    ctx?.ui?.setStatus?.(
+      "pi-jev-eye",
+      state.enabled ? `eye ON · ${TOGGLE_KEY} to pause` : `eye OFF · ${TOGGLE_KEY} to resume`
+    );
+  } catch {
+    // A session without a status bar must not break the toggle.
+  }
+}
+
 const EYE_SUBCOMMANDS = [
   { value: "status", label: "status", description: "Show supervisor status, account, usage, and interception stats" },
   { value: "login", label: "login", description: "Store a Jev key: TypeSafe account or OpenRouter account" },
   { value: "logout", label: "logout", description: "Delete the key stored by /jev-eye login" },
-  { value: "on", label: "on", description: "Enable the supervisor" },
-  { value: "off", label: "off", description: "Disable the supervisor" },
 ];
 
 export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => updateStatusBar(ctx));
+
+  pi.registerShortcut(TOGGLE_KEY, {
+    description: "Toggle the pi-jev-eye supervisor",
+    handler: async (ctx: any) => {
+      state.enabled = !state.enabled;
+      updateStatusBar(ctx);
+      ctx.ui.notify(
+        `[pi-jev-eye] Supervisor ${state.enabled ? "enabled" : "disabled"}. Toggle again with ${TOGGLE_KEY}.`,
+        state.enabled ? "info" : "warning"
+      );
+    },
+  });
+
   // Reset turn tracking
   pi.on("turn_start", () => {
     state.modifiedFilesThisTurn = false;
@@ -694,9 +722,11 @@ export default function (pi: ExtensionAPI) {
 
     const lines = [
       "=== pi-jev-eye status ===",
-      `Supervisor: ${state.enabled ? "ENABLED" : "DISABLED"} (layers 1-2 local: 0 token, 0 request)`,
+      `Supervisor: ${state.enabled ? "ENABLED" : "DISABLED"} · toggle ${TOGGLE_KEY} (live in the footer)`,
       `Jev gate: ${auth ? `READY · ${auth.provider.label} · key from ${auth.source}` : "OFFLINE (no key) — run `/jev-eye login`"}`,
-      `  p≥${JEV_BLOCK_THRESHOLD} · min ${JEV_MIN_DIFF_LINES} lines · consent ${consentLabel(consent)} · this folder ${consentAllows(ctx.cwd, consent) ? "ALLOWED" : "not allowed"} · ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} requests this session`,
+      `  value: ${consentLabel(consent)}${consent.mode === "folder" ? ` → ${consent.folders.join(", ") || "(none)"}` : ""} · this folder ${consentAllows(ctx.cwd, consent) ? "ON" : "off"}`,
+      `  p≥${JEV_BLOCK_THRESHOLD} · min ${JEV_MIN_DIFF_LINES} lines · ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} requests this session`,
+      `  built-in tool: PI_TYPESAFE_ENABLED=${process.env.PI_TYPESAFE_ENABLED ?? "unset"} → ${process.env.PI_TYPESAFE_ENABLED === "1" ? "Enable all folder" : "Disabled (needs /typesafe enable each session)"}`,
       "",
       "--- Jev usage ---",
       window("Today", today(), readOwnUsage()),
@@ -709,32 +739,26 @@ export default function (pi: ExtensionAPI) {
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
     if (typeof contextTokens === "number") lines.push(`Model context: ${n(contextTokens)} tokens`);
-    lines.push("", "Menu: `/jev-eye` · direct: status|login|logout|on|off");
+    lines.push("", `Menu: \`/jev-eye\` · direct: status|login|logout · toggle ${TOGGLE_KEY}`);
     return lines.join("\n");
   };
 
-  // Interactive menu: Enable all / Enable per folder / Disable / Status
+  // Interactive menu: account · Enable all folder / Enable this folder / Disabled · status
   const openMenu = async (ctx: any): Promise<void> => {
     const consent = readConsent();
-    const thisFolderOn = consentAllows(ctx.cwd, consent);
-    const folderOption =
-      consent.mode === "all"
-        ? `Scope to this folder only ·  ${ctx.cwd}`
-        : thisFolderOn
-        ? `Remove this folder    ·  ${ctx.cwd}`
-        : `Add this folder       ·  ${ctx.cwd}`;
+    const thisFolderOn = consent.mode === "folder" && consentAllows(ctx.cwd, consent);
     const auth = resolveJevAuth();
     const options = [
       auth
-        ? `Log out               ·  ${auth.provider.label} key from ${auth.source}`
-        : `Log in                ·  TypeSafe or OpenRouter API key`,
-      `Enable all folders    ·  gate on in every folder`,
-      folderOption,
-      `Disable TypeSafe gate ·  layers 1-2 stay on`,
+        ? `Log out              ·  ${auth.provider.label} key from ${auth.source}`
+        : `Log in               ·  TypeSafe or OpenRouter API key`,
+      `Enable all folder    ·  ${consent.mode === "all" ? "current" : "gate on in every folder"}`,
+      `Enable this folder   ·  ${thisFolderOn ? "ON" : "off"} (${ctx.cwd})`,
+      `Disabled             ·  ${consent.mode === "disabled" ? "current" : "gate off, layers 1-2 stay on"}`,
       `Show status`,
     ];
 
-    const choice = await ctx.ui.select("pi-jev-eye · gate & account", options);
+    const choice = await ctx.ui.select("pi-jev-eye · account & Jev gate", options);
     if (!choice) return;
 
     if (choice === options[0]) {
@@ -742,42 +766,30 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    if (choice === options[0]) {
+    if (choice === options[1]) {
       writeConsent({ mode: "all", folders: consent.folders });
-      ctx.ui.notify("[pi-jev-eye] TypeSafe gate: ENABLED for all folders.", "info");
+      ctx.ui.notify("[pi-jev-eye] Jev gate: Enable all folder.", "info");
       return;
     }
 
     if (choice === options[2]) {
-      let next: Consent;
-      let verb: string;
-
-      if (consent.mode === "all") {
-        next = { mode: "folders", folders: [ctx.cwd] };
-        verb = "SCOPED to";
-      } else if (thisFolderOn) {
-        const folders = consent.folders.filter((f) => f !== ctx.cwd);
-        // Removing the last folder while in per-folder mode leaves the gate off everywhere.
-        next = { mode: folders.length > 0 ? "folders" : "off", folders };
-        verb = "REMOVED";
-      } else {
-        const folders = [...new Set([...consent.folders, ctx.cwd])];
-        next = { mode: "folders", folders };
-        verb = "ADDED";
-      }
-
+      const folders = thisFolderOn
+        ? consent.folders.filter((f) => f !== ctx.cwd)
+        : [...new Set([...consent.folders, ctx.cwd])];
+      // No folder left means there is nothing to run in, so the value becomes Disabled.
+      const next: Consent = { mode: folders.length > 0 ? "folder" : "disabled", folders };
       writeConsent(next);
       ctx.ui.notify(
-        `[pi-jev-eye] TypeSafe gate: ${verb} ${ctx.cwd} — now ${consentLabel(next)}.`,
-        verb === "ADDED" ? "info" : "warning"
+        `[pi-jev-eye] Jev gate: ${ctx.cwd} is ${thisFolderOn ? "OFF" : "ON"} — value is now ${consentLabel(next)}.`,
+        thisFolderOn ? "warning" : "info"
       );
       return;
     }
 
     if (choice === options[3]) {
-      writeConsent({ mode: "off", folders: consent.folders });
+      writeConsent({ mode: "disabled", folders: consent.folders });
       ctx.ui.notify(
-        "[pi-jev-eye] TypeSafe gate: DISABLED (layers 1-2 still on). The built-in typesafe_evaluate tool owns its own gate — stop it with `/typesafe disable`.",
+        "[pi-jev-eye] Jev gate: Disabled (layers 1-2 still on). The built-in typesafe_evaluate tool has its own gate.",
         "warning"
       );
       return;
@@ -788,18 +800,6 @@ export default function (pi: ExtensionAPI) {
 
   const eyeHandler = async (args: string, ctx: any) => {
     const sub = args.trim().toLowerCase();
-
-    if (sub === "on") {
-      state.enabled = true;
-      ctx.ui.notify("[pi-jev-eye] Supervisor enabled.", "info");
-      return;
-    }
-
-    if (sub === "off") {
-      state.enabled = false;
-      ctx.ui.notify("[pi-jev-eye] Supervisor disabled.", "warning");
-      return;
-    }
 
     if (sub === "") {
       await openMenu(ctx);
@@ -818,7 +818,7 @@ export default function (pi: ExtensionAPI) {
 
     if (sub !== "status") {
       ctx.ui.notify(
-        `[pi-jev-eye] Unknown argument "${sub}". Use: status | login | logout | on | off, or no argument for the menu.`,
+        `[pi-jev-eye] Unknown argument "${sub}". Use: status | login | logout, or no argument for the menu (on/off moved to ${TOGGLE_KEY}).`,
         "warning"
       );
       return;
