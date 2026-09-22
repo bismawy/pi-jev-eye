@@ -54,7 +54,8 @@ function wipeTarget(command: string): string | null {
 
     const segments = target.split("/").filter(Boolean);
     if (segments.length <= 1) return target; // / , /* , /usr , /tmp , /home
-    if (segments.length === 2 && (SYSTEM_ROOT_DIRS.has(segments[0]) || segments[1].includes("*"))) return target; // /var/log , /home/*
+    if (SYSTEM_ROOT_DIRS.has(segments[0])) return target; // /var/log , /usr/lib/x — nothing inside a system dir is a scoped delete
+    if (segments.length === 2 && segments[1].includes("*")) return target; // /home/* , /tmp/*
   }
 
   return null;
