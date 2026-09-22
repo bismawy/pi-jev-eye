@@ -57,6 +57,7 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 | `/jev-eye logout` | Delete the key stored by `/jev-eye login` |
 | `/jev-eye status` | Status: supervisor, account, gate value, usage today/month, balance, interception stats |
 | `ctrl+shift+e` | Toggle the supervisor on/off; the footer status line flips instantly |
+| `/jev-eye` → **Routing** | Per-turn model routing: light model for chores, heavy model for review |
 
 The `on`/`off` subcommands are gone — the keybinding replaces them, and the footer carries both the state and the action: `supervisor ON · ctrl+shift+e disables supervisor`.
 
@@ -80,6 +81,17 @@ Chosen from the menu and stored in `~/.pi/agent/pi-jev-eye/consent.json`:
 - **Disabled** — Jev gate off, layers 1–2 (local, zero cost) stay on.
 
 Values written by older versions (`folders`, `off`) migrate on read. The `typesafe_evaluate` tool belongs to the optional `pi-typesafe` package and has its own per-session gate; pi-jev-eye never touches it or reads its files for display (`/jev-eye status` shows only pi-jev-eye's own state).
+
+### Model routing (optional)
+
+Menu entry **Routing** picks two targets from pi's own authenticated model list (`ctx.modelRegistry.getAvailable()`):
+
+- **Light model** — chores. A prompt that is plainly a repository chore (`commit`, `push`, `pull`, `status`, `log`, `diff`, `stash`, `branch`, …) is routed here with **zero Jev requests**.
+- **Heavy model** — turns that need real review. One Jev `choice` judgment on the prompt decides `light` / `heavy` / `unclear`; `unclear` keeps whatever model is active.
+
+Stored in `~/.pi/agent/pi-jev-eye/routing.json`; the switch happens in `before_agent_start` via `pi.setModel()`, and the already-active model is never re-set. Classification has its own 20-per-session budget, separate from the write gate's, and routing stays off until both targets are set. Layer 3 still judges the finished code with Jev.
+
+> Per-turn cheap/strong routing also ships in `@alexlikevibe/pi-jev` (`/jev` → Routing). Install that one if you want routing *and* Jev-driven compaction together; this menu exists so a single package can do gate + routing without pulling another dependency in.
 
 ### Usage stats
 
