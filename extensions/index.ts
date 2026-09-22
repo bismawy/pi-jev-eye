@@ -33,11 +33,35 @@ const state: EyeState = {
 };
 
 // --- Layer 1: Local Regex Patterns (0 ms, 0 Token) ---
-// Path must be catastrophic itself: root, home, or a parent hop — not merely an absolute path (rm -rf /tmp/x is not a wipe).
-const WIPE_TARGET = /(?:\/\*?|~\/?|\$HOME\/?|\.\.\/?)(?=[\s"';&|]|$)/;
+// A wipe is judged per path argument, not by "the command mentions / somewhere": the old all-absolute-paths rule
+// blocked `rm -rf /tmp/scratch` while a regex quirk made it block `git push --force origin feature/x` too.
+// Catastrophic = root, a whole top-level dir (/usr, /tmp, /home), a system dir near the top (/var/log),
+// home in any form (~, ~/x, $HOME/x), a parent hop, or a top-level glob (/home/*). Everything deeper is scoped.
+const SYSTEM_ROOT_DIRS = new Set(["etc", "usr", "var", "boot", "bin", "sbin", "lib", "lib64", "opt", "srv", "root", "sys", "proc", "dev"]);
+
+/** Returns the offending path argument when the command is a filesystem wipe, otherwise null. */
+function wipeTarget(command: string): string | null {
+  const match = /\brm\s+(?:-[a-zA-Z]*[rf][a-zA-Z]*\s+|--recursive\s+--force\s+)+([^;&|]*)/.exec(command);
+  if (!match) return null;
+
+  for (const raw of match[1].trim().split(/\s+/)) {
+    const target = raw.replace(/^["']|["']$/g, "");
+    if (!target) continue;
+
+    if (/^(?:~|\$\{?HOME\}?)(?:\/|$)/.test(target)) return target;
+    if (/^\.\.(?:\/\.\.)*\/?$/.test(target)) return target;
+    if (!target.startsWith("/")) continue;
+
+    const segments = target.split("/").filter(Boolean);
+    if (segments.length <= 1) return target; // / , /* , /usr , /tmp , /home
+    if (segments.length === 2 && (SYSTEM_ROOT_DIRS.has(segments[0]) || segments[1].includes("*"))) return target; // /var/log , /home/*
+  }
+
+  return null;
+}
+
 const DESTRUCTIVE_BASH_PATTERNS = [
-  new RegExp(`\\brm\\s+-[rfRF]{1,4}\\s+${WIPE_TARGET.source}`, "i"),
-  new RegExp(`\\brm\\s+--recursive\\s+--force\\s+${WIPE_TARGET.source}`, "i"),
+  /\brm\s+.*--no-preserve-root\b/i,
   /\bgit\s+push\s+.*--force.*(main|master)\b/i,
   /\bgit\s+push\s+-f\s+.*(main|master)\b/i,
   /\bgit\s+reset\s+--hard\b/i,
@@ -235,17 +259,20 @@ export default function (pi: ExtensionAPI) {
         state.verifiedThisTurn = true;
       }
 
-      // Detect destructive actions
-      for (const pattern of DESTRUCTIVE_BASH_PATTERNS) {
-        if (pattern.test(cmd)) {
-          state.stats.destructiveBlocked++;
-          ctx.ui.notify(`[pi-jev-eye] BLOCKED: dangerous command detected (${pattern})`, "error");
-          return {
-            block: true,
-            reason: `[pi-jev-eye] Command blocked for safety: "${cmd}". Destructive actions require explicit user confirmation.`,
-            terminate: true,
-          };
-        }
+      // Detect destructive actions: filesystem wipes first, then the fixed patterns
+      const wiped = wipeTarget(cmd);
+      const matched = wiped ? null : DESTRUCTIVE_BASH_PATTERNS.find((pattern) => pattern.test(cmd));
+      if (wiped || matched) {
+        state.stats.destructiveBlocked++;
+        ctx.ui.notify(
+          `[pi-jev-eye] BLOCKED: dangerous command detected (${wiped ? `wipe of ${wiped}` : matched})`,
+          "error"
+        );
+        return {
+          block: true,
+          reason: `[pi-jev-eye] Command blocked for safety: "${cmd}". Destructive actions require explicit user confirmation.`,
+          terminate: true,
+        };
       }
 
       // Detect secret leaks in the command arguments
