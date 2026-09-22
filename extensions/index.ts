@@ -16,6 +16,9 @@ interface EyeState {
     slopBlocked: number;
     verificationReminders: number;
     jevRequests: number;
+    jevRoutingCalls: number;
+    lightTurns: number;
+    heavyTurns: number;
   };
 }
 
@@ -30,6 +33,9 @@ const state: EyeState = {
     slopBlocked: 0,
     verificationReminders: 0,
     jevRequests: 0,
+    jevRoutingCalls: 0,
+    lightTurns: 0,
+    heavyTurns: 0,
   },
 };
 
@@ -428,6 +434,73 @@ async function balanceText(auth: JevAuth | undefined): Promise<string> {
   return text;
 }
 
+// --- Per-turn model routing: cheap model for chores, best model for real review ---
+interface Routing {
+  enabled: boolean;
+  light: string; // "provider/modelId" as listed by ctx.modelRegistry.getAvailable()
+  heavy: string;
+}
+
+const ROUTING_PATH = join(EYE_DIR, "routing.json");
+const JEV_MAX_ROUTING_CALLS = 20; // own session budget, so routing cannot eat the write gate's quota
+
+function readRouting(): Routing {
+  const raw = readJsonFile(ROUTING_PATH);
+  return {
+    enabled: raw?.enabled === true,
+    light: typeof raw?.light === "string" ? raw.light : "",
+    heavy: typeof raw?.heavy === "string" ? raw.heavy : "",
+  };
+}
+
+function writeRouting(routing: Routing): void {
+  mkdirSync(EYE_DIR, { recursive: true });
+  writeFileSync(ROUTING_PATH, `${JSON.stringify({ version: 1, ...routing }, null, 2)}\n`, { mode: 0o600 });
+}
+
+// Zero-request shortcut: chores need no judgment at all.
+const LIGHT_TASK_PATTERNS = [
+  /^\s*\/?(commit|push|pull|fetch|status|log|diff|show|branch|checkout|switch|stash|tag|remote|merge|rebase|add)\b/i,
+  /\b(git\s+(commit|push|pull|fetch|status|log|diff|stash|branch|tag|remote))\b/i,
+  /^\s*(tolong\s+)?(commit|push|pull|sinkron|unggah)\b/i,
+];
+
+const isLightByPattern = (prompt: string): boolean => LIGHT_TASK_PATTERNS.some((p) => p.test(prompt));
+
+/** One judgment: is this turn a heavy review or a light chore? Unclear keeps the current model. */
+async function classifyWeight(prompt: string, auth: JevAuth): Promise<"light" | "heavy" | "unclear" | null> {
+  try {
+    state.stats.jevRoutingCalls++;
+    const res = await fetch(auth.provider.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth.key}` },
+      body: JSON.stringify({
+        model: auth.provider.model,
+        state: { request: { text: prompt.slice(0, 600) } },
+        questions: {
+          weight: {
+            type: "choice",
+            instructions:
+              "Which kind of turn is `request.text`: a light repository chore, or a task that needs real review and reasoning?",
+            criteria: {
+              light: "Routine repository or housekeeping action, no design or review involved",
+              heavy: "Code, design, debugging, or analysis that needs careful review",
+              unclear: "Too short or too vague to tell",
+            },
+          },
+        },
+      }),
+      signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const json: any = await res.json();
+    const choice = json?.answers?.weight?.choice;
+    return choice === "light" || choice === "heavy" || choice === "unclear" ? choice : null;
+  } catch {
+    return null; // Fail-open: keep the current model
+  }
+}
+
 // --- Jev gate consent, three values only: Enable all folder / Enable this folder / Disabled ---
 type ConsentMode = "all" | "folder" | "disabled";
 interface Consent {
@@ -573,6 +646,57 @@ const EYE_SUBCOMMANDS = [
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => updateStatusBar(ctx));
+
+  // Route the turn before the agent loop starts: chores to the cheap model, real work to the best one.
+  pi.on("before_agent_start", async (event: any, ctx: any) => {
+    if (!state.enabled) return;
+    const routing = readRouting();
+    if (!routing.enabled || !routing.light || !routing.heavy) return;
+
+    const prompt = String(event?.prompt ?? "");
+    let target: "light" | "heavy" | "unclear" | null = isLightByPattern(prompt) ? "light" : null;
+
+    if (!target) {
+      if (state.stats.jevRoutingCalls >= JEV_MAX_ROUTING_CALLS) {
+        if (state.stats.jevRoutingCalls === JEV_MAX_ROUTING_CALLS) {
+          state.stats.jevRoutingCalls++;
+          ctx.ui.notify(
+            `[pi-jev-eye] Routing budget used up (${JEV_MAX_ROUTING_CALLS} classifications); keeping the current model.`,
+            "warning"
+          );
+        }
+        return;
+      }
+      const auth = resolveJevAuth();
+      if (!auth) return;
+      target = await classifyWeight(prompt, auth);
+    }
+
+    if (target !== "light" && target !== "heavy") return;
+
+    const ref = target === "light" ? routing.light : routing.heavy;
+    const available: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
+    const model = available.find((m) => `${m.provider}/${m.id}` === ref);
+
+    if (!model) {
+      ctx.ui.notify(`[pi-jev-eye] Routing target ${ref} is not an available model; keeping the current one.`, "warning");
+      return;
+    }
+
+    const current = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
+    if (current === ref) {
+      if (target === "light") state.stats.lightTurns++;
+      else state.stats.heavyTurns++;
+      return;
+    }
+
+    const switched = await pi.setModel(model);
+    if (switched) {
+      if (target === "light") state.stats.lightTurns++;
+      else state.stats.heavyTurns++;
+      ctx.ui.notify(`[pi-jev-eye] ${target === "light" ? "Light" : "Heavy"} turn → ${ref}`, "info");
+    }
+  });
 
   pi.registerShortcut(TOGGLE_KEY, {
     description: "Toggle the pi-jev-eye supervisor",
@@ -730,9 +854,11 @@ export default function (pi: ExtensionAPI) {
         ? `${label.padEnd(8)}${period} · ${totals.requests} requests (${totals.ok} ok / ${totals.failed} failed) · ${n(totals.inputTokens)} in / ${n(totals.outputTokens)} out · ${usd(totals.cost)}`
         : `${label.padEnd(8)}${period} · no requests`;
 
+    const routing = readRouting();
     const lines = [
       "=== pi-jev-eye status ===",
       `Supervisor: ${state.enabled ? "ENABLED" : "DISABLED"}`,
+      `Routing: ${routing.enabled ? "ON" : "off"} · light ${routing.light || "unset"} · heavy ${routing.heavy || "unset"} · ${state.stats.lightTurns} light / ${state.stats.heavyTurns} heavy turns · ${Math.min(state.stats.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} classified`,
       `Jev gate: ${auth ? `READY · ${auth.provider.label} · key from ${auth.source}` : "OFFLINE (no key) — run `/jev-eye login`"}`,
       `  value: ${consentLabel(consent)}${consent.mode === "folder" ? ` → ${consent.folders.join(", ") || "(none)"}` : ""} · this folder ${consentAllows(ctx.cwd, consent) ? "ON" : "off"}`,
       `  p≥${JEV_BLOCK_THRESHOLD} · min ${JEV_MIN_DIFF_LINES} lines · ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} requests this session`,
@@ -752,6 +878,51 @@ export default function (pi: ExtensionAPI) {
     return lines.join("\n");
   };
 
+  const openRoutingMenu = async (ctx: any): Promise<void> => {
+    const routing = readRouting();
+    const options = [
+      `Routing ${routing.enabled ? "ON" : "OFF"}  ·  turn it ${routing.enabled ? "off" : "on"}`,
+      `Light model  ·  ${routing.light || "(not set)"}`,
+      `Heavy model  ·  ${routing.heavy || "(not set)"}`,
+    ];
+
+    const choice = await ctx.ui.select("pi-jev-eye · model routing", options);
+    if (!choice) return;
+
+    if (choice === options[0]) {
+      const enabled = !routing.enabled;
+      writeRouting({ ...routing, enabled });
+      ctx.ui.notify(
+        enabled
+          ? `[pi-jev-eye] Routing ON · light ${routing.light || "(unset)"} · heavy ${routing.heavy || "(unset)"}.`
+          : "[pi-jev-eye] Routing OFF; turns keep the current model.",
+        enabled && (!routing.light || !routing.heavy) ? "warning" : "info"
+      );
+      return;
+    }
+
+    const slot = choice === options[1] ? "light" : "heavy";
+    const models: string[] = (ctx?.modelRegistry?.getAvailable?.() ?? []).map((m: any) => `${m.provider}/${m.id}`);
+    if (models.length === 0) {
+      ctx.ui.notify("[pi-jev-eye] No authenticated models found to route to.", "error");
+      return;
+    }
+
+    const picked = await ctx.ui.select(`${slot} turn model`, ["(none)", ...models]);
+    if (!picked) return;
+
+    const next: Routing = { ...routing, [slot]: picked === "(none)" ? "" : picked };
+    // Without both targets there is nothing to route between, so routing does not stay on.
+    if (!next.light || !next.heavy) next.enabled = false;
+    writeRouting(next);
+    ctx.ui.notify(
+      `[pi-jev-eye] ${slot === "light" ? "Light" : "Heavy"} model: ${next[slot] || "(none)"}${
+        next.enabled ? "" : " — routing stays off until both targets are set"
+      }.`,
+      next[slot] ? "info" : "warning"
+    );
+  };
+
   // Interactive menu: account · Enable all folder / Enable this folder / Disabled · status
   const openMenu = async (ctx: any): Promise<void> => {
     const consent = readConsent();
@@ -764,6 +935,7 @@ export default function (pi: ExtensionAPI) {
       `Enable all folder    ·  ${consent.mode === "all" ? "current" : "gate on in every folder"}`,
       `Enable this folder   ·  ${thisFolderOn ? "ON" : "off"} (${ctx.cwd})`,
       `Disabled             ·  ${consent.mode === "disabled" ? "current" : "gate off, layers 1-2 stay on"}`,
+      `Routing              ·  ${readRouting().enabled ? `ON · ${readRouting().light || "unset"} → ${readRouting().heavy || "unset"}` : "off"}`,
       `Show status`,
     ];
 
@@ -801,6 +973,11 @@ export default function (pi: ExtensionAPI) {
         "[pi-jev-eye] Jev gate: Disabled (layers 1-2 still on). The built-in typesafe_evaluate tool has its own gate.",
         "warning"
       );
+      return;
+    }
+
+    if (choice === options[4]) {
+      await openRoutingMenu(ctx);
       return;
     }
 
