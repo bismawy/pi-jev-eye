@@ -63,7 +63,11 @@ pi -e /run/media/bisma/DATA/Pi/pi-jev-eye/extensions/index.ts
 | `jev` in a prompt (or `@jev`, `/jev-review`) | Reviewed turn: report-format contract + `answers_request` judgment on the next write |
 | `/jev-eye` → **Routing** | Per-turn model routing: light model for chores, heavy model for review |
 
-The `on`/`off` subcommands are gone — the keybinding replaces them, and the Pi status bar carries the state and both keys: `supervisor ON · gate all folders · ctrl+shift+e on/off · ctrl+shift+g gate`. It is repainted at session start, at every turn start, and on every `/jev-eye` invocation, so another extension clearing statuses cannot leave it blank; the same line also sits at the bottom of the `/jev-eye status` panel.
+The `on`/`off` subcommands are gone — the keybinding replaces them. Nothing is written to Pi's status bar: the live state and both keys are shown as the footer line of the `/jev-eye status` panel
+
+```
+supervisor ON · ctrl+shift+e on/off · ctrl+shift+g gate · gate value: all folders
+```
 
 ### Accounts (pi-typesafe is optional)
 
@@ -78,11 +82,7 @@ Key lookup order: `TYPESAFE_API_KEY` → `OPENROUTER_API_KEY` → the `/jev-eye 
 
 ### Jev gate value: three values only
 
-Cycled with `ctrl+shift+g` or chosen from the menu, and stored in `~/.pi/agent/pi-jev-eye/consent.json`. The footer always shows the current value next to both keybindings:
-
-```
-supervisor ON · gate all folders · ctrl+shift+e on/off · ctrl+shift+g gate
-```
+Cycled with `ctrl+shift+g` or chosen from the menu, and stored in `~/.pi/agent/pi-jev-eye/consent.json`. The status footer always shows the current value next to both keybindings (`gate value: …`).
 
 In `/jev-eye status` the default stays one short line — `Jev gate: READY · … · all folders` — and only a restricted value adds the folder breakdown (`scope: … · this folder ON|off`). The panel closes with its own footer line carrying the live state and both keybindings:
 
