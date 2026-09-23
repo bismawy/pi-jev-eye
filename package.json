@@ -1,6 +1,6 @@
 {
   "name": "@bismawy/pi-jev-eye",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Ultra-lean, high-precision supervisor for Pi coding agent using local regex filters, verification state tracking, and TypeSafe Jev semantic gate.",
   "keywords": [

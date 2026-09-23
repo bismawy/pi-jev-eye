@@ -1,5 +1,5 @@
 // --- Layer 1: Local Regex Patterns (0 ms, 0 Token) ---
-// Pure rules, kept out of index.ts so they can be checked with `npm test` (node --test test/).
+// Pure rules and pure ledger math, kept out of index.ts so they can be checked with `npm test` (node --test test/).
 // A wipe is judged per path argument, not by "the command mentions / somewhere": the old all-absolute-paths rule
 // blocked `rm -rf /tmp/scratch` while a regex quirk made it block `git push --force origin feature/x` too.
 // Catastrophic = root, a whole top-level dir (/usr, /tmp, /home), a system dir near the top (/var/log),
@@ -54,6 +54,62 @@ export const SECRET_PATTERNS = [
   /\bAIza[0-9A-Za-z-_]{35}\b/,
   /-----BEGIN\s+(RSA|OPENSSH|EC|DSA)?\s*PRIVATE\s+KEY-----/,
 ];
+
+// --- Usage-ledger math (pure: no fs, no network, so `npm test` can check it) ---
+// pi-jev-eye's own ledger and the older pi-typesafe one count the same requests under different names.
+export interface DayTotals {
+  requests: number;
+  ok: number;
+  failed: number;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+}
+
+export const EMPTY_TOTALS: DayTotals = { requests: 0, ok: 0, failed: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
+export const USD_PER_MTOK = 0.042; // mirrors pi-typesafe's default input-token rate
+
+/** A missing counter reads as 0; an entry written before the cost field existed is estimated instead of shown as free. */
+export function normalizeTotals(raw: any): DayTotals {
+  const totals = { ...EMPTY_TOTALS };
+  for (const key of Object.keys(totals) as (keyof DayTotals)[]) totals[key] = Number(raw?.[key]) || 0;
+  if (raw?.cost === undefined && totals.inputTokens > 0) totals.cost = (totals.inputTokens * USD_PER_MTOK) / 1e6;
+  return totals;
+}
+
+/** pi-typesafe named the same counters differently and never stored a cost; map them onto ours. */
+export function legacyTotals(raw: any): DayTotals {
+  return normalizeTotals({
+    requests: raw?.requestsStarted,
+    ok: raw?.requestsSucceeded,
+    failed: raw?.requestsFailed,
+    inputTokens: raw?.inputTokens,
+    outputTokens: raw?.outputTokens,
+  });
+}
+
+/** Two ledgers, two sets of requests: the parts are added, never one replacing the other. */
+export function mergeTotals(a: DayTotals | undefined, b: DayTotals | undefined): DayTotals | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  const merged = { ...a };
+  for (const key of Object.keys(merged) as (keyof DayTotals)[]) merged[key] += b[key];
+  return merged;
+}
+
+/** Every entry of `days` whose date starts with `period` (a day "2026-09-20" or a month "2026-09"), summed. */
+export function sumDays(days: any, period: string, mapper: (raw: any) => DayTotals): DayTotals | undefined {
+  if (!days || typeof days !== "object") return undefined;
+  let found = false;
+  const totals = { ...EMPTY_TOTALS };
+  for (const [date, value] of Object.entries(days)) {
+    if (!date.startsWith(period)) continue;
+    found = true;
+    const day = mapper(value);
+    for (const key of Object.keys(totals) as (keyof DayTotals)[]) totals[key] += day[key];
+  }
+  return found ? totals : undefined;
+}
 
 export const VERIFICATION_COMMAND_PATTERNS = [
   /\b(npm|pnpm|bun|yarn)\s+(test|run\s+(test|typecheck|lint|build|check))\b/i,

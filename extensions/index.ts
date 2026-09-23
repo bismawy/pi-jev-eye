@@ -1,7 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, CURSOR_MARKER, Input, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { DESTRUCTIVE_BASH_PATTERNS, SECRET_PATTERNS, VERIFICATION_COMMAND_PATTERNS, wipeTarget } from "./layer1.ts";
+import {
+  DESTRUCTIVE_BASH_PATTERNS,
+  EMPTY_TOTALS,
+  SECRET_PATTERNS,
+  USD_PER_MTOK,
+  VERIFICATION_COMMAND_PATTERNS,
+  legacyTotals,
+  mergeTotals,
+  normalizeTotals,
+  sumDays,
+  wipeTarget,
+  type DayTotals,
+} from "./layer1.ts";
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
@@ -82,7 +94,7 @@ const EYE_DIR = join(homedir(), ".pi", "agent", "pi-jev-eye");
 const AUTH_PATH = join(EYE_DIR, "auth.json");
 const OWN_USAGE_PATH = join(EYE_DIR, "usage.json");
 const LEGACY_AUTH_PATH = join(homedir(), ".pi", "agent", "pi-typesafe", "auth.json");
-const USD_PER_MTOK = 0.042; // mirrors pi-typesafe's default input-token rate
+const LEGACY_USAGE_PATH = join(homedir(), ".pi", "agent", "pi-typesafe", "usage.json");
 
 const providerById = (id: string): JevProvider | undefined => JEV_PROVIDERS.find((p) => p.id === id);
 
@@ -514,43 +526,23 @@ const logoutFlow = async (ctx: any): Promise<void> => {
   }
 };
 
-// Our own usage ledger: pi-jev-eye stands alone, nothing is read from other packages for display.
-type DayTotals = { requests: number; ok: number; failed: number; inputTokens: number; outputTokens: number; cost: number };
-const EMPTY_TOTALS: DayTotals = { requests: 0, ok: 0, failed: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
-
+// Our own usage ledger, plus pi-typesafe's older one so days that predate the switch are not shown as empty.
+// The counters and the math live in ./layer1.ts (pure, covered by `npm test`).
 const today = (): string => {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 };
 
-/** A missing counter reads as 0; an entry written before the cost field existed is estimated instead of shown as free. */
-function normalizeTotals(raw: any): DayTotals {
-  const totals = { ...EMPTY_TOTALS };
-  for (const key of Object.keys(totals) as (keyof DayTotals)[]) totals[key] = Number(raw?.[key]) || 0;
-  if (raw?.cost === undefined && totals.inputTokens > 0) totals.cost = (totals.inputTokens * USD_PER_MTOK) / 1e6;
-  return totals;
+/** One period across both ledgers: today, or the current calendar month. */
+function readUsage(period: string): DayTotals | undefined {
+  return mergeTotals(
+    sumDays(readJsonFile(OWN_USAGE_PATH)?.days, period, normalizeTotals),
+    sumDays(readJsonFile(LEGACY_USAGE_PATH)?.days, period, legacyTotals)
+  );
 }
 
-function readOwnUsage(): DayTotals | undefined {
-  const raw = readJsonFile(OWN_USAGE_PATH)?.days?.[today()];
-  return raw ? normalizeTotals(raw) : undefined;
-}
-
-/** Every day in the ledger that belongs to the current calendar month. */
-function readMonthUsage(): DayTotals | undefined {
-  const days = readJsonFile(OWN_USAGE_PATH)?.days;
-  if (!days || typeof days !== "object") return undefined;
-  const prefix = today().slice(0, 7);
-  const totals = { ...EMPTY_TOTALS };
-  let found = false;
-  for (const [date, value] of Object.entries(days)) {
-    if (!date.startsWith(prefix)) continue;
-    found = true;
-    const dayTotals = normalizeTotals(value);
-    for (const key of Object.keys(totals) as (keyof DayTotals)[]) totals[key] += dayTotals[key];
-  }
-  return found ? totals : undefined;
-}
+const readOwnUsage = (): DayTotals | undefined => readUsage(today());
+const readMonthUsage = (): DayTotals | undefined => readUsage(today().slice(0, 7));
 
 function recordOwnUsage(patch: Partial<DayTotals>): void {
   try {
