@@ -73,7 +73,7 @@ Agent Action (tool_call / message_end)
 [Layer 3: Jev Semantic Gate]    ──► New code diff ≥ 10 lines? ──► [JEV SLOP EVAL] (P ≥ 0.85 blocked)
 ```
 
-1. **Layer 1 (`extensions/layer1.ts`):** Evaluates tools before execution. Blocks dangerous filesystem wipes (`rm -rf` targeting system directories, root, or home), blocks force pushes to protected branches (`main`/`master`) while allowing `--force-with-lease`, and prevents credentials from being written to files or executed in commands.
+1. **Layer 1 (`extensions/layer1.ts`):** Evaluates tools before execution. Blocks dangerous filesystem wipes (`rm -rf` targeting system directories, root, or home), blocks force pushes to protected branches (`main`/`master`) while allowing `--force-with-lease`, and prevents credentials from being written to files or executed in commands. It also holds the pure usage-ledger math (own + legacy days).
 2. **Layer 2:** Monitors tool activity within the current turn. If files were modified on disk but the agent attempts to finalize the turn without running verification commands, a reminder is injected.
 3. **Layer 3:** Intercepts write and edit operations. Changes under 10 lines pass freely. Larger changes are submitted to TypeSafe Jev as a single batch request to assess `has_slop`. If `P(has_slop) >= 0.85`, the change is rejected with actionable feedback.
 
@@ -140,7 +140,7 @@ enter=done | space=select light models | ctrl+r=routing on/off | ctrl+h=select h
 
 ## Usage & Ledger
 
-Status details in `/jev-eye status` are sourced exclusively from `~/.pi/agent/pi-jev-eye/usage.json`:
+Status details in `/jev-eye status` are sourced from `~/.pi/agent/pi-jev-eye/usage.json`, plus the older `~/.pi/agent/pi-typesafe/usage.json` for days that predate the switch (its counters are renamed and its missing cost is estimated):
 - **Daily & Monthly Telemetry:** Requests (success/fail), input/output tokens, and dollar cost calculated using actual provider usage receipts (OpenRouter) or standard TypeSafe token rates.
 - **Live Account Balance:** Real-time credit checks for OpenRouter (`/api/v1/key`, cached 5m).
 - **Session Interception Counters:** Accurate count of Layer 1 blocks, Layer 2 warnings, Layer 3 rejections, and reviewed turns.
