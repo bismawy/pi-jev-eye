@@ -1,15 +1,21 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, CURSOR_MARKER, Input, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { DESTRUCTIVE_BASH_PATTERNS, SECRET_PATTERNS, VERIFICATION_COMMAND_PATTERNS, wipeTarget } from "./layer1.ts";
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 
+interface PendingModelRevert {
+  model: any;
+  thinking?: ThinkingLevel;
+}
+
 interface EyeState {
   enabled: boolean;
-  semanticGate: boolean;
   modifiedFilesThisTurn: boolean;
   verifiedThisTurn: boolean;
+  pendingRevert?: PendingModelRevert;
   stats: {
     destructiveBlocked: number;
     secretsBlocked: number;
@@ -26,7 +32,6 @@ interface EyeState {
 
 const state: EyeState = {
   enabled: true,
-  semanticGate: true,
   modifiedFilesThisTurn: false,
   verifiedThisTurn: false,
   stats: {
@@ -42,60 +47,7 @@ const state: EyeState = {
   },
 };
 
-// --- Layer 1: Local Regex Patterns (0 ms, 0 Token) ---
-// A wipe is judged per path argument, not by "the command mentions / somewhere": the old all-absolute-paths rule
-// blocked `rm -rf /tmp/scratch` while a regex quirk made it block `git push --force origin feature/x` too.
-// Catastrophic = root, a whole top-level dir (/usr, /tmp, /home), a system dir near the top (/var/log),
-// home in any form (~, ~/x, $HOME/x), a parent hop, or a top-level glob (/home/*). Everything deeper is scoped.
-const SYSTEM_ROOT_DIRS = new Set(["etc", "usr", "var", "boot", "bin", "sbin", "lib", "lib64", "opt", "srv", "root", "sys", "proc", "dev"]);
-
-/** Returns the offending path argument when the command is a filesystem wipe, otherwise null. */
-function wipeTarget(command: string): string | null {
-  const match = /\brm\s+(?:-[a-zA-Z]*[rf][a-zA-Z]*\s+|--recursive\s+--force\s+)+([^;&|]*)/.exec(command);
-  if (!match) return null;
-
-  for (const raw of match[1].trim().split(/\s+/)) {
-    const target = raw.replace(/^["']|["']$/g, "");
-    if (!target) continue;
-
-    if (/^(?:~|\$\{?HOME\}?)(?:\/|$)/.test(target)) return target;
-    if (/^\.\.(?:\/\.\.)*\/?$/.test(target)) return target;
-    if (!target.startsWith("/")) continue;
-
-    const segments = target.split("/").filter(Boolean);
-    if (segments.length <= 1) return target; // / , /* , /usr , /tmp , /home
-    if (SYSTEM_ROOT_DIRS.has(segments[0])) return target; // /var/log , /usr/lib/x — nothing inside a system dir is a scoped delete
-    if (segments.length === 2 && segments[1].includes("*")) return target; // /home/* , /tmp/*
-  }
-
-  return null;
-}
-
-const DESTRUCTIVE_BASH_PATTERNS = [
-  /\brm\s+.*--no-preserve-root\b/i,
-  /\bgit\s+push\s+.*--force.*(main|master)\b/i,
-  /\bgit\s+push\s+-f\s+.*(main|master)\b/i,
-  /\bgit\s+reset\s+--hard\b/i,
-  /\bDROP\s+(DATABASE|TABLE)\b/i,
-  /\bmkfs(\.[a-z0-9]+)?\b/i,
-  />\s*\/dev\/sd[a-z]/i,
-];
-
-const SECRET_PATTERNS = [
-  /\bsk-[a-zA-Z0-9]{20,}\b/,
-  /\bghp_[a-zA-Z0-9]{20,}\b/,
-  /\bgho_[a-zA-Z0-9]{20,}\b/,
-  /\bAIza[0-9A-Za-z-_]{35}\b/,
-  /-----BEGIN\s+(RSA|OPENSSH|EC|DSA)?\s*PRIVATE\s+KEY-----/,
-];
-
-const VERIFICATION_COMMAND_PATTERNS = [
-  /\b(npm|pnpm|bun|yarn)\s+(test|run\s+(test|typecheck|lint|build|check))\b/i,
-  /\b(cargo\s+(test|check))\b/i,
-  /\b(pytest|mypy|ruff\s+check)\b/i,
-  /\b(go\s+(test|vet))\b/i,
-  /\bvitest\b/i,
-];
+// --- Layer 1 (local regex rules) lives in ./layer1.ts so it can be checked with `npm test`. ---
 
 // --- Layer 3: Jev accounts (pi-typesafe is optional; /jev-eye login owns its own key) ---
 interface JevProvider {
@@ -229,6 +181,29 @@ class SecretInput extends Input {
  * highlighted model as the light target, `ctrl+h` as the heavy target, `enter` saves,
  * `esc` discards. Rows carry `✓ (light)` / `✓ (heavy)` so both slots stay visible at once.
  */
+const modelRef = (model: any): string => `${model.provider}/${model.id}`;
+
+/** Human label shared by the routing screen and the status block: model name plus the capitalized
+ *  provider, without repeating a vendor the display name already carries. */
+function modelLabel(model: any): string {
+  const name = typeof model?.name === "string" && model.name.trim() ? model.name.trim() : model.id;
+  const providerRaw = String(model.provider ?? "").trim();
+  const provider = providerRaw ? providerRaw[0].toUpperCase() + providerRaw.slice(1) : "unknown";
+
+  // Model display names often already carry the vendor/provider in parentheses or suffix
+  // e.g. "Claude Sonnet 4.6 (Antigravity)" -> avoid "Claude Sonnet 4.6 (Antigravity) (Antigravity)"
+  if (name.toLowerCase().includes(provider.toLowerCase())) {
+    return name;
+  }
+  return `${name} (${provider})`;
+}
+
+/** Raw `provider/modelId` ref → human label; the ref itself when the registry does not list it. */
+const modelLabelFor = (models: any[], ref: string): string => {
+  const model = models.find((m) => modelRef(m) === ref);
+  return model ? modelLabel(model) : ref;
+};
+
 class RoutingPicker {
   private pending: Routing;
   private query = "";
@@ -244,31 +219,8 @@ class RoutingPicker {
     this.pending = { ...initial };
     this.done = done;
     const preferred = focus === "light" ? initial.light : initial.heavy;
-    const at = models.findIndex((m) => this.ref(m) === preferred);
+    const at = models.findIndex((m) => modelRef(m) === preferred);
     this.index = at >= 0 ? at : 0;
-  }
-
-  private ref(model: any): string {
-    return `${model.provider}/${model.id}`;
-  }
-
-  /** Human label used in the status block: model name, provider capitalized (avoiding duplicate vendor names). */
-  private label(model: any): string {
-    const name = typeof model?.name === "string" && model.name.trim() ? model.name.trim() : model.id;
-    const providerRaw = String(model.provider ?? "").trim();
-    const provider = providerRaw ? providerRaw[0].toUpperCase() + providerRaw.slice(1) : "unknown";
-
-    // Model display names often already carry the vendor/provider in parentheses or suffix
-    // e.g. "Claude Sonnet 4.6 (Antigravity)" -> avoid "Claude Sonnet 4.6 (Antigravity) (Antigravity)"
-    if (name.toLowerCase().includes(provider.toLowerCase())) {
-      return name;
-    }
-    return `${name} (${provider})`;
-  }
-
-  private labelFor(ref: string): string {
-    const model = this.models.find((m) => this.ref(m) === ref);
-    return model ? this.label(model) : ref;
   }
 
   private filtered(): any[] {
@@ -289,7 +241,7 @@ class RoutingPicker {
   private assign(slot: "light" | "heavy"): void {
     const row = this.filtered()[this.index];
     if (!row) return;
-    const ref = this.ref(row);
+    const ref = modelRef(row);
     this.pending = { ...this.pending, [slot]: this.pending[slot] === ref ? "" : ref };
   }
 
@@ -339,7 +291,7 @@ class RoutingPicker {
     const border = () => t.fg("accent", "─".repeat(Math.max(1, width)));
 
     lines.push(border());
-    lines.push(t.fg("accent", t.bold("Jev Eye - Routing")));
+    lines.push(t.fg("accent", t.bold("Jev Eye · Routing")));
     lines.push(
       t.fg("muted", "Route light chores to a cheap model and real review to the strongest one. ctrl+r turns routing on/off.")
     );
@@ -352,7 +304,7 @@ class RoutingPicker {
     if (slice.length === 0) lines.push(t.fg("warning", "  no model matches this filter"));
 
     for (const model of slice) {
-      const ref = this.ref(model);
+      const ref = modelRef(model);
       const cursor = rows[this.index] === model;
       const slots = [this.pending.light === ref ? "light" : "", this.pending.heavy === ref ? "heavy" : ""].filter(Boolean);
       const mark = slots.length ? t.fg("success", ` ✓ (${slots.join(", ")})`) : "";
@@ -372,20 +324,91 @@ class RoutingPicker {
       }`
     );
     lines.push(
-      `${t.fg("dim", "Light model: ")}${this.pending.light ? t.fg("text", this.labelFor(this.pending.light)) : t.fg("muted", "(unset)")} ${t.fg("muted", `[thinking: ${this.pending.lightThinking ?? "low"}]`)}`
+      `${t.fg("dim", "Light model: ")}${this.pending.light ? t.fg("text", modelLabelFor(this.models, this.pending.light)) : t.fg("muted", "(unset)")} ${t.fg("muted", `[thinking: ${this.pending.lightThinking ?? "low"}]`)}`
     );
     lines.push(
-      `${t.fg("dim", "Heavy model: ")}${this.pending.heavy ? t.fg("text", this.labelFor(this.pending.heavy)) : t.fg("muted", "(unset)")} ${t.fg("muted", `[thinking: ${this.pending.heavyThinking ?? "high"}]`)}`
+      `${t.fg("dim", "Heavy model: ")}${this.pending.heavy ? t.fg("text", modelLabelFor(this.models, this.pending.heavy)) : t.fg("muted", "(unset)")} ${t.fg("muted", `[thinking: ${this.pending.heavyThinking ?? "high"}]`)}`
     );
     lines.push("");
-    lines.push(
-      t.fg(
-        "dim",
-        `enter=done | space=select light models | ctrl+r=routing on/off | ctrl+h=select heavy models | ctrl+t=light thinking | ctrl+shift+t=heavy thinking | esc=cancel | total ${this.models.length} models`
-      )
-    );
+    const count = `${this.models.length} models`;
+    const legend = [
+      "[Enter] Done",
+      "[Space] Light",
+      "[Ctrl+h] Heavy",
+      "[Ctrl+r] Routing",
+      "[Ctrl+t] Light Think",
+      "[Ctrl+Shift+t] Heavy Think",
+      "[Esc] Cancel",
+    ].join("  ");
+    lines.push(`${t.fg("accent", count)}${t.fg("dim", ` · ${legend}`)}`);
     lines.push(border());
     return lines;
+  }
+
+  invalidate(): void {}
+}
+
+/** `/jev-eye status` panel: the same framing as the routing picker and the vision-watcher screen, with
+ *  both advertised keybindings live so the footer never promises a key that does nothing here. */
+class StatusPanel {
+  private lines: string[];
+  private readonly theme: any;
+  private readonly actions: {
+    rebuild: () => string[];
+    toggleSupervisor: () => void;
+    cycleGate: () => void;
+  };
+  private readonly done: (value?: void) => void;
+
+  constructor(
+    theme: any,
+    lines: string[],
+    actions: { rebuild: () => string[]; toggleSupervisor: () => void; cycleGate: () => void },
+    done: (value?: void) => void
+  ) {
+    this.theme = theme;
+    this.lines = lines;
+    this.actions = actions;
+    this.done = done;
+  }
+
+  /** A toggle changes state, so the body is rebuilt in place; the caller re-renders after input. */
+  private apply(mutate: () => void): void {
+    mutate();
+    this.lines = this.actions.rebuild();
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape) || matchesKey(data, "ctrl+c")) {
+      this.done();
+      return;
+    }
+    if (matchesKey(data, TOGGLE_KEY)) {
+      this.apply(this.actions.toggleSupervisor);
+      return;
+    }
+    if (matchesKey(data, GATE_KEY)) {
+      this.apply(this.actions.cycleGate);
+    }
+  }
+
+  render(width: number): string[] {
+    const t = this.theme;
+    // Framing follows the same rule as the routing picker: a full-width border in the theme accent.
+    const border = () => t.fg("accent", "─".repeat(Math.max(1, width)));
+    const lines = [
+      border(),
+      // Same nesting Pi's own headers use (fg outside bold) — tmux capture-pane did not show the
+      // colour, the raw render bytes do.
+      t.fg("accent", t.bold(STATUS_TITLE)),
+      t.fg("muted", STATUS_DESC),
+      "",
+      ...this.lines,
+      "",
+      t.fg("dim", statusFooter(state.enabled)),
+      border(),
+    ];
+    return lines.map((line) => truncateToWidth(line, width, ""));
   }
 
   invalidate(): void {}
@@ -619,7 +642,9 @@ const REVIEW_CONTRACT = [
   '   ID `Peluang jawaban "ya" (0-1) · tinggi = sinyal kuat`, EN `Chance the answer is "yes" (0-1) · higher = stronger`, ZH `回答"是"的概率 (0-1) · 越高越强`;',
   "   the yes/no word follows the operator's language (ya/tidak, yes/no, 是/否), one row per item per dimension, each cell `value (probability)` plus its level label,",
   "3. then the threshold line that turns those numbers into a decision,",
-  "4. no preamble or closing prose; one facts block plus one judgment block; if nothing needs judgment, say so in one line and stop.",
+  "4. then one short conclusion naming what still needs fixing, in priority order, reusing the item IDs from the facts block — no new analysis, no re-listing,",
+  "5. then exactly one confirmation question asking which item(s) to work on next (`lanjut` / `yes` keeps the current plan) — a question, never a paragraph,",
+  "6. no preamble; if nothing needs judgment, say so in one line and still end with that one confirmation question.",
   "The write gate will also judge this turn's code against the request text.",
 ].join("\n");
 
@@ -738,13 +763,6 @@ function consentLabel(consent: Consent): string {
   return `Enable this folder (${consent.folders.length})`;
 }
 
-/** One-word form for the footer, where the long label would not fit. */
-function consentShort(consent: Consent): string {
-  if (consent.mode === "all") return "all folders";
-  if (consent.mode === "disabled") return "disabled";
-  return `${consent.folders.length} folder(s)`;
-}
-
 /** all folders → this folder (cwd added) → disabled → all folders. */
 function nextConsent(consent: Consent, cwd: string): Consent {
   if (consent.mode === "all") return { mode: "folder", folders: [...new Set([...consent.folders, cwd])] };
@@ -851,6 +869,18 @@ const TOGGLE_KEY = "ctrl+shift+e";
 // Second keybinding for the gate value (all folders / this folder / disabled), announced in the same footer.
 const GATE_KEY = "ctrl+shift+g";
 
+// Panel chrome for `/jev-eye status`: title, one-line description, and the footer the panel renders.
+const STATUS_TITLE = "Jev Eye · Status";
+const STATUS_DESC = "Supervisor, Jev gate, model routing, interception and usage for this Pi session.";
+// Keycap hint, not a code constant: `ctrl+shift+e` → `Ctrl+Shift+e`.
+const keycap = (key: string) =>
+  key
+    .split("+")
+    .map((part) => (part.length > 1 ? part[0].toUpperCase() + part.slice(1) : part))
+    .join("+");
+const statusFooter = (enabled: boolean) =>
+  `[Enter] Done  [Esc] Cancel  [${keycap(TOGGLE_KEY)}] Supervisor (${enabled ? "ON" : "OFF"})  [${keycap(GATE_KEY)}] Grant folder`;
+
 // The live state and both keybindings live in the `/jev-eye status` panel footer, not in Pi's status bar.
 const EYE_SUBCOMMANDS = [
   { value: "status", label: "status", description: "Show supervisor status, account, usage, and interception stats" },
@@ -867,9 +897,11 @@ export default function (pi: ExtensionAPI) {
     const prompt = String(event?.prompt ?? "");
 
     // Reviewed turn: remember the request for the gate and inject the report contract for the model.
+    // Set here and cleared by the next prompt — never in message_end: that fires before this turn's tool
+    // calls run, so clearing it there wiped the request before the write gate could ever read it.
     const reviewed = REVIEW_TRIGGER.test(prompt);
+    state.pendingReview = reviewed ? prompt.slice(0, 600) : undefined;
     if (reviewed) {
-      state.pendingReview = prompt.slice(0, 600);
       state.stats.reviewTurns++;
       ctx.ui.notify("[pi-jev-eye] Reviewed turn: report contract injected; the write gate will compare code against this request.", "info");
     }
@@ -917,20 +949,63 @@ export default function (pi: ExtensionAPI) {
       }
       if (target === "light") state.stats.lightTurns++;
       else state.stats.heavyTurns++;
-      return;
+      return contract;
     }
+
+    // Context guard: if routing to light, ensure session context won't overflow the light model
+    // or trigger auto-compacting and dump large context tokens onto a rate-limited model.
+    if (target === "light") {
+      const usage = typeof ctx?.getContextUsage === "function" ? ctx.getContextUsage() : undefined;
+      const currentTokens = Number(usage?.tokens ?? 0);
+      const targetWindow = Number(model.contextWindow ?? 128_000);
+
+      if (currentTokens > 0 && (currentTokens > 30_000 || currentTokens > targetWindow * 0.5)) {
+        ctx.ui.notify(
+          `[pi-jev-eye] Context too large (${currentTokens.toLocaleString()} tokens) for light model; keeping ${current || "current model"}.`,
+          "info"
+        );
+        return contract;
+      }
+    }
+
+    const previousModel = ctx?.model;
+    const previousThinking = typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined;
 
     const switched = await pi.setModel(model);
     if (switched) {
       if (typeof pi.setThinkingLevel === "function") {
         pi.setThinkingLevel(targetThinking);
       }
-      if (target === "light") state.stats.lightTurns++;
-      else state.stats.heavyTurns++;
+      if (target === "light") {
+        state.stats.lightTurns++;
+        if (previousModel && `${previousModel.provider}/${previousModel.id}` !== ref) {
+          state.pendingRevert = { model: previousModel, thinking: previousThinking };
+        }
+      } else {
+        state.stats.heavyTurns++;
+      }
       ctx.ui.notify(`[pi-jev-eye] ${target === "light" ? "Light" : "Heavy"} turn → ${ref} (${targetThinking} thinking)`, "info");
     }
 
     return contract;
+  });
+
+  // Restore model after a light turn so the session does not stay stuck on the chore model
+  pi.on("agent_end", async (_event: any, ctx: any) => {
+    if (!state.enabled || !state.pendingRevert) return;
+    const { model, thinking } = state.pendingRevert;
+    state.pendingRevert = undefined;
+    try {
+      const restored = await pi.setModel(model);
+      if (restored) {
+        if (thinking && typeof pi.setThinkingLevel === "function") {
+          pi.setThinkingLevel(thinking);
+        }
+        ctx.ui.notify(`[pi-jev-eye] Light turn finished → restored ${model.provider}/${model.id}`, "info");
+      }
+    } catch {
+      // Non-fatal
+    }
   });
 
   pi.registerShortcut(TOGGLE_KEY, {
@@ -1031,7 +1106,7 @@ export default function (pi: ExtensionAPI) {
 
       // Layer 3: Jev semantic gate, only for diffs above the line threshold
       const consent = readConsent();
-      if (state.semanticGate && consentAllows(ctx.cwd, consent) && contentToCheck.split("\n").length >= JEV_MIN_DIFF_LINES) {
+      if (consentAllows(ctx.cwd, consent) && contentToCheck.split("\n").length >= JEV_MIN_DIFF_LINES) {
         const auth = resolveJevAuth();
         if (auth) {
           if (state.stats.jevRequests >= JEV_MAX_REQUESTS) {
@@ -1072,8 +1147,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_end", async (event, ctx) => {
     if (!state.enabled) return;
     if (event.message.role !== "assistant") return;
-    // One-shot: a review request covers the turn it was written in, never later writes.
-    state.pendingReview = undefined;
 
     // Check whether the agent claims completion without verifying
     if (state.modifiedFilesThisTurn && !state.verifiedThisTurn) {
@@ -1093,47 +1166,91 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // --- `/jev-eye` command (alias: `/eye`) ---
-  const buildStatus = async (ctx: any): Promise<string> => {
+  // --- `/jev-eye` command ---
+  /** Status body only: plain text in headless mode, colourised when the panel hands over a theme.
+   *  Synchronous on purpose — the balance is fetched once by {@link showStatus} and passed in, so the
+   *  panel never has a pending state to render. */
+  const buildStatus = (ctx: any, balance: string, theme?: any): string[] => {
     const auth = resolveJevAuth();
     const consent = readConsent();
     const n = (value: number) => value.toLocaleString("en-US");
     const usd = (value: number) => `$${value.toFixed(6)}`;
+    const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
+    // A zero count is the healthy value, so only a non-zero one draws the eye.
+    const count = (value: number) => paint(value > 0 ? "warning" : "text", String(value));
     const window = (label: string, period: string, totals: DayTotals | undefined) =>
       totals
-        ? `${label.padEnd(8)}${period} · ${totals.requests} requests (${totals.ok} ok / ${totals.failed} failed) · ${n(totals.inputTokens)} in / ${n(totals.outputTokens)} out · ${usd(totals.cost)}`
-        : `${label.padEnd(8)}${period} · no requests`;
+        ? `${paint("dim", label.padEnd(8))}${period} | ${totals.requests} requests (${totals.ok} ok / ${totals.failed} failed) | ${n(totals.inputTokens)} in / ${n(totals.outputTokens)} out | ${usd(totals.cost)}`
+        : `${paint("dim", label.padEnd(8))}${period} | no requests`;
 
     const routing = readRouting();
-    const lines = [
-      "=== pi-jev-eye status ===",
-      `Supervisor: ${state.enabled ? "ENABLED" : "DISABLED"}`,
-      `Routing: ${routing.enabled ? "ON" : "off"} · light ${routing.light || "unset"} · heavy ${routing.heavy || "unset"} · ${state.stats.lightTurns} light / ${state.stats.heavyTurns} heavy turns · ${Math.min(state.stats.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} classified`,
-      // Default (all folders) stays a single short line; the folder breakdown only appears when the gate is restricted.
-      `Jev gate: ${auth ? `READY · ${auth.provider.label} · key from ${auth.source}` : "OFFLINE (no key) — run `/jev-eye login`"} · ${consentShort(consent)}`,
+    const models: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
+    const thisFolderOn = consentAllows(ctx.cwd, consent);
+    // One line, one state: this folder, all folders, or off. The folder list itself never renders.
+    const scopeValue =
+      consent.mode === "folder" ? "This folder" : consent.mode === "all" ? "All folders" : "Disabled";
+    const scopeState =
       consent.mode === "folder"
-        ? `  scope: ${consent.folders.join(", ")} · this folder ${consentAllows(ctx.cwd, consent) ? "ON" : "off"}`
-        : `  this folder ${consentAllows(ctx.cwd, consent) ? "ON" : "off"}`,
-      `  p≥${JEV_BLOCK_THRESHOLD} · min ${JEV_MIN_DIFF_LINES} lines · ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} requests this session · ${TOGGLE_KEY} on/off · ${GATE_KEY} gate`,
+        ? ` (${paint(thisFolderOn ? "success" : "muted", thisFolderOn ? "ON" : "off")})`
+        : "";
+    const classified = Math.min(state.stats.jevRoutingCalls, JEV_MAX_ROUTING_CALLS);
+    const lines = [
+      `${paint("dim", "Supervisor: ")}${paint(state.enabled ? "success" : "warning", state.enabled ? "ENABLED" : "DISABLED")}`,
+      `${paint("dim", "Routing: ")}${paint(routing.enabled ? "success" : "muted", routing.enabled ? "ON" : "off")} | ${paint("dim", "Light: ")}${modelLabelFor(models, routing.light) || "unset"} | ${paint("dim", "Heavy: ")}${modelLabelFor(models, routing.heavy) || "unset"} | ${state.stats.lightTurns} light / ${state.stats.heavyTurns} heavy turns | ${classified}/${JEV_MAX_ROUTING_CALLS} classified`,
+      `${paint("dim", "Jev Gate: ")}${
+        auth
+          ? `${paint("success", "READY")} | ${auth.provider.label} (key from ${auth.source})`
+          : `${paint("warning", "OFFLINE (no key)")} — run \`/jev-eye login\``
+      }`,
+      `${paint("dim", "Gate Scope: ")}${paint(consent.mode === "disabled" ? "warning" : "text", scopeValue)}${scopeState}`,
+      // Named prefix + a plain-word gloss, so the numbers below stop being a riddle.
+      `${paint("dim", "Gate Rules: ")}block when Jev's chance of slop or an unfinished TODO is p≥${JEV_BLOCK_THRESHOLD} | checked only on diffs ≥${JEV_MIN_DIFF_LINES} lines | ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} Jev requests used this session`,
       "",
-      "--- Jev usage ---",
+      paint("accent", "Usage"),
       window("Today", today(), readOwnUsage()),
       window("Month", today().slice(0, 7), readMonthUsage()),
-      `Balance ${await balanceText(auth)}`,
+      `${paint("dim", "Balance ")}${paint("muted", balance)}`,
       "",
-      "--- Interception (this session) ---",
-      `blocked ${state.stats.destructiveBlocked} dangerous · ${state.stats.secretsBlocked} secrets · ${state.stats.slopBlocked} Jev slop · ${state.stats.verificationReminders} unverified-done warnings · ${state.stats.reviewTurns} reviewed turns`,
+      paint("accent", "Interception (this session)"),
+      `${paint("dim", "Blocked: ")}${count(state.stats.destructiveBlocked)} dangerous | ${paint("dim", "Secrets: ")}${count(state.stats.secretsBlocked)} | ${paint("dim", "Jev slop: ")}${count(state.stats.slopBlocked)} | ${paint("dim", "Unverified-done warnings: ")}${count(state.stats.verificationReminders)} | ${paint("dim", "Reviewed turns: ")}${count(state.stats.reviewTurns)}`,
     ];
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
-    if (typeof contextTokens === "number") lines.push(`Model context: ${n(contextTokens)} tokens`);
-    // Footer of the status panel: the live supervisor state plus every global keybinding.
-    lines.push(
-      "",
-      `${state.enabled ? "supervisor ON" : "supervisor OFF"} · ${TOGGLE_KEY} on/off · ${GATE_KEY} gate · gate value: ${consentShort(consent)}`,
-      "Menu: `/jev-eye` · direct: status|login|logout|routing [on|off]"
-    );
-    return lines.join("\n");
+    if (typeof contextTokens === "number") lines.push(`${paint("dim", "Model context: ")}${n(contextTokens)} tokens`);
+    return lines;
+  };
+
+  /** `/jev-eye status`: the framed panel, falling back to the same body as plain text without a TUI. */
+  const showStatus = async (ctx: any): Promise<void> => {
+    const balance = await balanceText(resolveJevAuth());
+
+    if (typeof ctx.ui.custom !== "function") {
+      ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx, balance), "", statusFooter(state.enabled)].join("\n"), "info");
+      return;
+    }
+
+    await ctx.ui.custom<void>((tui: any, theme: any, _kb: any, done: (value?: void) => void) => {
+      const panel = new StatusPanel(
+        theme,
+        buildStatus(ctx, balance, theme),
+        {
+          rebuild: () => buildStatus(ctx, balance, theme),
+          toggleSupervisor: () => {
+            state.enabled = !state.enabled;
+          },
+          cycleGate: () => writeConsent(nextConsent(readConsent(), ctx.cwd)),
+        },
+        done
+      );
+      return {
+        render: (width: number) => panel.render(width),
+        invalidate: () => panel.invalidate(),
+        handleInput: (data: string) => {
+          panel.handleInput(data);
+          tui.requestRender();
+        },
+      };
+    });
   };
 
   const saveRouting = (ctx: any, next: Routing): void => {
@@ -1187,65 +1304,43 @@ export default function (pi: ExtensionAPI) {
     saveRouting(ctx, result);
   };
 
-  // Interactive menu: account · Enable all folder / Enable this folder / Disabled · status
+  // Interactive menu: login, logout, status, routing
   const openMenu = async (ctx: any): Promise<void> => {
-    const consent = readConsent();
-    const thisFolderOn = consent.mode === "folder" && consentAllows(ctx.cwd, consent);
     const auth = resolveJevAuth();
+    const routing = readRouting();
+    const routingDesc = routing.enabled
+      ? `ON · ${routing.light || "unset"} → ${routing.heavy || "unset"}`
+      : "off · configure light & heavy targets";
+
     const options = [
-      auth
-        ? `Log out              ·  ${auth.provider.label} key from ${auth.source}`
-        : `Log in               ·  TypeSafe or OpenRouter API key`,
-      `Enable all folder    ·  ${consent.mode === "all" ? "current" : "gate on in every folder"}`,
-      `Enable this folder   ·  ${thisFolderOn ? "ON" : "off"} (${ctx.cwd})`,
-      `Disabled             ·  ${consent.mode === "disabled" ? "current" : "gate off, layers 1-2 stay on"}`,
-      `Routing              ·  ${readRouting().enabled ? `ON · ${readRouting().light || "unset"} → ${readRouting().heavy || "unset"}` : "off"}`,
-      `Show status`,
+      `Login    ·  ${auth ? `switch key (current: ${auth.provider.label})` : "TypeSafe or OpenRouter API key"}`,
+      `Logout   ·  ${auth ? `remove key from ${auth.source}` : "no active key stored"}`,
+      `Status   ·  supervisor, gate scope, usage & metrics`,
+      `Routing  ·  ${routingDesc}`,
     ];
 
-    const choice = await ctx.ui.select("pi-jev-eye · account & Jev gate", options);
+    const choice = await ctx.ui.select("Jev Eye · Menu", options);
     if (!choice) return;
 
     if (choice === options[0]) {
-      await (auth ? logoutFlow(ctx) : loginFlow(ctx));
+      await loginFlow(ctx);
       return;
     }
 
     if (choice === options[1]) {
-      writeConsent({ mode: "all", folders: consent.folders });
-      ctx.ui.notify("[pi-jev-eye] Jev gate: Enable all folder.", "info");
+      await logoutFlow(ctx);
       return;
     }
 
     if (choice === options[2]) {
-      const folders = thisFolderOn
-        ? consent.folders.filter((f) => f !== ctx.cwd)
-        : [...new Set([...consent.folders, ctx.cwd])];
-      // No folder left means there is nothing to run in, so the value becomes Disabled.
-      const next: Consent = { mode: folders.length > 0 ? "folder" : "disabled", folders };
-      writeConsent(next);
-      ctx.ui.notify(
-        `[pi-jev-eye] Jev gate: ${ctx.cwd} is ${thisFolderOn ? "OFF" : "ON"} — value is now ${consentLabel(next)}.`,
-        thisFolderOn ? "warning" : "info"
-      );
+      await showStatus(ctx);
       return;
     }
 
     if (choice === options[3]) {
-      writeConsent({ mode: "disabled", folders: consent.folders });
-      ctx.ui.notify(
-        "[pi-jev-eye] Jev gate: Disabled (layers 1-2 still on). The built-in typesafe_evaluate tool has its own gate.",
-        "warning"
-      );
-      return;
-    }
-
-    if (choice === options[4]) {
       await openRoutingMenu(ctx);
       return;
     }
-
-    ctx.ui.notify(await buildStatus(ctx), "info");
   };
 
   const eyeHandler = async (args: string, ctx: any) => {
@@ -1298,7 +1393,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    ctx.ui.notify(await buildStatus(ctx), "info");
+    await showStatus(ctx);
   };
 
   const completions = (prefix: string): AutocompleteItem[] | null => {
@@ -1308,11 +1403,6 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand("jev-eye", {
     description: "pi-jev-eye supervisor: menu (login / gate), status, usage stats",
-    getArgumentCompletions: completions,
-    handler: eyeHandler,
-  });
-  pi.registerCommand("eye", {
-    description: "pi-jev-eye supervisor (alias of /jev-eye)",
     getArgumentCompletions: completions,
     handler: eyeHandler,
   });
