@@ -19,7 +19,6 @@ Ultra-lean, high-precision supervisor for the [pi coding agent](https://github.c
 - **Layer 3 — Targeted Jev Semantic Gate:** Evaluates diffs ≥ 10 lines with TypeSafe Jev (`has_slop`) to block placeholder functions, unfulfilled TODOs, and stubs before writing.
 - **Per-Turn Model Routing:** Routes routine chores (`status`, `commit`, `push`, `log`, `diff`) to a light model with 0 Jev requests, and complex tasks to a heavy model classified by Jev, with independent thinking levels and zero external dependencies.
 - **Reviewed Turns (`jev` / `@jev`):** Writing `jev` in a prompt enforces the structured review contract (machine facts, calibrated Jev score table, conclusion, and one confirmation question) and evaluates `answers_request` in the same write-gate request.
-- **Compaction Without A Second Engine (`/jev-eye compact`):** Calls Pi's own `ctx.compact` with this workflow's must-keep list (fact IDs plus their checked numbers, threshold lines, open items) so a summary stays readable by the next report; no summarizer of its own, no extra model call.
 - **Standalone Account & Key Lookup:** Reads `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, an existing `~/.pi/agent/pi-typesafe/auth.json`, or its own store managed via `/jev-eye login`.
 - **Fail-Open Safety:** Network timeouts or offline Jev API calls gracefully fall back to allow work to continue without freezing the agent.
 
@@ -41,14 +40,13 @@ pi -e ./extensions/index.ts
 
 | Trigger | Scope | Action |
 | :--- | :--- | :--- |
-| `/jev-eye` | Global | Interactive menu: **Login** · **Logout** · **Status** · **Routing** (`/eye` is an alias; `compact` is typed directly) |
+| `/jev-eye` | Global | Interactive menu: **Login** · **Logout** · **Status** · **Routing** (`/eye` is an alias) |
 | `/jev-eye login` | Setup | Store a Jev key: **TypeSafe account** or **OpenRouter account** (verified before saving, `0600`) |
 | `/jev-eye logout` | Setup | Delete the local key stored by `/jev-eye login` |
 | `/jev-eye status` | Inspect | Real-time status: account, gate value, usage today/month, token cost, balance, and interception stats |
 | `/jev-eye routing` | Routing | Interactive TUI model router: pick light/heavy models, cycle thinking levels, toggle routing |
 | `/jev-eye routing on` / `off` | Routing | Enable or disable per-turn routing directly without opening picker |
 | `/jev-eye routing light` / `heavy` | Routing | Open model picker for a specific target slot |
-| `/jev-eye compact` | Context | Pi's own compaction, pre-filled with this workflow's must-keep list (fact IDs, checked numbers, threshold lines); `/jev-eye compact <extra instructions>` appends your own |
 | `ctrl+shift+e` | Keybinding | Instantly toggle supervisor on / off |
 | `ctrl+shift+g` | Keybinding | Cycle Jev gate value: **Enable all folder** → **Enable this folder** → **Disabled** |
 | `jev` / `@jev` in prompt | Prompt | Trigger reviewed turn with review contract and `answers_request` judgment |

@@ -38,7 +38,6 @@ interface EyeState {
     lightTurns: number;
     heavyTurns: number;
     reviewTurns: number;
-    compactions: number;
   };
   pendingReview?: string;
 }
@@ -57,7 +56,6 @@ const state: EyeState = {
     lightTurns: 0,
     heavyTurns: 0,
     reviewTurns: 0,
-    compactions: 0,
   },
 };
 
@@ -641,17 +639,6 @@ const REVIEW_CONTRACT = [
   "- Write gate: code edits will be evaluated against this turn's request text.",
 ].join("\n");
 
-// Compaction adds no engine of its own: Pi already auto-compacts (threshold + `compaction.*` in
-// settings.json) and exposes `ctx.compact`. This is only the must-keep list for a Jev report,
-// passed as `customInstructions` so the summary stays readable by the same IDs and thresholds.
-const JEV_COMPACT_INSTRUCTIONS = [
-  "Keep, so the next Jev report stays readable:",
-  "- Stable fact IDs (i1, i2, ...) together with the exact machine-checked numbers attached to them (counts, exit codes, paths).",
-  "- Any printed decision line (`Ambang: p >= ...`) and the Jev probabilities or labels already agreed on.",
-  "- Decisions taken (with #tags), what is still open, and the pending confirmation question.",
-  "Drop raw tool output and full file dumps; keep only the conclusions drawn from them.",
-].join("\n");
-
 // --- Per-turn model routing: cheap model for chores, best model for real review ---
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -891,7 +878,6 @@ const EYE_SUBCOMMANDS = [
   { value: "login", label: "login", description: "Store a Jev key: TypeSafe account or OpenRouter account" },
   { value: "logout", label: "logout", description: "Delete the key stored by /jev-eye login" },
   { value: "routing", label: "routing", description: "Routing models menu, or direct: routing light | routing heavy | routing on | routing off" },
-  { value: "compact", label: "compact", description: "Pi's own compaction, pre-filled with this workflow's must-keep list (add your own instructions after it)" },
 ];
 
 export default function (pi: ExtensionAPI) {
@@ -1216,7 +1202,7 @@ export default function (pi: ExtensionAPI) {
       `${paint("dim", "Balance ")}${paint("muted", balance)}`,
       "",
       paint("accent", "Interception (this session)"),
-      `${paint("dim", "Blocked: ")}${count(state.stats.destructiveBlocked)} dangerous | ${paint("dim", "Secrets: ")}${count(state.stats.secretsBlocked)} | ${paint("dim", "Jev slop: ")}${count(state.stats.slopBlocked)} | ${paint("dim", "Unverified-done warnings: ")}${count(state.stats.verificationReminders)} | ${paint("dim", "Reviewed turns: ")}${count(state.stats.reviewTurns)} | ${paint("dim", "Compactions: ")}${state.stats.compactions}`,
+      `${paint("dim", "Blocked: ")}${count(state.stats.destructiveBlocked)} dangerous | ${paint("dim", "Secrets: ")}${count(state.stats.secretsBlocked)} | ${paint("dim", "Jev slop: ")}${count(state.stats.slopBlocked)} | ${paint("dim", "Unverified-done warnings: ")}${count(state.stats.verificationReminders)} | ${paint("dim", "Reviewed turns: ")}${count(state.stats.reviewTurns)}`,
     ];
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
@@ -1348,8 +1334,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const eyeHandler = async (args: string, ctx: any) => {
-    const raw = args.trim();
-    const sub = raw.toLowerCase();
+    const sub = args.trim().toLowerCase();
 
     if (sub === "") {
       await openMenu(ctx);
@@ -1380,32 +1365,6 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // `compact [extra instructions]`: Pi's own compaction, increment only by this must-keep list.
-    // Instructions keep the operator's original casing, so `raw` (not `sub`) is sliced.
-    if (sub === "compact" || sub.startsWith("compact ")) {
-      const extra = raw.slice("compact".length).trim();
-      if (typeof ctx.compact !== "function") {
-        ctx.ui.notify("[pi-jev-eye] No ctx.compact in this Pi build; use Pi's own `/compact [instructions]`.", "warning");
-        return;
-      }
-      // Same guard the built-in `/compact` uses: never compact under a streaming turn.
-      if (typeof ctx.waitForIdle === "function") await ctx.waitForIdle();
-      ctx.compact({
-        customInstructions: extra ? `${JEV_COMPACT_INSTRUCTIONS}\n\nExtra operator instructions:\n${extra}` : JEV_COMPACT_INSTRUCTIONS,
-        onComplete: (result: any) => {
-          state.stats.compactions++;
-          const before = Number(result?.tokensBefore ?? 0);
-          ctx.ui.notify(
-            `[pi-jev-eye] Compacted${before ? ` (${before.toLocaleString("en-US")} tokens before)` : ""}; asked the summarizer to keep fact IDs, numbers and threshold lines.`,
-            "info"
-          );
-        },
-        onError: (error: any) =>
-          ctx.ui.notify(`[pi-jev-eye] Compaction failed: ${error instanceof Error ? error.message : String(error)}`, "error"),
-      });
-      return;
-    }
-
     if (sub === "login") {
       await loginFlow(ctx);
       return;
@@ -1418,7 +1377,7 @@ export default function (pi: ExtensionAPI) {
 
     if (sub !== "status") {
       ctx.ui.notify(
-        `[pi-jev-eye] Unknown argument "${sub}". Use: status | login | logout | routing [on|off] | compact [instructions], or no argument for the menu (supervisor on/off is ${TOGGLE_KEY}).`,
+        `[pi-jev-eye] Unknown argument "${sub}". Use: status | login | logout | routing [on|off], or no argument for the menu (supervisor on/off is ${TOGGLE_KEY}).`,
         "warning"
       );
       return;
