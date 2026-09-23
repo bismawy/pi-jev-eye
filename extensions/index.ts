@@ -981,8 +981,10 @@ export default function (pi: ExtensionAPI) {
     return contract;
   });
 
-  // Restore model after a light turn so the session does not stay stuck on the chore model
-  pi.on("agent_end", async (_event: any, ctx: any) => {
+  // Restore model after a light turn so the session does not stay stuck on the chore model.
+  // agent_settled, not agent_end: agent_end closes one low-level run while retries, recovery,
+  // compaction, or queued follow-ups may still run after it; settled means Pi will not continue.
+  pi.on("agent_settled", async (_event: any, ctx: any) => {
     if (!state.enabled || !state.pendingRevert) return;
     const { model, thinking } = state.pendingRevert;
     state.pendingRevert = undefined;
