@@ -16,7 +16,7 @@ Ultra-lean, high-precision supervisor for the [pi coding agent](https://github.c
 
 - **Layer 1 — Instant Regex Gate (0 ms, 0 token):** Catches irreversible bash commands (`rm -rf /`, `git push --force (main|master)`, `git reset --hard`, `DROP DATABASE`, `mkfs`) and blocks hardcoded secrets (`sk-...`, `ghp_...`, `AIza...`, private keys) before execution or disk write. Supports safe overrides like `--force-with-lease`.
 - **Layer 2 — Done-Check Tracker (0 token, pure code):** Tracks modified files during the turn. Triggers a warning if the agent claims done without running a verification suite (`npm test`, `cargo test`, `pytest`, `typecheck`).
-- **Layer 3 — Targeted Jev Semantic Gate:** Evaluates diffs $\ge 10$ lines with TypeSafe Jev (`has_slop`) to block placeholder functions, unfulfilled TODOs, and stubs before writing.
+- **Layer 3 — Targeted Jev Semantic Gate:** Evaluates diffs ≥ 10 lines with TypeSafe Jev (`has_slop`) to block placeholder functions, unfulfilled TODOs, and stubs before writing.
 - **Per-Turn Model Routing:** Routes routine chores (`status`, `commit`, `push`, `log`, `diff`) to a light model with 0 Jev requests, and complex tasks to a heavy model classified by Jev, with independent thinking levels and zero external dependencies.
 - **Reviewed Turns (`jev` / `@jev`):** Writing `jev` in a prompt enforces the structured review contract (machine facts, calibrated Jev score table, conclusion, and one confirmation question) and evaluates `answers_request` in the same write-gate request.
 - **Standalone Account & Key Lookup:** Reads `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, an existing `~/.pi/agent/pi-typesafe/auth.json`, or its own store managed via `/jev-eye login`.
@@ -75,7 +75,7 @@ Agent Action (tool_call / message_end)
 
 1. **Layer 1 (`extensions/layer1.ts`):** Evaluates tools before execution. Blocks dangerous filesystem wipes (`rm -rf` targeting system directories, root, or home), blocks force pushes to protected branches (`main`/`master`) while allowing `--force-with-lease`, and prevents credentials from being written to files or executed in commands.
 2. **Layer 2:** Monitors tool activity within the current turn. If files were modified on disk but the agent attempts to finalize the turn without running verification commands, a reminder is injected.
-3. **Layer 3:** Intercepts write and edit operations. Changes under 10 lines pass freely. Larger changes are submitted to TypeSafe Jev as a single batch request to assess `has_slop`. If $P(\text{has\_slop}) \ge 0.85$, the change is rejected with actionable feedback.
+3. **Layer 3:** Intercepts write and edit operations. Changes under 10 lines pass freely. Larger changes are submitted to TypeSafe Jev as a single batch request to assess `has_slop`. If `P(has_slop) >= 0.85`, the change is rejected with actionable feedback.
 
 ### Key Detection & Verification Patterns
 
@@ -152,7 +152,7 @@ Status details in `/jev-eye status` are sourced exclusively from `~/.pi/agent/pi
 | **Package Size** | ~900 KB (dozens of files) | **~62 KB (2 TS files: `index.ts` + `layer1.ts`)** |
 | **Dependencies** | Multiple external dependencies | **0 external dependencies** |
 | **Destructive Prevention** | AST parsing + LLM reasoning | **Deterministic regex (0 ms, 0 token)** |
-| **Jev Quota Consumption** | Heavy (runs on all interactions) | **Ultra-frugal** (only diffs $\ge 10$ lines) |
+| **Jev Quota Consumption** | Heavy (runs on all interactions) | **Ultra-frugal** (only diffs ≥ 10 lines) |
 | **Security Handling** | Cloud-assisted review | **Local zero-leak regex block** |
 
 ## Development
