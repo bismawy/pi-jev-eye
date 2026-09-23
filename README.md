@@ -1,36 +1,37 @@
+<div align="center">
+
 # pi-jev-eye
+
 Ultra-lean, high-precision supervisor for the [pi coding agent](https://github.com/earendil-works/pi-coding-agent) — catches destructive commands, blocks credential leaks, tracks verification state, routes per-turn models, and filters code slop using [TypeSafe Jev](https://typesafe.ai/).
 
 [pi package](https://pi.dev/packages/@bismawy/pi-jev-eye) · [npm](https://www.npmjs.com/package/@bismawy/pi-jev-eye) · [Issues](https://github.com/bismawy/pi-jev-eye/issues)
+
 ![npm](https://img.shields.io/npm/v/@bismawy/pi-jev-eye)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
+</div>
+
 ## What it does
-- **Layer 1 — Instant Regex Gate (0 ms, 0 Token):** Intercepts destructive bash commands (`rm -rf /`, `git push --force (main|master)`, `git reset --hard`, `DROP DATABASE`, `mkfs`) and blocks hardcoded secrets (`sk-...`, `ghp_...`, `AIza...`, private keys) before execution or disk write. Supports safe overrides like `--force-with-lease`.
-- **Layer 2 — Done-Check Tracker (0 Token, Pure Code):** Tracks modified files during the turn. If the agent claims "done" or "selesai" without running test/lint commands (`npm test`, `cargo test`, `pytest`, `typecheck`), a reminder is triggered.
-- **Layer 3 — Targeted Jev Semantic Gate:** Evaluates code diffs $\ge 10$ lines using TypeSafe Jev (`has_slop`) to block placeholder functions, unfulfilled TODOs, and low-quality stubs before writing.
-- **Per-Turn Model Routing (Zero Extra Deps):** Routes repository chores to a light model with 0 Jev requests, and complex tasks to a heavy model classified by Jev, complete with independent thinking levels.
-- **Reviewed Turns (`jev` / `@jev`):** Writing `jev` in a prompt enforces the structured review contract (machine facts + calibrated Jev score + conclusion + confirmation question) and evaluates `answers_request` inside the same write-gate call without extra requests.
-- **Standalone Account & Key Lookup:** Works out of the box with `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, an existing `~/.pi/agent/pi-typesafe/auth.json`, or its own `~/.pi/agent/pi-jev-eye/auth.json` managed via `/jev-eye login`.
+
+- **Layer 1 — Instant Regex Gate (0 ms, 0 token):** Catches irreversible bash commands (`rm -rf /`, `git push --force (main|master)`, `git reset --hard`, `DROP DATABASE`, `mkfs`) and blocks hardcoded secrets (`sk-...`, `ghp_...`, `AIza...`, private keys) before execution or disk write. Supports safe overrides like `--force-with-lease`.
+- **Layer 2 — Done-Check Tracker (0 token, pure code):** Tracks modified files during the turn. Triggers a warning if the agent claims done without running a verification suite (`npm test`, `cargo test`, `pytest`, `typecheck`).
+- **Layer 3 — Targeted Jev Semantic Gate:** Evaluates diffs $\ge 10$ lines with TypeSafe Jev (`has_slop`) to block placeholder functions, unfulfilled TODOs, and stubs before writing.
+- **Per-Turn Model Routing:** Routes routine chores (`status`, `commit`, `push`, `log`, `diff`) to a light model with 0 Jev requests, and complex tasks to a heavy model classified by Jev, with independent thinking levels and zero external dependencies.
+- **Reviewed Turns (`jev` / `@jev`):** Writing `jev` in a prompt enforces the structured review contract (machine facts, calibrated Jev score table, conclusion, and one confirmation question) and evaluates `answers_request` in the same write-gate request.
+- **Standalone Account & Key Lookup:** Reads `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, an existing `~/.pi/agent/pi-typesafe/auth.json`, or its own store managed via `/jev-eye login`.
 - **Fail-Open Safety:** Network timeouts or offline Jev API calls gracefully fall back to allow work to continue without freezing the agent.
 
 ## Install
+
 ```bash
 pi install npm:@bismawy/pi-jev-eye
 ```
 
-From GitHub:
-```bash
-pi install git:github.com/bismawy/pi-jev-eye
-```
+Supply your Jev key via `/jev-eye login` (TypeSafe or OpenRouter), or export `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY`.
 
-Or from a local clone:
-```bash
-pi install /path/to/pi-jev-eye
-```
+Or test once in an active session without installing:
 
-Or test once in an active session:
 ```bash
 pi -e ./extensions/index.ts
 ```
@@ -42,7 +43,7 @@ pi -e ./extensions/index.ts
 | `/jev-eye` | Global | Interactive menu: **Login** · **Logout** · **Status** · **Routing** (`/eye` is an alias) |
 | `/jev-eye login` | Setup | Store a Jev key: **TypeSafe account** or **OpenRouter account** (verified before saving, `0600`) |
 | `/jev-eye logout` | Setup | Delete the local key stored by `/jev-eye login` |
-| `/jev-eye status` | Inspect | Real-time status: account, Jev gate state, usage today/month, token cost, live balance, and interception stats |
+| `/jev-eye status` | Inspect | Real-time status: account, gate value, usage today/month, token cost, balance, and interception stats |
 | `/jev-eye routing` | Routing | Interactive TUI model router: pick light/heavy models, cycle thinking levels, toggle routing |
 | `/jev-eye routing on` / `off` | Routing | Enable or disable per-turn routing directly without opening picker |
 | `/jev-eye routing light` / `heavy` | Routing | Open model picker for a specific target slot |
@@ -57,7 +58,7 @@ pi -e ./extensions/index.ts
 
 ## How it works
 
-### Architecture & Interception Lifecycle
+### Three-Layer Architecture
 
 ```
 Agent Action (tool_call / message_end)
@@ -72,9 +73,9 @@ Agent Action (tool_call / message_end)
 [Layer 3: Jev Semantic Gate]    ──► New code diff ≥ 10 lines? ──► [JEV SLOP EVAL] (P ≥ 0.85 blocked)
 ```
 
-1. **Layer 1 (`extensions/layer1.ts`):** Evaluates tools before execution. Blocks dangerous filesystem wipes (`rm -rf` targeting system directories, root, or home), blocks unauthorized force pushes to protected branches (`main`/`master`) while allowing `--force-with-lease`, and prevents credentials from being written to files or executed in commands.
-2. **Layer 2:** Monitors tool activity within the current turn. If changes were staged to disk but the agent attempts to finalize the turn without executing verification suites, a gentle reminder is injected.
-3. **Layer 3:** Intercepts write and edit operations. Patches smaller than 10 lines pass freely. Larger changes are submitted to TypeSafe Jev as a single batch request to assess `has_slop`. If `P(has_slop) >= 0.85`, the change is rejected with actionable feedback.
+1. **Layer 1 (`extensions/layer1.ts`):** Evaluates tools before execution. Blocks dangerous filesystem wipes (`rm -rf` targeting system directories, root, or home), blocks force pushes to protected branches (`main`/`master`) while allowing `--force-with-lease`, and prevents credentials from being written to files or executed in commands.
+2. **Layer 2:** Monitors tool activity within the current turn. If files were modified on disk but the agent attempts to finalize the turn without running verification commands, a reminder is injected.
+3. **Layer 3:** Intercepts write and edit operations. Changes under 10 lines pass freely. Larger changes are submitted to TypeSafe Jev as a single batch request to assess `has_slop`. If $P(\text{has\_slop}) \ge 0.85$, the change is rejected with actionable feedback.
 
 ### Key Detection & Verification Patterns
 
@@ -86,7 +87,7 @@ Agent Action (tool_call / message_end)
 
 Configured via `ctrl+shift+g` or `~/.pi/agent/pi-jev-eye/consent.json`:
 - **Enable all folder:** Jev semantic gate runs across all workspaces.
-- **Enable this folder:** Scoped exclusively to explicitly approved directories (and subdirectories).
+- **Enable this folder:** Scoped exclusively to explicitly approved directories and their subdirectories.
 - **Disabled:** Jev semantic gate is paused; Layers 1 & 2 remain active at zero token cost.
 
 ### Reviewed Turns (`jev`)
@@ -94,7 +95,7 @@ Configured via `ctrl+shift+g` or `~/.pi/agent/pi-jev-eye/consent.json`:
 Include `jev` (or `@jev`, `/jev-review`) anywhere in your prompt to trigger a reviewed turn:
 - **Strict Format Contract:** The agent formats output with machine-verified facts first, followed by a calibrated Jev score table (`value (probability)` with level tags), the threshold bar, a priority conclusion, and exactly one confirmation question.
 - **Single-Flight Semantic Verification:** Stored prompt context is appended to the next Layer 3 check as an `answers_request` judgment, validating task completion in the same API call without extra quota overhead.
-- Guarded against false triggers: occurrences of `pi-jev-eye` and `jev-eye` are ignored.
+- Occurrences of `pi-jev-eye` and `jev-eye` are ignored to prevent accidental triggers.
 
 ### Model Routing
 
@@ -123,7 +124,7 @@ enter=done | space=select light models | ctrl+r=routing on/off | ctrl+h=select h
 
 - **Light Model (Chores):** Routine git operations (`status`, `commit`, `push`, `log`, `diff`) route to the light model with **zero Jev requests**.
 - **Heavy Model (Review):** Substantive engineering tasks route to the heavy model via a single prompt evaluation.
-- **Theme-Adaptive TUI:** Automatically adopts active Pi theme tokens (`accent`, `muted`, `dim`, `success`) without hardcoded escape codes.
+- **Theme-Adaptive TUI:** Automatically adopts active Pi theme tokens (`accent`, `muted`, `dim`, `success`) without hardcoded colors.
 
 | Key | Action |
 | :--- | :--- |
@@ -157,9 +158,11 @@ Status details in `/jev-eye status` are sourced exclusively from `~/.pi/agent/pi
 ## Development
 
 Run unit tests (no API key or network required):
+
 ```bash
 npm test
 ```
+
 Executes Node.js native test runner (`node --test`) covering 17 assertions across destructive wipe paths, flag permutations, branch force-pushes, and credential patterns.
 
 ## License
