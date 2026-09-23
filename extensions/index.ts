@@ -1052,8 +1052,8 @@ export default function (pi: ExtensionAPI) {
         );
         return {
           block: true,
+          // No `terminate`: the reason goes back to the model, which retries a scoped command on its own.
           reason: `[pi-jev-eye] Command blocked for safety: "${cmd}". Destructive actions require explicit user confirmation.`,
-          terminate: true,
         };
       }
 
@@ -1064,8 +1064,7 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify("[pi-jev-eye] BLOCKED: API key/secret leak in bash command!", "error");
           return {
             block: true,
-            reason: "[pi-jev-eye] Command blocked: an API key or private credential was detected on the command line.",
-            terminate: true,
+            reason: "[pi-jev-eye] Command blocked: an API key or private credential was detected on the command line. Re-run without embedding the secret.",
           };
         }
       }
