@@ -627,17 +627,16 @@ const REVIEW_TRIGGER = /(?<![-\w])@?jev(?![\w-])|\/jev-review\b/i;
 // Deliberately self-contained: the package never reads a skill file, so it works for anyone who installs it.
 // The same wording rules also live in ~/.pi/agent/skills/arnative-jev (section 6) — change that one too.
 const REVIEW_CONTRACT = [
-  "[pi-jev-eye] The operator asked for a Jev review of this turn.",
-  "Answer in the report format already used in this workflow, in the operator's language:",
-  "1. machine-verified facts first (tool output, counts, exit codes) with no judgment mixed in,",
-  "2. then one short Jev table: header spells the scale out in plain words, never a terse `P(ya)` —",
-  '   ID `Peluang jawaban "ya" (0-1) · tinggi = sinyal kuat`, EN `Chance the answer is "yes" (0-1) · higher = stronger`, ZH `回答"是"的概率 (0-1) · 越高越强`;',
-  "   the yes/no word follows the operator's language (ya/tidak, yes/no, 是/否), one row per item per dimension, each cell `value (probability)` plus its level label,",
-  "3. then the threshold line that turns those numbers into a decision,",
-  "4. then one short conclusion naming what still needs fixing, in priority order, reusing the item IDs from the facts block — no new analysis, no re-listing,",
-  "5. then exactly one confirmation question asking which item(s) to work on next (`lanjut` / `yes` keeps the current plan) — a question, never a paragraph,",
-  "6. no preamble; if nothing needs judgment, say so in one line and still end with that one confirmation question.",
-  "The write gate will also judge this turn's code against the request text.",
+  "[pi-jev-eye] Reviewed turn contract:",
+  "- Language precedence: explicit operator instruction > AGENTS.md > prompt language > English fallback (preserve code, paths, and technical terms verbatim).",
+  "- Required report format:",
+  "  1. Machine-verified facts first (tool outputs, counts, exit codes; state explicitly if none run; never invent data; use stable IDs e.g. i1, i2).",
+  "  2. One short Jev table: header spells scale in plain words (never terse `P(ya)` — ID `Peluang jawaban \"ya\" (0-1) · tinggi = sinyal kuat`, EN `Chance the answer is \"yes\" (0-1) · higher = stronger`, ZH `回答\"是\"的概率 (0-1) · 越高越强`); cells use `value (probability)` + level label.",
+  "  3. Threshold line: state decision boundary (e.g. `Ambang: p ≥ 0.85 → <aksi>`).",
+  "  4. Priority conclusion: list only unresolved items in priority order using facts IDs (no new analysis, no re-listing).",
+  "  5. Exactly one confirmation question: ask which item(s) to handle next (`lanjut` / `continue` keeps plan; single question, never a paragraph).",
+  "- No preamble. If nothing needs judgment, state so in one line and still end with the confirmation question.",
+  "- Write gate: code edits will be evaluated against this turn's request text.",
 ].join("\n");
 
 // --- Per-turn model routing: cheap model for chores, best model for real review ---
