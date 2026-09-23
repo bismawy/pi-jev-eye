@@ -27,11 +27,15 @@ const scoped = [
   `${rm} -rf /tmp/scratch`,
   `${rm} -rf /home/bisma/scratch`,
   `${rm} --force --recursive ./node_modules`,
+  `${rm} /tmp/jev-req*.mjs`,
 ];
 
 for (const command of scoped) {
   test(`scoped delete allowed: ${command}`, () => assert.equal(wipeTarget(command), null));
 }
+
+// The glob rule exists for bare "wipe this whole dir" globs; a named prefix glob is a scoped delete.
+test(`bare glob still blocked: ${rm} -rf /tmp/*`, () => assert.ok(wipeTarget(`${rm} -rf /tmp/*`)));
 
 const blocked = (command) => DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(command));
 
