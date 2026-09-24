@@ -19,6 +19,7 @@ Ultra-lean, high-precision supervisor for the [pi coding agent](https://github.c
 - **Layer 3 — Targeted Jev Semantic Gate:** Evaluates diffs ≥ 10 lines with TypeSafe Jev (`has_slop`) to block placeholder functions, unfulfilled TODOs, and stubs before writing.
 - **Per-Turn Model Routing:** Routes routine chores (`status`, `commit`, `push`, `log`, `diff`) to a light model with 0 Jev requests, and complex tasks to a heavy model classified by Jev, with independent thinking levels and zero external dependencies.
 - **Reviewed Turns (`jev` / `@jev`):** Writing `jev` in a prompt enforces the structured review contract (machine facts, calibrated Jev score table, conclusion, and one confirmation question) and evaluates `answers_request` in the same write-gate request.
+- **Three Modes, One Key (`Alt+Shift+J`):** Cycles **ON** (keyword-triggered review) → **REVIEW** (every turn reviewed, no extra Jev call) → **OFF** (all layers disabled). See [Modes](#modes-on--review--off).
 - **Standalone Account & Key Lookup:** Reads `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, an existing `~/.pi/agent/pi-typesafe/auth.json`, or its own store managed via `/jev-eye login`.
 - **Fail-Open Safety:** Network timeouts or offline Jev API calls gracefully fall back to allow work to continue without freezing the agent.
 
@@ -44,17 +45,51 @@ pi -e ./extensions/index.ts
 | `/jev-eye login` | Setup | Store a Jev key: **TypeSafe account** or **OpenRouter account** (verified before saving, `0600`) |
 | `/jev-eye logout` | Setup | Delete the local key stored by `/jev-eye login` |
 | `/jev-eye status` | Inspect | Real-time status: account, gate value, usage today/month, token cost, balance, and interception stats |
+| `/jev-eye toggle` | Toggle | Cycle mode: **ON** → **REVIEW** → **OFF** |
+| `/jev-eye on` / `review` / `off` | Mode | Set mode directly: **ON** (prompt trigger), **REVIEW** (all turns reviewed), or **OFF** (disabled) |
 | `/jev-eye routing` | Routing | Interactive TUI model router: pick light/heavy models, cycle thinking levels, toggle routing |
 | `/jev-eye routing on` / `off` | Routing | Enable or disable per-turn routing directly without opening picker |
 | `/jev-eye routing light` / `heavy` | Routing | Open model picker for a specific target slot |
-| `ctrl+shift+e` | Keybinding | Instantly toggle supervisor on / off |
+| `alt+shift+j` | Keybinding | Instantly cycle mode: **ON** → **REVIEW** → **OFF** (`ctrl+shift+e` kept as legacy alias) |
 | `ctrl+shift+g` | Keybinding | Cycle Jev gate value: **Enable all folder** → **Enable this folder** → **Disabled** |
 | `jev` / `@jev` in prompt | Prompt | Trigger reviewed turn with review contract and `answers_request` judgment |
 
-> **Status bar design:** Nothing is written to Pi's shared status bar. The live supervisor state, active gate value, and keybindings appear in the status footer line:
+> **Status bar design:** Nothing is written to Pi's shared status bar by this extension alone — the pi-arnative footer renders it as `Jev: ● ON` / `● REVIEW` / `○ OFF`. The live supervisor state, active gate value, and keybindings also appear in the `/jev-eye status` footer line:
 > ```
-> supervisor ON · ctrl+shift+e on/off · ctrl+shift+g gate · gate value: all folders
+> [Enter] Done · [Esc] Cancel · [Alt+Shift+J] Mode (ON) · [Ctrl+Shift+G] Grant folder
 > ```
+
+## Modes: ON · REVIEW · OFF
+
+One key cycles all three states (`cycleEyeState`, `extensions/index.ts`). There is no fourth state: `REVIEW` is simply `enabled && reviewMode`.
+
+```
+Alt+Shift+J ──► ON ──► REVIEW ──► OFF ──┐
+                 ▲                     │
+                 └─────────────────────┘
+```
+
+| Mode | Footer | Layers 1–2 (regex / done-check) | Layer 3 (Jev gate) | Report contract | How review opens |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **ON** | `● ON` | Active | Active on opt-in folders, diffs ≥ 10 lines | Off | Only when the prompt contains `jev` / `@jev` / `/jev-review` |
+| **REVIEW** | `● REVIEW` | Active | Same as `ON` | **Injected on every turn** | Always — no keyword needed |
+| **OFF** | `○ OFF` | Off | Off | Off | Never |
+
+`ON` and `REVIEW` differ in one flag only (`reviewed`) — but it propagates: the flag both injects the contract and adds the `answers_request` dimension to the write gate. Layers 1–2 and every guard are identical in both.
+
+### `ON` — Supervisor active, keyword-triggered review
+
+All three layers run: dangerous `rm -rf` and force-pushes are blocked instantly (0 ms, 0 token), files written without verification earn a reminder, and diffs ≥ 10 lines on consent-granted folders go to the Jev semantic gate (block at `p ≥ 0.85`). Model routing follows `/jev-eye routing`. The report contract is injected only when the prompt says `jev`.
+
+### `REVIEW` — Every turn reviewed
+
+Same protections as `ON`, but `before_agent_start` injects the report contract (machine facts → one Jev table → threshold line → priority conclusion → one confirmation question) on **every** prompt, and the write gate compares code against that turn's request. **No extra Jev call** — `answers_request` rides along in the same batched request as `has_slop`.
+
+Use it when the whole session needs a decision trail without typing `jev` each time.
+
+### `OFF` — Supervisor fully disabled
+
+`before_agent_start`, `tool_call`, and `message_end` return immediately. Regex guards, secret detection, done-check, Jev gate, report contract, and routing all stop — no notifications, no quota, no Jev requests. Use it for legitimate operations the guards would otherwise stop (cleaning `./dist`, force-pushing a work branch).
 
 ## How it works
 
@@ -85,14 +120,14 @@ Agent Action (tool_call / message_end)
 
 ### Jev Gate Modes
 
-Configured via `ctrl+shift+g` or `~/.pi/agent/pi-jev-eye/consent.json`:
+Scope of the Jev semantic gate — independent of the supervisor [mode](#modes-on--review--off) above. Configured via `ctrl+shift+g` or `~/.pi/agent/pi-jev-eye/consent.json`:
 - **Enable all folder:** Jev semantic gate runs across all workspaces.
 - **Enable this folder:** Scoped exclusively to explicitly approved directories and their subdirectories.
 - **Disabled:** Jev semantic gate is paused; Layers 1 & 2 remain active at zero token cost.
 
 ### Reviewed Turns (`jev`)
 
-Include `jev` (or `@jev`, `/jev-review`) anywhere in your prompt to trigger a reviewed turn:
+Include `jev` (or `@jev`, `/jev-review`) anywhere in your prompt to trigger a reviewed turn — or switch to **REVIEW** mode to review every turn without the keyword:
 - **Strict Format Contract:** The agent formats output with machine-verified facts first, followed by a calibrated Jev score table (`value (probability)` with level tags), the threshold bar, a priority conclusion, and exactly one confirmation question.
 - **Single-Flight Semantic Verification:** Stored prompt context is appended to the next Layer 3 check as an `answers_request` judgment, validating task completion in the same API call without extra quota overhead.
 - Occurrences of `pi-jev-eye` and `jev-eye` are ignored to prevent accidental triggers.

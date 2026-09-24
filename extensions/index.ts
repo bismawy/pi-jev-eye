@@ -25,6 +25,7 @@ interface PendingModelRevert {
 
 interface EyeState {
   enabled: boolean;
+  reviewMode: boolean;
   modifiedFilesThisTurn: boolean;
   verifiedThisTurn: boolean;
   pendingRevert?: PendingModelRevert;
@@ -44,6 +45,7 @@ interface EyeState {
 
 const state: EyeState = {
   enabled: true,
+  reviewMode: false,
   modifiedFilesThisTurn: false,
   verifiedThisTurn: false,
   stats: {
@@ -59,7 +61,7 @@ const state: EyeState = {
   },
 };
 
-// --- Layer 1 (local regex rules) lives in ./layer1.ts so it can be checked with `npm test`. ---
+// --- Layer 1 (local regex rules) lives in ./layer1.ts, covered by `npm test`. ---
 
 // --- Layer 3: Jev accounts (pi-typesafe is optional; /jev-eye login owns its own key) ---
 interface JevProvider {
@@ -367,7 +369,7 @@ class StatusPanel {
   private readonly theme: any;
   private readonly actions: {
     rebuild: () => string[];
-    toggleSupervisor: () => void;
+    cycleMode: () => void;
     cycleGate: () => void;
   };
   private readonly done: (value?: void) => void;
@@ -375,7 +377,7 @@ class StatusPanel {
   constructor(
     theme: any,
     lines: string[],
-    actions: { rebuild: () => string[]; toggleSupervisor: () => void; cycleGate: () => void },
+    actions: { rebuild: () => string[]; cycleMode: () => void; cycleGate: () => void },
     done: (value?: void) => void
   ) {
     this.theme = theme;
@@ -395,8 +397,8 @@ class StatusPanel {
       this.done();
       return;
     }
-    if (matchesKey(data, TOGGLE_KEY)) {
-      this.apply(this.actions.toggleSupervisor);
+    if (matchesKey(data, TOGGLE_KEY) || matchesKey(data, LEGACY_TOGGLE_KEY)) {
+      this.apply(this.actions.cycleMode);
       return;
     }
     if (matchesKey(data, GATE_KEY)) {
@@ -417,7 +419,7 @@ class StatusPanel {
       "",
       ...this.lines,
       "",
-      t.fg("dim", statusFooter(state.enabled)),
+      t.fg("dim", statusFooter(state.enabled, state.reviewMode)),
       border(),
     ];
     return lines.map((line) => truncateToWidth(line, width, ""));
@@ -526,7 +528,7 @@ const logoutFlow = async (ctx: any): Promise<void> => {
   }
 };
 
-// Our own usage ledger, plus pi-typesafe's older one so days that predate the switch are not shown as empty.
+// Own ledger + pi-typesafe's older one, so days predating the switch are not shown as empty.
 // The counters and the math live in ./layer1.ts (pure, covered by `npm test`).
 const today = (): string => {
   const now = new Date();
@@ -548,8 +550,8 @@ function recordOwnUsage(patch: Partial<DayTotals>): void {
   try {
     const file = readJsonFile(OWN_USAGE_PATH) ?? { version: 1, days: {} };
     const days = file.days && typeof file.days === "object" ? file.days : {};
-    // A day started by an older version has tokens but no cost; seed the estimate once, or today's total
-    // would keep counting tokens while the cost stays behind.
+    // A day started by an older version has tokens but no cost; seed the estimate once, or the total keeps
+    // counting tokens while the cost stays behind.
     const stored = days[today()];
     const seeded =
       stored && stored.cost === undefined
@@ -568,7 +570,7 @@ function recordOwnUsage(patch: Partial<DayTotals>): void {
   }
 }
 
-// Account balance: only OpenRouter exposes one; TypeSafe's API has no balance route (every /v1/* guess 404s).
+// Account balance: only OpenRouter exposes one; TypeSafe has no balance route (every /v1/* guess 404s).
 let balanceCache: { provider: string; at: number; text: string } | undefined;
 
 async function fetchBalanceText(auth: JevAuth): Promise<string> {
@@ -713,7 +715,7 @@ async function classifyWeight(prompt: string, auth: JevAuth): Promise<"light" | 
   }
 }
 
-// --- Jev gate consent, three values only: Enable all folder / Enable this folder / Disabled ---
+// --- Jev gate consent, three values: Enable all folder / Enable this folder / Disabled ---
 type ConsentMode = "all" | "folder" | "disabled";
 interface Consent {
   mode: ConsentMode;
@@ -722,7 +724,7 @@ interface Consent {
 
 const CONSENT_PATH = join(EYE_DIR, "consent.json");
 
-// Values written by older versions ("folders"/"off") migrate on read; anything unknown falls back to "all",
+// Legacy values ("folders"/"off") migrate on read; anything unknown falls back to "all",
 // which is also what PI_TYPESAFE_ENABLED=1 means for the built-in tool.
 function readConsent(): Consent {
   try {
@@ -730,7 +732,7 @@ function readConsent(): Consent {
     const raw = String(parsed?.mode ?? "all");
     const mode: ConsentMode = raw === "disabled" || raw === "off" ? "disabled" : raw === "folder" || raw === "folders" ? "folder" : "all";
     const folders = Array.isArray(parsed?.folders) ? parsed.folders.filter((f: unknown) => typeof f === "string") : [];
-    // "this folder" with no folder left has nothing to run in, so it reads as Disabled instead of a puzzling empty list.
+    // "this folder" with no folder left reads as Disabled, not as a puzzling empty list.
     return { mode: mode === "folder" && folders.length === 0 ? "disabled" : mode, folders };
   } catch {
     return { mode: "all", folders: [] };
@@ -855,30 +857,76 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
   }
 }
 
-// on/off moved out of the command: one keybinding toggles it and the footer shows the state live.
-const TOGGLE_KEY = "ctrl+shift+e";
-// Second keybinding for the gate value (all folders / this folder / disabled), announced in the same footer.
+// ON -> REVIEW -> OFF -> ON
+const TOGGLE_KEY = "alt+shift+j";
+const LEGACY_TOGGLE_KEY = "ctrl+shift+e";
+// Gate scope cycle, announced in the same footer.
 const GATE_KEY = "ctrl+shift+g";
 
-// Panel chrome for `/jev-eye status`: title, one-line description, and the footer the panel renders.
+// `/jev-eye status` panel chrome: title, one-line description, footer.
 const STATUS_TITLE = "Jev Eye · Status";
 const STATUS_DESC = "Supervisor, Jev gate, model routing, interception and usage for this Pi session.";
-// Keycap hint, not a code constant: `ctrl+shift+e` → `Ctrl+Shift+e`.
+// Keycap hint only: `ctrl+shift+e` -> `Ctrl+Shift+e`.
 const keycap = (key: string) =>
   key
     .split("+")
     .map((part) => (part.length > 1 ? part[0].toUpperCase() + part.slice(1) : part))
     .join("+");
-const statusFooter = (enabled: boolean) =>
-  `[Enter] Done  [Esc] Cancel  [${keycap(TOGGLE_KEY)}] Supervisor (${enabled ? "ON" : "OFF"})  [${keycap(GATE_KEY)}] Grant folder`;
 
-// The live state and both keybindings live in the `/jev-eye status` panel footer, not in Pi's status bar.
+const eyeMode = (enabled: boolean, reviewMode: boolean): "ON" | "REVIEW" | "OFF" =>
+  !enabled ? "OFF" : reviewMode ? "REVIEW" : "ON";
+
+const statusFooter = (enabled: boolean, reviewMode: boolean) =>
+  `[Enter] Done  [Esc] Cancel  [${keycap(TOGGLE_KEY)}] Mode (${eyeMode(enabled, reviewMode)})  [${keycap(GATE_KEY)}] Grant folder`;
+
+function cycleEyeState(ctx?: any): "ON" | "REVIEW" | "OFF" {
+  if (!state.enabled) {
+    state.enabled = true;
+    state.reviewMode = false;
+  } else if (!state.reviewMode) {
+    state.enabled = true;
+    state.reviewMode = true;
+  } else {
+    state.enabled = false;
+    state.reviewMode = false;
+  }
+  if (ctx) syncEyeStatus(ctx);
+  return eyeMode(state.enabled, state.reviewMode);
+}
+
+// Live state + keybindings render in the panel footer, not in Pi's status bar.
 const EYE_SUBCOMMANDS = [
   { value: "status", label: "status", description: "Show supervisor status, account, usage, and interception stats" },
+  { value: "toggle", label: "toggle", description: "Cycle mode: ON -> REVIEW -> OFF" },
+  { value: "on", label: "on", description: "Set mode to ON (supervisor active, prompt trigger)" },
+  { value: "review", label: "review", description: "Set mode to REVIEW (all turns reviewed)" },
+  { value: "off", label: "off", description: "Set mode to OFF (supervisor disabled)" },
   { value: "login", label: "login", description: "Store a Jev key: TypeSafe account or OpenRouter account" },
   { value: "logout", label: "logout", description: "Delete the key stored by /jev-eye login" },
   { value: "routing", label: "routing", description: "Routing models menu, or direct: routing light | routing heavy | routing on | routing off" },
 ];
+
+// Live supervisor state for Pi's status bar (read by the pi-arnative footer):
+// key "pi-jev-eye" present = extension active; ● ON / ○ OFF = supervisor state.
+function syncEyeStatus(ctx: any): void {
+	try {
+		const ui = ctx?.ui;
+		if (typeof ui?.setStatus !== "function") return;
+		const theme = ui.theme;
+		const paint = (color: string, text: string): string => {
+			try {
+				return theme?.fg ? theme.fg(color, text) : text;
+			} catch {
+				return text;
+			}
+		};
+		const dot = !state.enabled ? paint("dim", "○") : state.reviewMode ? paint("warning", "●") : paint("accent", "●");
+		const label = !state.enabled ? "OFF" : state.reviewMode ? "REVIEW" : "ON";
+		ui.setStatus("pi-jev-eye", `${dot} ${paint("muted", "jev-eye: ")} ${paint("text", label)}`);
+	} catch {
+		// ui may already be disposed at session close: ignore
+	}
+}
 
 export default function (pi: ExtensionAPI) {
 
@@ -887,10 +935,10 @@ export default function (pi: ExtensionAPI) {
     if (!state.enabled) return;
     const prompt = String(event?.prompt ?? "");
 
-    // Reviewed turn: remember the request for the gate and inject the report contract for the model.
-    // Set here and cleared by the next prompt — never in message_end: that fires before this turn's tool
-    // calls run, so clearing it there wiped the request before the write gate could ever read it.
-    const reviewed = REVIEW_TRIGGER.test(prompt);
+    // Reviewed turn: remember the request for the gate and inject the report contract.
+    // Set here, cleared by the next prompt — never in message_end: that fires before this turn's tool
+    // calls run, so clearing it there wiped the request before the write gate could read it.
+    const reviewed = state.reviewMode || REVIEW_TRIGGER.test(prompt);
     state.pendingReview = reviewed ? prompt.slice(0, 600) : undefined;
     if (reviewed) {
       state.stats.reviewTurns++;
@@ -943,8 +991,8 @@ export default function (pi: ExtensionAPI) {
       return contract;
     }
 
-    // Context guard: if routing to light, ensure session context won't overflow the light model
-    // or trigger auto-compacting and dump large context tokens onto a rate-limited model.
+    // Context guard: routing to light must not overflow the light model or trigger auto-compacting,
+    // which would dump large context tokens onto a rate-limited model.
     if (target === "light") {
       const usage = typeof ctx?.getContextUsage === "function" ? ctx.getContextUsage() : undefined;
       const currentTokens = Number(usage?.tokens ?? 0);
@@ -983,7 +1031,7 @@ export default function (pi: ExtensionAPI) {
 
   // Restore model after a light turn so the session does not stay stuck on the chore model.
   // agent_settled, not agent_end: agent_end closes one low-level run while retries, recovery,
-  // compaction, or queued follow-ups may still run after it; settled means Pi will not continue.
+  // compaction, or queued follow-ups may still run after it. Settled means Pi will not continue.
   pi.on("agent_settled", async (_event: any, ctx: any) => {
     if (!state.enabled || !state.pendingRevert) return;
     const { model, thinking } = state.pendingRevert;
@@ -1002,13 +1050,20 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerShortcut(TOGGLE_KEY, {
-    description: "Toggle the pi-jev-eye supervisor",
+    description: "Cycle pi-jev-eye mode: ON -> REVIEW -> OFF",
     handler: async (ctx: any) => {
-      state.enabled = !state.enabled;
-      ctx.ui.notify(
-        `[pi-jev-eye] Supervisor ${state.enabled ? "enabled" : "disabled"}. Toggle again with ${TOGGLE_KEY}.`,
-        state.enabled ? "info" : "warning"
-      );
+      const mode = cycleEyeState(ctx);
+      const desc = mode === "OFF" ? "supervisor disabled" : mode === "REVIEW" ? "all turns reviewed" : "prompt trigger";
+      ctx.ui.notify(`[pi-jev-eye] Mode: ${mode} (${desc}). Cycle with ${TOGGLE_KEY}.`, mode === "OFF" ? "warning" : "info");
+    },
+  });
+
+  pi.registerShortcut(LEGACY_TOGGLE_KEY, {
+    description: "Cycle pi-jev-eye mode (alias for Alt+Shift+J)",
+    handler: async (ctx: any) => {
+      const mode = cycleEyeState(ctx);
+      const desc = mode === "OFF" ? "supervisor disabled" : mode === "REVIEW" ? "all turns reviewed" : "prompt trigger";
+      ctx.ui.notify(`[pi-jev-eye] Mode: ${mode} (${desc}). Cycle with ${TOGGLE_KEY}.`, mode === "OFF" ? "warning" : "info");
     },
   });
 
@@ -1028,6 +1083,11 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_start", () => {
     state.modifiedFilesThisTurn = false;
     state.verifiedThisTurn = false;
+  });
+
+  // Publish supervisor state to the status bar on every session start/reload.
+  pi.on("session_start", async (_event: any, ctx: any) => {
+    syncEyeStatus(ctx);
   });
 
   // --- Layer 1 & 3: tool_call interception ---
@@ -1054,7 +1114,7 @@ export default function (pi: ExtensionAPI) {
         );
         return {
           block: true,
-          // No `terminate`: the reason goes back to the model, which retries a scoped command on its own.
+          // No `terminate`: the reason goes back to the model, which retries a scoped command itself.
           reason: `[pi-jev-eye] Command blocked for safety: "${cmd}". Destructive actions require explicit user confirmation.`,
         };
       }
@@ -1178,7 +1238,7 @@ export default function (pi: ExtensionAPI) {
     const routing = readRouting();
     const models: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
     const thisFolderOn = consentAllows(ctx.cwd, consent);
-    // One line, one state: this folder, all folders, or off. The folder list itself never renders.
+    // One line, one state: this folder, all folders, or off. The folder list never renders.
     const scopeValue =
       consent.mode === "folder" ? "This folder" : consent.mode === "all" ? "All folders" : "Disabled";
     const scopeState =
@@ -1187,7 +1247,7 @@ export default function (pi: ExtensionAPI) {
         : "";
     const classified = Math.min(state.stats.jevRoutingCalls, JEV_MAX_ROUTING_CALLS);
     const lines = [
-      `${paint("dim", "Supervisor: ")}${paint(state.enabled ? "success" : "warning", state.enabled ? "ENABLED" : "DISABLED")}`,
+      `${paint("dim", "Supervisor: ")}${paint(state.enabled ? "success" : "warning", state.enabled ? "ENABLED" : "DISABLED")} | ${paint("dim", "Review Mode: ")}${paint(state.reviewMode ? "warning" : "muted", state.reviewMode ? "ALWAYS ON" : "prompt trigger")}`,
       `${paint("dim", "Routing: ")}${paint(routing.enabled ? "success" : "muted", routing.enabled ? "ON" : "off")} | ${paint("dim", "Light: ")}${modelLabelFor(models, routing.light) || "unset"} | ${paint("dim", "Heavy: ")}${modelLabelFor(models, routing.heavy) || "unset"} | ${state.stats.lightTurns} light / ${state.stats.heavyTurns} heavy turns | ${classified}/${JEV_MAX_ROUTING_CALLS} classified`,
       `${paint("dim", "Jev Gate: ")}${
         auth
@@ -1217,7 +1277,7 @@ export default function (pi: ExtensionAPI) {
     const balance = await balanceText(resolveJevAuth());
 
     if (typeof ctx.ui.custom !== "function") {
-      ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx, balance), "", statusFooter(state.enabled)].join("\n"), "info");
+      ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx, balance), "", statusFooter(state.enabled, state.reviewMode)].join("\n"), "info");
       return;
     }
 
@@ -1227,8 +1287,8 @@ export default function (pi: ExtensionAPI) {
         buildStatus(ctx, balance, theme),
         {
           rebuild: () => buildStatus(ctx, balance, theme),
-          toggleSupervisor: () => {
-            state.enabled = !state.enabled;
+          cycleMode: () => {
+            cycleEyeState(ctx);
           },
           cycleGate: () => writeConsent(nextConsent(readConsent(), ctx.cwd)),
         },
@@ -1367,6 +1427,37 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    if (sub === "toggle") {
+      const mode = cycleEyeState(ctx);
+      const desc = mode === "OFF" ? "supervisor disabled" : mode === "REVIEW" ? "all turns reviewed" : "prompt trigger";
+      ctx.ui.notify(`[pi-jev-eye] Mode: ${mode} (${desc}). Cycle with ${TOGGLE_KEY}.`, mode === "OFF" ? "warning" : "info");
+      return;
+    }
+
+    if (sub === "on") {
+      state.enabled = true;
+      state.reviewMode = false;
+      syncEyeStatus(ctx);
+      ctx.ui.notify(`[pi-jev-eye] Mode: ON (prompt trigger). Cycle with ${TOGGLE_KEY}.`, "info");
+      return;
+    }
+
+    if (sub === "review") {
+      state.enabled = true;
+      state.reviewMode = true;
+      syncEyeStatus(ctx);
+      ctx.ui.notify(`[pi-jev-eye] Mode: REVIEW (all turns reviewed). Cycle with ${TOGGLE_KEY}.`, "info");
+      return;
+    }
+
+    if (sub === "off") {
+      state.enabled = false;
+      state.reviewMode = false;
+      syncEyeStatus(ctx);
+      ctx.ui.notify(`[pi-jev-eye] Mode: OFF (supervisor disabled). Cycle with ${TOGGLE_KEY}.`, "warning");
+      return;
+    }
+
     if (sub === "login") {
       await loginFlow(ctx);
       return;
@@ -1379,7 +1470,7 @@ export default function (pi: ExtensionAPI) {
 
     if (sub !== "status") {
       ctx.ui.notify(
-        `[pi-jev-eye] Unknown argument "${sub}". Use: status | login | logout | routing [on|off], or no argument for the menu (supervisor on/off is ${TOGGLE_KEY}).`,
+        `[pi-jev-eye] Unknown argument "${sub}". Use: status | on | review | off | toggle | login | logout | routing [on|off], or no argument for the menu (cycle mode is ${TOGGLE_KEY}).`,
         "warning"
       );
       return;
