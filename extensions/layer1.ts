@@ -1,12 +1,11 @@
 // --- Layer 1: Local Regex Patterns (0 ms, 0 Token) ---
-// Pure rules and pure ledger math, kept out of index.ts so they can be checked with `npm test` (node --test test/).
-// A wipe is judged per path argument, not by "the command mentions / somewhere": the old all-absolute-paths rule
-// blocked `rm -rf /tmp/scratch` while a regex quirk made it block `git push --force origin feature/x` too.
-// Catastrophic = root, a whole top-level dir (/usr, /tmp, /home), a system dir near the top (/var/log),
-// home in any form (~, ~/x, $HOME/x), a parent hop, or a top-level glob (/home/*). Everything deeper is scoped.
+// Pure rules + pure ledger math, kept out of index.ts so `npm test` (node --test test/) can check them.
+// A wipe is judged per path argument, not by "the command mentions / somewhere".
+// Catastrophic = root, a top-level dir (/usr, /tmp, /home), a top-level system dir (/var/log),
+// home in any form (~, ~/x, $HOME/x), a parent hop, or a top-level glob (/home/*). Deeper paths are scoped.
 const SYSTEM_ROOT_DIRS = new Set(["etc", "usr", "var", "boot", "bin", "sbin", "lib", "lib64", "opt", "srv", "root", "sys", "proc", "dev"]);
 
-// Every rm in the command, so a scoped `rm` early in the line cannot hide a catastrophic one later.
+// Every rm in the command: a scoped `rm` early in the line must not hide a catastrophic one later.
 const WIPE_INVOCATION = /\brm\s+([^;&|]*)/g;
 
 /** Any recursive or forced flag, whatever the case or order: -rf, -R, -f -r, --recursive, --force. */
@@ -56,7 +55,7 @@ export const SECRET_PATTERNS = [
 ];
 
 // --- Usage-ledger math (pure: no fs, no network, so `npm test` can check it) ---
-// pi-jev-eye's own ledger and the older pi-typesafe one count the same requests under different names.
+// This package's ledger and the older pi-typesafe one count the same requests under different names.
 export interface DayTotals {
   requests: number;
   ok: number;
