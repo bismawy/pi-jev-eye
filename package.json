@@ -17,6 +17,7 @@
   "author": "bismawy",
   "license": "MIT",
   "scripts": {
+    "dev": "pi -e ./extensions/index.ts",
     "test": "node --test"
   },
   "publishConfig": {
@@ -24,6 +25,7 @@
   },
   "files": [
     "extensions",
+    "LICENSE",
     "README.md"
   ],
   "repository": {
@@ -35,6 +37,7 @@
     "url": "https://github.com/bismawy/pi-jev-eye/issues"
   },
   "pi": {
+    "image": "https://raw.githubusercontent.com/bismawy/pi-jev-eye/main/assets/banner.webp",
     "extensions": [
       "./extensions/index.ts"
     ]
