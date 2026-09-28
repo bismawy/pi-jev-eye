@@ -83,7 +83,7 @@ Agent Action (tool_call / message_end)
 
 - **Layer 1 (`extensions/layer1.ts`):** Pre-execution regex filter. Blocks destructive bash wipes (`rm -rf /`, `rm -rf $HOME`, `git reset --hard`, `DROP DATABASE`, `mkfs`), protected branch force-pushes (`main`/`master`, while safely permitting `--force-with-lease`), and secret leaks (`sk-...`, `ghp_...`, `AIza...`, private SSH keys).
 - **Layer 2:** Turn monitor. Tracks file modifications during a turn and prompts the agent if it declares completion without invoking recognized test suites (`npm test`, `pnpm test`, `bun test`, `cargo test`, `cargo check`, `pytest`, `mypy`, `ruff`, `go test`, `vitest`).
-- **Layer 3:** Post-generation gate. Submits code diffs ≥ 10 lines in opt-in folders to TypeSafe Jev (`has_slop`). Blocks placeholder implementations, stubs, and empty boilerplate with actionable diagnostics.
+- **Layer 3:** Post-generation gate. Submits code diffs ≥ 10 lines in opt-in folders to TypeSafe Jev as a single batch request (`has_slop`, `has_unfinished_todo`, and prompt alignment `answers_request` on reviewed turns). Blocks when `p ≥ 0.85` with actionable diagnostics.
 
 </details>
 
@@ -95,6 +95,7 @@ Run `/jev-eye routing` to open the interactive model selector:
 - **Light Model:** Routine chores (`status`, `commit`, `push`, `log`, `diff`) route to the light model with **zero Jev requests**.
 - **Heavy Model:** Substantive coding and review tasks route to the heavy model.
 - **Independent Thinking:** Set custom reasoning effort for both slots (`off` → `minimal` → `low` → `medium` → `high` → `xhigh` → `max`).
+- **Context Guard:** Prevents overflow by staying on the heavy/current model if context exceeds 30k tokens or 50% window.
 - **Theme-Adaptive TUI:** Automatically matches active Pi theme tokens (`accent`, `muted`, `dim`, `success`).
 
 | Key | Action |
@@ -119,19 +120,6 @@ Tracks detailed usage in `~/.pi/agent/pi-jev-eye/usage.json` (plus legacy migrat
 - **Daily & Monthly Telemetry:** Request counts (success/fail), token counters (input/output), and estimated dollar cost.
 - **Provider Balance:** Live credit lookup for OpenRouter accounts (`/api/v1/key`, cached 5m).
 - **Interception Stats:** Cumulative counts of Layer 1 regex blocks, Layer 2 done-check reminders, Layer 3 slop rejections, and reviewed turns.
-
-</details>
-
-<details>
-<summary><b>Comparison with pi-warden</b></summary>
-
-| Metric | `pi-warden` | `pi-jev-eye` |
-| --- | --- | --- |
-| **Package Size** | ~900 KB (dozens of files) | **~62 KB (2 source files: `index.ts` + `layer1.ts`)** |
-| **Dependencies** | Multiple external packages | **0 external dependencies** |
-| **Destructive Guard** | AST parsing + LLM roundtrips | **Deterministic local regex (0 ms, 0 token)** |
-| **Jev Quota Consumption** | Evaluates all interactions | **Ultra-frugal (only diffs ≥ 10 lines)** |
-| **Secret Prevention** | Cloud-assisted review | **Local zero-leak regex block** |
 
 </details>
 
