@@ -6,7 +6,7 @@ Ultra-lean supervisor. Three-layer guardrails. Semantic gate for Pi.
 [![badge](https://shieldcn.dev/npm/@bismawy/pi-jev-eye.svg?variant=outline&size=xs)](https://www.npmjs.com/package/@bismawy/pi-jev-eye)
 [![license](https://shieldcn.dev/github/bismawy/pi-jev-eye/license.svg?variant=outline&size=xs)](https://github.com/bismawy/pi-jev-eye)
 
-![Jev Eye: three-layer supervisor, regex guardrails, and TypeSafe Jev semantic gate](https://raw.githubusercontent.com/bismawy/pi-jev-eye/main/assets/banner.webp)
+<img src="https://raw.githubusercontent.com/bismawy/pi-jev-eye/main/assets/banner.webp" alt="Jev Eye: three-layer supervisor, regex guardrails, and TypeSafe Jev semantic gate" width="100%">
 
 ## Overview
 
