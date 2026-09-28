@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Refined manifest description in `package.json` to adhere to `/arnative-pi` standard formatting.
+
+---
+
 ## [0.1.14] - 2026-09-28
 
 ### Added
