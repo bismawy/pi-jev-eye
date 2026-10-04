@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Reviewed-turn report no longer references items that have no table row. The contract now requires one Jev table covering every named ID (resolved and open) plus a final action column (`DONE` / `BLOCKED` / `NEXT`), so the conclusion never forces the reader to scroll up to resolve an ID.
+
 ### Changed
 - Refined manifest description in `package.json` to adhere to `/arnative-pi` standard formatting.
 
