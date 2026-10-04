@@ -2,7 +2,7 @@
   "name": "@bismawy/pi-jev-eye",
   "version": "0.1.15",
   "type": "module",
-  "description": "Ultra-lean supervisor for Pi: zero-token regex guardrails, test verification tracking, and TypeSafe Jev semantic slop gate.",
+  "description": "Ultra-lean supervisor. Three-layer guardrails. Semantic gate for Pi. Blocks destructive commands offline, checks tests, gates diffs through TypeSafe Jev.",
   "keywords": [
     "pi-package",
     "pi-extension",
