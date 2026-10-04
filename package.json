@@ -1,6 +1,6 @@
 {
   "name": "@bismawy/pi-jev-eye",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "type": "module",
   "description": "Ultra-lean supervisor. Three-layer guardrails. Semantic gate for Pi. Blocks destructive commands offline, checks tests, gates diffs through TypeSafe Jev.",
   "keywords": [

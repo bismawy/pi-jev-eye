@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.16] - 2026-10-04
 
 ### Changed
 - `package.json` `description` now leads with the README tagline ("Ultra-lean supervisor. Three-layer guardrails. Semantic gate for Pi.") followed by the capability summary, per the `/arnative-pi` manifest standard — pi.dev/packages renders this field verbatim as the package card description.
