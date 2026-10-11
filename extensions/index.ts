@@ -12,6 +12,7 @@ import {
   boxEdge,
   boxRow,
   cfRunUrl,
+  chosenRowPainter,
   clefBody,
   clefBudget,
   clefError,
@@ -287,11 +288,13 @@ class LoginPicker {
   private readonly options: { label: string; status: "stored" | "unset"; provider: JevProvider }[];
   private readonly theme: any;
   private readonly done: (value: JevProvider | null) => void;
+  private readonly soft: (text: string) => string;
   private index = 0;
 
   constructor(theme: any, store: AuthStore, done: (value: JevProvider | null) => void) {
     this.theme = theme;
     this.done = done;
+    this.soft = chosenRowPainter(theme);
     this.options = JEV_PROVIDERS.map((provider) => ({
       label: provider.label,
       status: storedCredential(store, provider.id) ? "stored" : "unset",
@@ -341,7 +344,7 @@ class LoginPicker {
     for (const [i, option] of this.options.entries()) {
       const cursor = i === this.index;
       const mark = option.status === "stored" ? t.fg("success", "✓ stored") : t.fg("dim", "• not configured");
-      lines.push(`${cursor ? t.fg("accent", "→ ") : "  "}${t.fg(cursor ? "accent" : "text", option.label)}  ${mark}`);
+      lines.push(`${cursor ? t.fg("accent", "→ ") : "  "}${cursor ? this.soft(option.label) : t.fg("text", option.label)}  ${mark}`);
     }
     // The live tip: whatever is highlighted, not a static caption.
     const current = this.options[this.index];
@@ -377,6 +380,7 @@ class ListPicker {
   private readonly paint: (text: string) => string;
   private readonly onBack: (() => void) | undefined;
   private readonly done: (value: number | null) => void;
+  private readonly soft: (text: string) => string;
   private index = 0;
 
   constructor(
@@ -394,6 +398,7 @@ class ListPicker {
     this.subtitle = subtitle;
     this.done = done;
     this.paint = paint;
+    this.soft = chosenRowPainter(theme);
     this.onBack = onBack;
     // A menu inside an extension goes back to the previous menu with [←]; the root has nowhere to go.
     this.footer = onBack ? "[↑↓] Move  [Enter] Choose  [←] Back  [Esc] Cancel" : "[↑↓] Move  [Enter] Choose  [Esc] Cancel";
@@ -450,15 +455,6 @@ class ListPicker {
   }
 
   invalidate(): void {}
-
-  /** Chosen rows take the soft accent when the theme has one, the thinking tint otherwise. */
-  private soft(text: string): string {
-    try {
-      return this.theme.fg("accentSoft", text);
-    } catch {
-      return this.theme.fg("thinkingText", text);
-    }
-  }
 }
 
 /** Drive the same picker everywhere: TUI gets the rounded box, RPC and headless keep `ctx.ui.select`. */
@@ -585,6 +581,7 @@ class RoutingPicker {
   private readonly theme: any;
   private readonly done: (value: Routing | null) => void;
   private readonly paint: (text: string) => string;
+  private readonly soft: (text: string) => string;
   private static readonly WINDOW = 10;
 
   constructor(
@@ -600,6 +597,7 @@ class RoutingPicker {
     this.pending = { ...initial };
     this.done = done;
     this.paint = paint;
+    this.soft = chosenRowPainter(theme);
     const preferred = focus === "light" ? initial.light : initial.heavy;
     const at = models.findIndex((m) => modelRef(m) === preferred);
     this.index = at >= 0 ? at : 0;
@@ -690,10 +688,10 @@ class RoutingPicker {
       const cursor = rows[this.index] === model;
       const slots = [this.pending.light === ref ? "light" : "", this.pending.heavy === ref ? "heavy" : ""].filter(Boolean);
       const mark = slots.length ? t.fg("success", ` ✓ (${slots.join(", ")})`) : "";
-      // The whole highlighted row — arrow, id and provider tag — takes the accent colour, like the reference panel.
+      // Chosen row: the arrow keeps the accent, the model id takes the soft tint, the provider tag stays muted.
       const prefix = cursor ? t.fg("accent", "→ ") : "  ";
-      const name = t.fg(cursor ? "accent" : "text", model.id);
-      const provider = t.fg(cursor ? "accent" : "muted", `[${model.provider}]`);
+      const name = cursor ? this.soft(model.id) : t.fg("text", model.id);
+      const provider = t.fg("muted", `[${model.provider}]`);
       lines.push(`${prefix}${name} ${provider}${mark}`);
     }
 

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, boxBorderPainter, boxEdge, boxRow, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, statusRow, sumDays, thinkingColorSlot, visibleWidth, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, boxBorderPainter, boxEdge, boxRow, cfRunUrl, chosenRowPainter, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, statusRow, sumDays, thinkingColorSlot, visibleWidth, wipeTarget } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -311,6 +311,26 @@ test("the box border slot follows the thinking level", () => {
   assert.equal(thinkingColorSlot("HIGH"), "thinkingHigh", "matching is case-insensitive");
   assert.equal(thinkingColorSlot("max"), "thinkingMax");
   assert.equal(thinkingColorSlot("levels-from-the-future"), "thinkingOff", "an unknown level never throws");
+});
+
+test("a chosen row's body takes the soft tint, never the accent", () => {
+  const withSoft = chosenRowPainter({ fg: (color, text) => `<${color}>${text}</${color}>` });
+  assert.equal(withSoft("Login"), "<accentSoft>Login</accentSoft>");
+  const withoutSoft = chosenRowPainter({
+    fg: (color, text) => {
+      if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
+      return `<${color}>${text}</${color}>`;
+    },
+  });
+  assert.equal(withoutSoft("Login"), "<thinkingText>Login</thinkingText>", "a theme without the soft token keeps its own tint");
+  const neither = chosenRowPainter({
+    fg: (color, text) => {
+      if (color !== "accent") throw new Error(`Unknown theme color: ${color}`);
+      return `<${color}>${text}</${color}>`;
+    },
+  });
+  assert.equal(neither("Login"), "<accent>Login</accent>", "a theme with neither token falls back to accent");
+  assert.equal(chosenRowPainter(null)("Login"), "Login", "no theme yet means no colour, not a crash");
 });
 
 test("a status row keeps its divider in one column and its status on its own token", () => {

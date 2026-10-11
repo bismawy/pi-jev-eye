@@ -405,6 +405,27 @@ export function boxBorderPainter(theme: BoxTheme | null | undefined): (text: str
   }
 }
 
+/**
+ * Painter for a chosen row's body — the arnative rule: the `→` marker keeps the accent, the text moves
+ * to the soft tint. `accentSoft` is arnative-only, so probe it and fall back to `thinkingText`, which
+ * every theme defines (unlike `tint`). Picking rows (`accent`) is the built-in look, not this one. */
+export function chosenRowPainter(theme: BoxTheme | null | undefined): (text: string) => string {
+  const fg = theme?.fg?.bind(theme);
+  if (!fg) return (text) => text;
+  const accent = (text: string) => fg("accent", text);
+  try {
+    fg("accentSoft", ""); // probe once here, or the first row would throw instead of falling back
+    return (text) => fg("accentSoft", text);
+  } catch {
+    try {
+      fg("thinkingText", "");
+      return (text) => fg("thinkingText", text);
+    } catch {
+      return accent;
+    }
+  }
+}
+
 /** `╭───╮` / `╰───╯`. Width holds at 1-2 because a line shorter than the frame beats a downshifted one. */
 export function boxEdge(left: string, right: string, width: number, paint: (text: string) => string = (text) => text): string {
   return paint(`${left}${"─".repeat(Math.max(0, width - 2))}${right}`);
