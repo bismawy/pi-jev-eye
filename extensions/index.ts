@@ -256,12 +256,22 @@ function keySources(): { usable: string[]; cfTokenWithoutAccount: boolean } {
   return { usable, cfTokenWithoutAccount };
 }
 
-const providerChoices = () => JEV_PROVIDERS.map((p) => `${p.label}  ·  key from ${p.keyHint}`);
-
-const providerNameByLabel = (label: string): JevProvider | undefined => {
-  const index = providerChoices().indexOf(label);
-  return index >= 0 ? JEV_PROVIDERS[index] : undefined;
+/**
+ * The login menu's options, paired with the provider each one stands for. The pairing is built once and
+ * carried through the flow: re-deriving it from labels would re-read the store and could map a choice
+ * onto the wrong provider if the file changed in between.
+ */
+const loginOptions = (): { label: string; provider: JevProvider }[] => {
+  const { store } = readAuthStore();
+  return JEV_PROVIDERS.map((provider) => ({
+    label: `${provider.label} ${storedCredential(store, provider.id) ? "✓ stored" : "• not configured"}`,
+    provider,
+  }));
 };
+
+/** Where each key comes from, shown as tips above the menu: `select` has no room for a side panel. */
+const providerTips = (): string =>
+  ["Key sources:", ...JEV_PROVIDERS.map((p) => `  ${p.label} — ${p.keyHint}`)].join("\n");
 
 // --- Cloudflare Workers AI envelope: the REST route wraps the System One answer in { result, success } ---
 // `clefBody` / `clefError` live in ./layer1.ts (pure, covered by `npm test`); the offline gate must not
@@ -648,11 +658,12 @@ const loginFlow = async (ctx: any): Promise<void> => {
     if (!proceed) return;
   }
 
-  const labels = providerChoices();
-  const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", labels);
+  const options = loginOptions();
+  ctx.ui.notify(`[pi-jev-eye] ${providerTips()}`, "info");
+  const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", options.map((o) => o.label));
   if (!choice) return;
 
-  const provider = providerNameByLabel(choice) ?? JEV_PROVIDERS[0];
+  const provider = options.find((o) => o.label === choice)?.provider ?? JEV_PROVIDERS[0];
 
   // Clef cannot be reached without an account id, so collect it before the secret.
   let accountId: string | undefined;

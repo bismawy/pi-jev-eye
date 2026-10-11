@@ -4,6 +4,7 @@
 
 ### Added
 - **Multi-credential auth store and a logout picker.** `auth.json` is now version 2 — a `providers` map keyed by provider id — so TypeSafe, OpenRouter and Clef can stay logged in at the same time. `/jev-eye logout` offers **Jev**, **Clef**, or **All** when several are stored; with one stored it just confirms that one. A v1 single-key file is migrated on first read and the original is kept at `auth.json.v1.bak`.
+- **`/jev-eye login` shows what is already stored.** Each provider row carries its state — `✓ stored` or `• not configured` — read from `auth.json`, so the menu answers "what am I logged in with?" before a key is typed. Key sources are shown as tips above the menu, because Pi's `select` has no room for a side panel.
 - Logging in now **adds** a credential instead of replacing the file, so switching backend no longer discards the previous key. An empty key is refused rather than overwriting a good credential.
 - Keys supplied by the environment are reported by logout (`$TYPESAFE_API_KEY comes from the environment and cannot be removed here.`) because a process cannot unset a variable belonging to its caller.
 - `migrateAuthStore`, `putCredential`, `removeCredentials`, `storedProviderIds` in `extensions/layer1.ts`: the store folds are pure and covered by `npm test`.
