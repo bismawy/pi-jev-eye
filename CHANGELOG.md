@@ -5,8 +5,8 @@
 ### Changed
 - **`/jev-eye status` rows are a table, not sentences.** Every row now reads `Label · status | detail` — `Supervisor ENABLED | Review prompt trigger`, `Scope folders ON | All Folders`, `Gate READY | TypeSafe · jev-latest`, `Rules ACTIVE | …`, `Routing OFF | …`, `Blocked STATS | …`, `Context USED | …` — with the status word coloured by state, so one pass down the left column answers "is it on?".
 - **Grant folder moved to `Ctrl+Shift+u`.** `Ctrl+Shift+g` *is* pi's own `tui.altScreen.searchPrevious`, so every boot printed a shortcut conflict for it and the gate key could fire a search action. `Ctrl+Shift+u` is bound to nothing.
-- **Mode toggle is `Ctrl+Shift+e`** — one shortcut, no alias. `Alt+Shift+J` is gone, and so is `Ctrl+Shift+s`: in the same terminal where `Ctrl+Shift+e` cycles the mode, `Ctrl+Shift+s` produced no event at all, so it was advertised but never arrived. `Ctrl+Shift+e` also has no built-in pi binding, unlike `Ctrl+Shift+g`. Every hint reads from one `KEY_SETS` table, so the footer, the notifications and the shortcut registration cannot drift apart.
-- `/jev-eye status` footer advertises `[←] Back` next to `[Ctrl+Shift+s] Supervisor`, and the read-only usage footer does the same.
+- **Mode toggle is `Ctrl+Shift+e`** — one shortcut, no alias. `Alt+Shift+J` is gone, and so is `Ctrl+Shift+s`: in the same terminal where `Ctrl+Shift+e` cycled the mode, `Ctrl+Shift+s` produced no event at all, so it was advertised but never arrived. Every hint reads from one `KEY_SETS` table, so the footer, the notifications and the shortcut registration cannot drift apart.
+- `/jev-eye status` footer advertises `[←] Back` next to `[Ctrl+Shift+e] Supervisor` and `[Ctrl+Shift+u] Grant folder`; the read-only usage footer shows `[←] Back` too.
 
 ### Added
 - **`/jev-eye` screens now use the Arnative rounded-box template**, and the template itself is the default in the `arnative-pi` skill: title with a description underneath, chosen row in `accentSoft`, `·` dividers in `dim`, keybind legend in brackets (`[Enter] Choose`), and **`[←] Back`** inside extension menus to reopen the previous one.
