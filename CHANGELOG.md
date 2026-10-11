@@ -4,7 +4,7 @@
 
 ### Added
 - **Multi-credential auth store and a logout picker.** `auth.json` is now version 2 — a `providers` map keyed by provider id — so TypeSafe, OpenRouter and Clef can stay logged in at the same time. `/jev-eye logout` offers **Jev**, **Clef**, or **All** when several are stored; with one stored it just confirms that one. A v1 single-key file is migrated on first read and the original is kept at `auth.json.v1.bak`.
-- **`/jev-eye login` shows what is already stored.** Each provider row carries its state — `✓ stored` in the theme's `success` green, or a dim `• not configured` — read from `auth.json`, so the menu answers "what am I logged in with?" before a key is typed. Pi's `select` has no preview slot and its `description` option is never forwarded by interactive mode, so the tip is passed as extra non-selectable rows under the list; picking one is ignored rather than crashing. Choosing a provider then prints its exact key source.
+- **`/jev-eye login` shows what is already stored.** Each provider row carries its state — `✓ stored` in the theme's `success` green, or a dim `• not configured` — read from `auth.json`, so the menu answers "what am I logged in with?" before a key is typed. Choosing a provider then prints its exact key source.
 - Logging in now **adds** a credential instead of replacing the file, so switching backend no longer discards the previous key. An empty key is refused rather than overwriting a good credential.
 - Keys supplied by the environment are reported by logout (`$TYPESAFE_API_KEY comes from the environment and cannot be removed here.`) because a process cannot unset a variable belonging to its caller.
 - `migrateAuthStore`, `putCredential`, `removeCredentials`, `storedProviderIds` in `extensions/layer1.ts`: the store folds are pure and covered by `npm test`.
@@ -26,6 +26,7 @@
 - The ledger now records `providers` (a per-provider counter map) and `neurons` as optional fields, so one panel can split Jev from Clef without a second file.
 
 ### Changed
+- **The login picker renders the key-source tip live.** `ctx.ui.select` paints one fixed string per row, so the tip could not follow the cursor and sat in the list as dead filler. The menu is now a small custom component (`LoginPicker`) that re-renders on every move and shows the highlighted provider's key source and environment fallback underneath the list. Headless and RPC sessions, which have no `custom` UI, keep the plain select with the same rows. The store is re-read after the picker closes, so a key added elsewhere mid-flow is still counted when deciding which backends stayed logged in.
 - **`/jev-eye status` no longer carries usage.** Spend had two homes after `/jev-eye usage` shipped. Status is now a nine-line live-state view (supervisor, gate key, rules, routing, block counts, context), and the balance lookup moved to `usage` — so status is instant and never waits on a network call.
 - Jev providers gained a short name (`short`) for one-line rows: `Cloudflare Workers AI (Clef)` reads as `Clef` in the status line, while the login menu keeps the full label.
 - **Discoverability:** `package.json` `description` and `keywords` now name Cloudflare Workers AI, Clef, and `clef-flash`, and the README leads with a keyword line plus a "Why Clef" section — so a search for the Clef backend surfaces this package.

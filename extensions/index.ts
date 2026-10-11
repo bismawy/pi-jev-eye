@@ -257,24 +257,88 @@ function keySources(): { usable: string[]; cfTokenWithoutAccount: boolean } {
 }
 
 /**
- * The login menu's options, paired with the provider each one stands for. The pairing is built once and
- * carried through the flow: re-deriving it from labels would re-read the store and could map a choice
- * onto the wrong provider if the file changed in between.
+ * The login menu, as a real component rather than `ctx.ui.select`.
  *
- * `paint` colourises the status suffix. Pi's selector wraps the whole row in its own colour, which
- * overrides an embedded SGR for the surrounding text but not one that resets before it — so the green
- * survives, and the menu is plain text when no theme is on hand (RPC, headless).
+ * `select` renders one fixed string per row, so it can show state but cannot react to the highlighted
+ * row — the tip was stuck as static filler. This picker re-renders on every move and shows the key
+ * source for whatever is under the cursor, which is the whole point of the tip.
  */
-const loginOptions = (paint: (color: string, value: string) => string): { label: string; provider: JevProvider }[] => {
-  const { store } = readAuthStore();
-  return JEV_PROVIDERS.map((provider) => {
-    const stored = Boolean(storedCredential(store, provider.id));
-    const status = stored ? paint("success", "✓ stored") : paint("dim", "• not configured");
-    return { label: `${provider.label} ${status}`, provider };
-  });
-};
+class LoginPicker {
+  private readonly options: { label: string; status: "stored" | "unset"; provider: JevProvider }[];
+  private readonly theme: any;
+  private readonly done: (value: JevProvider | null) => void;
+  private index = 0;
 
-/** Where each key comes from. Shown under the menu, not in it: the row must stay scannable. */
+  constructor(theme: any, store: AuthStore, done: (value: JevProvider | null) => void) {
+    this.theme = theme;
+    this.done = done;
+    this.options = JEV_PROVIDERS.map((provider) => ({
+      label: provider.label,
+      status: storedCredential(store, provider.id) ? "stored" : "unset",
+      provider,
+    }));
+  }
+
+  /** Exposed so the caller can drive it from tests and from the headless fallback. */
+  get providers(): JevProvider[] {
+    return this.options.map((o) => o.provider);
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.up)) {
+      this.index = (this.index - 1 + this.options.length) % this.options.length;
+      return;
+    }
+    if (matchesKey(data, Key.down)) {
+      this.index = (this.index + 1) % this.options.length;
+      return;
+    }
+    if (matchesKey(data, Key.enter)) {
+      this.done(this.options[this.index]?.provider ?? null);
+      return;
+    }
+    if (matchesKey(data, Key.escape)) this.done(null);
+  }
+
+  render(width: number): string[] {
+    const t = this.theme;
+    const border = () => t.fg("accent", "─".repeat(Math.max(1, width)));
+    const lines = [
+      border(),
+      t.fg("accent", t.bold("Jev Eye · Login")),
+      t.fg("muted", "Pick the backend for the Jev gate. A stored key is reused until replaced."),
+      "",
+    ];
+    for (const [i, option] of this.options.entries()) {
+      const cursor = i === this.index;
+      const mark = option.status === "stored" ? t.fg("success", "✓ stored") : t.fg("dim", "• not configured");
+      lines.push(`${cursor ? t.fg("accent", "→ ") : "  "}${t.fg(cursor ? "accent" : "text", option.label)}  ${mark}`);
+    }
+    // The live tip: whatever is highlighted, not a static caption.
+    const current = this.options[this.index];
+    lines.push("");
+    if (current) {
+      lines.push(t.fg("dim", `Tips: key from ${current.provider.keyHint}`));
+      const hint = current.provider.accountEnv ?? `$${current.provider.keyEnv}`;
+      lines.push(t.fg("dim", `Or export ${hint}${current.provider.accountEnv ? ` + $${current.provider.keyEnv}` : ""}`));
+    }
+    lines.push("");
+    lines.push(t.fg("dim", "[↑↓] move  [Enter] choose  [Esc] cancel"));
+    lines.push(border());
+    return lines.map((line) => truncateToWidth(line, width, ""));
+  }
+
+  invalidate(): void {}
+}
+
+/**
+ * The login menu's options as plain strings, for the headless path where `custom` UI does not exist.
+ * The tip is appended as an extra, non-selectable row for the highlighted provider only.
+ */
+const loginOptionLabels = (store: AuthStore): string[] =>
+  JEV_PROVIDERS.map((provider) => `${provider.label} ${storedCredential(store, provider.id) ? "✓ stored" : "• not configured"}`);
+
+/** One line naming where a provider's key comes from, used wherever that cannot be rendered in place. */
 const providerTip = (provider: JevProvider): string => `Tips: key from ${provider.keyHint}`;
 
 // --- Cloudflare Workers AI envelope: the REST route wraps the System One answer in { result, success } ---
@@ -660,26 +724,28 @@ const loginFlow = async (ctx: any): Promise<void> => {
     if (!proceed) return;
   }
 
-  const paint = (color: string, value: string) => {
-    try {
-      return ctx.ui.theme?.fg ? ctx.ui.theme.fg(color, value) : value;
-    } catch {
-      return value; // a theme without that token must never break the menu
-    }
-  };
-  const options = loginOptions(paint);
-  // Pi's selector has a `description` slot that its interactive mode never forwards, so the tip is passed
-  // as an extra, non-selectable row: visible where a tip belongs, and harmless where it is ignored.
-  const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", [
-    ...options.map((o) => o.label),
-    "",
-    paint("dim", "Tips: each row shows whether a key is already stored"),
-    paint("dim", "Enter a row to see where its key comes from"),
-  ]);
-  if (!choice) return;
-
-  const provider = options.find((o) => o.label === choice)?.provider;
-  if (!provider) return; // a tip row was chosen, not a provider
+  // Pi's selector renders one fixed string per row, so it cannot show a tip that follows the cursor.
+  // The custom picker can; the headless path keeps the same choices as plain rows.
+  const { store } = readAuthStore();
+  let provider: JevProvider | null;
+  if (typeof ctx.ui.custom === "function") {
+    provider = await ctx.ui.custom<JevProvider | null>((tui: any, theme: any, _kb: any, done: (value: JevProvider | null) => void) => {
+      const picker = new LoginPicker(theme, store, done);
+      return {
+        render: (width: number) => picker.render(width),
+        invalidate: () => picker.invalidate(),
+        handleInput: (data: string) => {
+          picker.handleInput(data);
+          tui.requestRender();
+        },
+      };
+    });
+  } else {
+    const labels = loginOptionLabels(store);
+    const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", labels);
+    provider = choice ? JEV_PROVIDERS[labels.indexOf(choice)] ?? null : null;
+  }
+  if (!provider) return;
   ctx.ui.notify(`[pi-jev-eye] ${providerTip(provider)}`, "info");
 
   // Clef cannot be reached without an account id, so collect it before the secret.
@@ -712,9 +778,10 @@ const loginFlow = async (ctx: any): Promise<void> => {
   }
 
   // Additive: another backend's stored key stays usable. The probe above must pass before this line.
-  const { store, migrated } = readAuthStore();
-  const others = storedProviderIds(store).filter((id) => id !== provider.id);
-  writeAuthStore(putCredential(store, provider.id, { apiKey: key, model, ...(accountId ? { accountId } : {}) }));
+  // Re-read the store here: the picker above may have run a while ago, and it never writes.
+  const { store: current, migrated } = readAuthStore();
+  const others = storedProviderIds(current).filter((id) => id !== provider.id);
+  writeAuthStore(putCredential(current, provider.id, { apiKey: key, model, ...(accountId ? { accountId } : {}) }));
   const shadows = process.env[provider.keyEnv]?.trim() ? ` Note: $${provider.keyEnv} is set and takes precedence over this stored key.` : "";
   const keptNote = others.length > 0 ? ` ${others.map(providerLabelOf).join(", ")} stayed logged in.` : "";
   const migrationNote = migrated ? ` Migrated the old single-key store (backup: ${AUTH_BACKUP_PATH}).` : "";
