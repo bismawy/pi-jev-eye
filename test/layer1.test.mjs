@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, cfRunUrl, clefBody, clefError, isCloudflareAccountId, legacyTotals, mergeTotals, normalizeTotals, sumDays, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, neuronsSpentOn, normalizeTotals, sumDays, wipeTarget } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -116,4 +116,69 @@ test("success:false is a failure even when a result is present", () => {
 test("the Cloudflare error list becomes one readable line", () => {
   assert.equal(clefError({ errors: [{ message: "invalid api token" }, { message: "retry later" }] }), "invalid api token; retry later");
   assert.equal(clefError({ success: false }), "no result");
+});
+
+// --- Per-provider rollup: what lets one panel separate Jev from Clef ---
+test("an entry written before provider attribution folds without inventing providers", () => {
+  const old = normalizeTotals({ requests: 3, inputTokens: 100, cost: 0.0000042 });
+  assert.equal(old.providers, undefined);
+  assert.equal(old.neurons, undefined);
+  assert.equal(old.requests, 3);
+});
+
+test("a provider's counters are kept per provider, never summed into one bucket", () => {
+  const days = {
+    "2026-10-11": {
+      requests: 4,
+      inputTokens: 900,
+      cost: 0.0001,
+      neurons: 3.5,
+      providers: { cloudflare: { requests: 2, inputTokens: 500, neurons: 1.7 }, typesafe: { requests: 2, inputTokens: 400 } },
+    },
+  };
+  const month = sumDays(days, "2026-10", normalizeTotals);
+  assert.equal(month.requests, 4);
+  assert.equal(month.providers.cloudflare.requests, 2);
+  assert.equal(month.providers.typesafe.requests, 2);
+  assert.equal(month.providers.cloudflare.inputTokens, 500);
+  assert.equal(month.providers.typesafe.inputTokens, 400);
+  assert.equal(month.providers.typesafe.neurons, 0);
+});
+
+test("folding two ledgers adds matching providers instead of replacing them", () => {
+  const own = sumDays({ "2026-10-11": { requests: 1, providers: { cloudflare: { requests: 1, inputTokens: 10 } } } }, "2026-10", normalizeTotals);
+  const legacy = sumDays({ "2026-10-11": { requestsStarted: 1, inputTokens: 5 } }, "2026-10", legacyTotals);
+  const merged = mergeTotals(own, legacy);
+  assert.equal(merged.providers.cloudflare.requests, 1);
+  assert.equal(merged.requests, 2);
+});
+
+test("only today's neurons count against the free daily allowance", () => {
+  const days = { "2026-10-11": { neurons: 120 }, "2026-10-10": { neurons: 9999 } };
+  assert.equal(neuronsSpentOn(days, "2026-10-11"), 120);
+  assert.equal(neuronsSpentOn(days, "2026-10-09"), 0);
+});
+
+// --- Clef pricing: clef-flash bills 6x less than clef, and the free tier is 10,000 neurons/day ---
+test("the Clef price and neuron rate follow the chosen model", () => {
+  assert.equal(clefUsdPerMTok("clef"), 0.24);
+  assert.equal(clefUsdPerMTok("clef-flash"), 0.038);
+  assert.equal(clefNeuronsPerMTok("clef"), 21818);
+  assert.equal(clefNeuronsPerMTok("clef-flash"), 3455);
+  assert.equal(clefUsdPerMTok("a-model-from-the-future"), 0.038, "an unknown model is charged as the cheap one, never as free");
+  assert.equal(clefNeuronsFor("clef-flash", 1_000_000), 3455);
+  assert.equal(clefNeuronsFor("clef-flash", 0), 0);
+});
+
+test("the free-neuron budget reports what is left and what overage would cost", () => {
+  const under = clefBudget(2500);
+  assert.equal(under.used, 2500);
+  assert.equal(under.remaining, 7500);
+  assert.equal(under.overageUsd, 0);
+
+  const over = clefBudget(12_000);
+  assert.equal(over.remaining, 0);
+  assert.equal(over.overageUsd, 0.022, "2000 neurons over at $0.011/1000");
+
+  assert.equal(clefBudget(-5).used, 0, "a negative counter clamps instead of reporting extra budget");
 });

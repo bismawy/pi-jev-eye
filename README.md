@@ -43,6 +43,7 @@ pi -e ./extensions/index.ts
 | `/jev-eye login` | Setup | Authenticate with TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef); verified against the live route, mode 0600 |
 | `/jev-eye logout` | Setup | Remove locally stored credentials |
 | `/jev-eye status` | Inspect | Real-time telemetry, provider balance, gate scope, and block counts |
+| `/jev-eye usage` | Inspect | Spend breakdown: totals across both ledgers, per-provider split, and the Cloudflare free-neuron budget |
 | `/jev-eye routing` | Routing | Interactive TUI model router for light and heavy task slots |
 | `jev` · `@jev` in prompt | Prompt | Trigger calibrated review format and task alignment check |
 
@@ -127,6 +128,9 @@ Run `/jev-eye routing` to open the interactive model selector:
 <summary><b>Usage & Telemetry Ledger</b></summary>
 
 Tracks detailed usage in `~/.pi/agent/pi-jev-eye/usage.json` (plus legacy migration from `~/.pi/agent/pi-typesafe/usage.json`):
+
+- Each day keeps the overall counters and an optional per-provider map, so `/jev-eye usage` can split Jev (TypeSafe/OpenRouter) from Clef without reading a second file. Entries written before this field read as 0 and are never invented.
+- Cloudflare is billed in **neurons**, not dollars only: the panel shows today's neuron count against the 10,000/day free allowance (reset 00:00 UTC) and the overage at `$0.011/1,000` neurons. The rate is per model — `clef` 21,818 neurons/M input, `clef-flash` 3,455, `clef-omni` 13,636 — and output tokens are not billed.
 
 - **Daily & Monthly Telemetry:** Request counts (success/fail), token counters (input/output), and estimated dollar cost.
 - **Provider Balance:** Live credit lookup for OpenRouter accounts (`/api/v1/key`, cached 5m).

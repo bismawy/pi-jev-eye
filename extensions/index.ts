@@ -2,22 +2,27 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, CURSOR_MARKER, Input, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
-  CF_USD_PER_MTOK,
   DESTRUCTIVE_BASH_PATTERNS,
   EMPTY_TOTALS,
   SECRET_PATTERNS,
   USD_PER_MTOK,
   VERIFICATION_COMMAND_PATTERNS,
+  addProviderTotals,
   cfRunUrl,
   clefBody,
+  clefBudget,
   clefError,
+  clefNeuronsFor,
+  clefUsdPerMTok,
   isCloudflareAccountId,
   legacyTotals,
   mergeTotals,
+  neuronsSpentOn,
   normalizeTotals,
   sumDays,
   wipeTarget,
   type DayTotals,
+  type ProviderTotals,
 } from "./layer1.ts";
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -144,6 +149,13 @@ interface JevAuth {
   model: string; // Cloudflare allows a per-account model choice; every other provider keeps its fixed one
   accountId?: string; // Cloudflare only: the account the run route targets
 }
+
+/** One provider's rate for input tokens. Cloudflare's depends on the model; the others are single-rate. */
+const usdPerMTokFor = (auth: JevAuth): number =>
+  auth.provider.id === "cloudflare" ? clefUsdPerMTok(auth.model) : USD_PER_MTOK;
+
+/** The provider id stored in the ledger, so the usage panel can name what it was spent on. */
+const providerIdOf = (auth: JevAuth): string => auth.provider.id;
 
 /** The per-request route: only Cloudflare needs an id that the provider entry cannot carry. */
 const authUrl = (auth: JevAuth): string =>
@@ -443,17 +455,23 @@ class StatusPanel {
     cycleGate: () => void;
   };
   private readonly done: (value?: void) => void;
+  private readonly title: string;
+  private readonly desc: string;
 
   constructor(
     theme: any,
     lines: string[],
     actions: { rebuild: () => string[]; cycleMode: () => void; cycleGate: () => void },
-    done: (value?: void) => void
+    done: (value?: void) => void,
+    title: string = STATUS_TITLE,
+    desc: string = STATUS_DESC
   ) {
     this.theme = theme;
     this.lines = lines;
     this.actions = actions;
     this.done = done;
+    this.title = title;
+    this.desc = desc;
   }
 
   /** A toggle changes state, so the body is rebuilt in place; the caller re-renders after input. */
@@ -484,8 +502,8 @@ class StatusPanel {
       border(),
       // Same nesting Pi's own headers use (fg outside bold) — tmux capture-pane did not show the
       // colour, the raw render bytes do.
-      t.fg("accent", t.bold(STATUS_TITLE)),
-      t.fg("muted", STATUS_DESC),
+      t.fg("accent", t.bold(this.title)),
+      t.fg("muted", this.desc),
       "",
       ...this.lines,
       "",
@@ -667,7 +685,7 @@ function readUsage(period: string): DayTotals | undefined {
 const readOwnUsage = (): DayTotals | undefined => readUsage(today());
 const readMonthUsage = (): DayTotals | undefined => readUsage(today().slice(0, 7));
 
-function recordOwnUsage(patch: Partial<DayTotals>): void {
+function recordOwnUsage(patch: Partial<DayTotals>, providerId?: string): void {
   try {
     const file = readJsonFile(OWN_USAGE_PATH) ?? { version: 1, days: {} };
     const days = file.days && typeof file.days === "object" ? file.days : {};
@@ -680,7 +698,12 @@ function recordOwnUsage(patch: Partial<DayTotals>): void {
         : stored;
     const current: DayTotals = { ...EMPTY_TOTALS, ...seeded };
     for (const [key, value] of Object.entries(patch)) {
+      if (key === "providers") continue;
       (current as any)[key] = (Number((current as any)[key]) || 0) + (Number(value) || 0);
+    }
+    // The same patch is folded into the provider's own bucket, so Jev and Clef never share a total.
+    if (providerId) {
+      current.providers = addProviderTotals(current.providers, providerId, patch as Partial<ProviderTotals>);
     }
     days[today()] = current;
     for (const day of Object.keys(days).sort().slice(0, -31)) delete days[day];
@@ -695,11 +718,12 @@ function recordOwnUsage(patch: Partial<DayTotals>): void {
 let balanceCache: { provider: string; at: number; text: string } | undefined;
 
 async function fetchBalanceText(auth: JevAuth): Promise<string> {
-  // Cloudflare has a real per-model money figure; the API has no route that returns the remaining
-  // neuron allowance, so only what this session spent against Clef is shown.
+  // Cloudflare exposes no remaining-neuron route, so the ledger is the only source: what today cost and
+  // how much of the free daily allowance is left.
   if (auth.provider.id === "cloudflare") {
-    const spent = ((readOwnUsage()?.inputTokens ?? 0) * CF_USD_PER_MTOK) / 1e6;
-    return `not exposed by the API; today's est. spend $${spent.toFixed(4)} (10,000 free neurons/day at 00:00 UTC)`;
+    const budget = clefBudget(neuronsSpentOn(readJsonFile(OWN_USAGE_PATH)?.days, today()));
+    const over = budget.overageUsd > 0 ? ` · overage $${budget.overageUsd.toFixed(4)}` : " · still free";
+    return `not exposed by the API; free neurons left today ${Math.round(budget.remaining).toLocaleString("en-US")}/${budget.free.toLocaleString("en-US")}${over}`;
   }
   const usd = (value: number) => `$${value.toFixed(4)}`;
   const get = (path: string) =>
@@ -962,33 +986,37 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
     });
 
     if (!res.ok) {
-      recordOwnUsage({ requests: 1, failed: 1 });
+      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
       return null;
     }
     const body = workersAiBody(await res.json());
     if (!body) {
-      recordOwnUsage({ requests: 1, failed: 1 });
+      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
       return null;
     }
     const inputTokens = Number(body.usage?.input_tokens) || 0;
-    // OpenRouter and Cloudflare report real cost; TypeSafe does not, so its ledger uses the flat estimate.
-    const reportedCost =
-      Number((body.usage as any)?.cost) ||
-      (auth.provider.id === "cloudflare" ? (inputTokens * CF_USD_PER_MTOK) / 1e6 : NaN);
-    recordOwnUsage({
-      requests: 1,
-      ok: 1,
-      inputTokens,
-      outputTokens: Number(body.usage?.output_tokens) || 0,
-      cost: Number.isFinite(reportedCost) ? reportedCost : (inputTokens * USD_PER_MTOK) / 1e6,
-    });
+    // Cloudflare reports a model-specific price and meters neurons; the others fall back to the flat rate.
+    const isClef = auth.provider.id === "cloudflare";
+    const reportedCost = Number((body.usage as any)?.cost) || (isClef ? (inputTokens * clefUsdPerMTok(auth.model)) / 1e6 : NaN);
+    recordOwnUsage(
+      {
+        requests: 1,
+        ok: 1,
+        inputTokens,
+        outputTokens: Number(body.usage?.output_tokens) || 0,
+        cost: Number.isFinite(reportedCost) ? reportedCost : (inputTokens * USD_PER_MTOK) / 1e6,
+        // Only Cloudflare bills in neurons; storing 0 for the rest keeps the panel's math uniform.
+        neurons: isClef ? clefNeuronsFor(auth.model, inputTokens) : 0,
+      },
+      providerIdOf(auth)
+    );
     return {
       has_slop: body.answers?.has_slop?.noul ?? null,
       has_unfinished_todo: body.answers?.has_unfinished_todo?.noul ?? null,
       answers_request: body.answers?.answers_request?.noul ?? null,
     };
   } catch {
-    recordOwnUsage({ requests: 1, failed: 1 });
+    recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
     return null; // Fail-open when Jev times out or is offline
   }
 }
@@ -1033,6 +1061,7 @@ function cycleEyeState(ctx?: any): "ON" | "REVIEW" | "OFF" {
 // Live state + keybindings render in the panel footer, not in Pi's status bar.
 const EYE_SUBCOMMANDS = [
   { value: "status", label: "status", description: "Show supervisor status, account, usage, and interception stats" },
+  { value: "usage", label: "usage", description: "Show Jev/Clef spend: per-provider totals and the Cloudflare free-neuron budget" },
   { value: "toggle", label: "toggle", description: "Cycle mode: ON -> REVIEW -> OFF" },
   { value: "on", label: "on", description: "Set mode to ON (supervisor active, prompt trigger)" },
   { value: "review", label: "review", description: "Set mode to REVIEW (all turns reviewed)" },
@@ -1364,6 +1393,107 @@ export default function (pi: ExtensionAPI) {
     ];
   };
 
+  // `/jev-eye usage` panel chrome.
+  const USAGE_TITLE = "Jev Eye · Usage";
+  const USAGE_DESC = "Jev gate spend and Cloudflare Clef neurons across both ledgers.";
+
+  /** A provider's label for the panel; an unknown id stays as it was stored. */
+  const providerLabel = (id: string): string => providerById(id)?.label ?? id;
+
+  /**
+   * The per-provider rows for one period. `readUsage` already folds provider maps from both ledgers, so
+   * a provider this build no longer ships (or one added later) still reports its recorded spend.
+   */
+  const providerRows = (period: string, paint: (c: string, v: string) => string): string[] => {
+    const totals = readUsage(period)?.providers ?? {};
+    const usd = (value: number) => `$${value.toFixed(6)}`;
+    return Object.entries(totals).map(([id, t]) => {
+      const name = providerLabel(id);
+      return `${paint("dim", name.padEnd(30))}${String(t.requests).padStart(6)} req | ${t.inputTokens.toLocaleString("en-US").padStart(9)} in | ${usd(t.cost)}`;
+    });
+  };
+
+  /** Usage body: same numbers as status, but with the per-provider split and the Clef neuron budget. */
+  const buildUsage = (ctx: any, theme?: any): string[] => {
+    const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
+    const n = (value: number) => value.toLocaleString("en-US");
+    const usd = (value: number) => `$${value.toFixed(6)}`;
+    const month = today().slice(0, 7);
+    const days = readJsonFile(OWN_USAGE_PATH)?.days;
+    const auth = resolveJevAuth();
+    const lines: string[] = [];
+
+    lines.push(paint("accent", "Totals (both ledgers)"));
+    for (const [label, period] of [["Today", today()], ["Month", month], ["All time", ""]] as const) {
+      const totals = readUsage(period);
+      lines.push(
+        totals
+          ? `${paint("dim", label.padEnd(10))}${String(totals.requests).padStart(5)} req (${totals.ok} ok / ${totals.failed} failed) | ${n(totals.inputTokens)} in / ${n(totals.outputTokens)} out | ${usd(totals.cost)}`
+          : `${paint("dim", label.padEnd(10))}no requests`
+      );
+    }
+    lines.push("");
+
+    lines.push(paint("accent", "Cloudflare Clef · free tier"));
+    const budget = clefBudget(neuronsSpentOn(days, today()));
+    const usingClef = auth?.provider.id === "cloudflare";
+    lines.push(
+      usingClef
+        ? `${paint("dim", "Model        ")}${auth.model} · $${clefUsdPerMTok(auth.model).toFixed(3)}/M in, output not billed`
+        : `${paint("dim", "Model        ")}not in use (gate key is ${auth ? auth.provider.label : "unset"})`
+    );
+    lines.push(
+      `${paint("dim", "Neurons today")} ${n(Math.round(budget.used))} / ${n(budget.free)} free · ${n(Math.round(budget.remaining))} left${budget.overageUsd > 0 ? ` · overage ${usd(budget.overageUsd)}` : ""}`
+    );
+    const barWidth = 24;
+    const filled = Math.min(barWidth, Math.round((budget.used / budget.free) * barWidth));
+    lines.push(`                ${paint(budget.used >= budget.free ? "warning" : "success", "█".repeat(filled))}${paint("dim", "░".repeat(barWidth - filled))} resets 00:00 UTC`);
+    lines.push(`${paint("dim", "Calls today  ")}${String(days?.[today()]?.requests ?? 0).padStart(5)} requests · avg ${budget.used > 0 && days?.[today()]?.requests ? Math.round(budget.used / days[today()].requests).toLocaleString("en-US") : 0} neurons each`);
+    lines.push("");
+
+    lines.push(paint("accent", "By provider (this month)"));
+    const rows = providerRows(month, paint);
+    lines.push(...(rows.length > 0 ? rows : [paint("muted", "no per-provider data yet; recorded from the next request on")]));
+    lines.push("");
+
+    lines.push(paint("accent", "This session"));
+    lines.push(
+      `${paint("dim", "Interception ")}${state.stats.destructiveBlocked} dangerous | ${state.stats.secretsBlocked} secrets | ${state.stats.slopBlocked} Jev slop | ${state.stats.reviewTurns} reviewed turns`
+    );
+    lines.push(
+      `${paint("dim", "Jev budget   ")}${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} gate requests · ${Math.min(state.stats.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} routing calls used`
+    );
+    const contextTokens = ctx?.getContextUsage?.()?.tokens;
+    if (typeof contextTokens === "number") lines.push(`${paint("dim", "Model context")} ${n(contextTokens)} tokens`);
+    return lines;
+  };
+
+  /** `/jev-eye usage`: the same framed panel as status, with the spend breakdown. */
+  const showUsage = async (ctx: any): Promise<void> => {
+    if (typeof ctx.ui.custom !== "function") {
+      ctx.ui.notify([USAGE_TITLE, USAGE_DESC, "", ...buildUsage(ctx)].join("\n"), "info");
+      return;
+    }
+    await ctx.ui.custom<void>((tui: any, theme: any, _kb: any, done: (value?: void) => void) => {
+      const panel = new StatusPanel(
+        theme,
+        buildUsage(ctx, theme),
+        { rebuild: () => buildUsage(ctx, theme), cycleMode: () => cycleEyeState(ctx), cycleGate: () => writeConsent(nextConsent(readConsent(), ctx.cwd)) },
+        done,
+        USAGE_TITLE,
+        USAGE_DESC
+      );
+      return {
+        render: (width: number) => panel.render(width),
+        invalidate: () => panel.invalidate(),
+        handleInput: (data: string) => {
+          panel.handleInput(data);
+          tui.requestRender();
+        },
+      };
+    });
+  };
+
   /** Status body only: plain text in headless mode, colourised when the panel hands over a theme.
    *  Synchronous on purpose — the balance is fetched once by {@link showStatus} and passed in, so the
    *  panel never has a pending state to render. */
@@ -1614,9 +1744,14 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    if (sub === "usage") {
+      await showUsage(ctx);
+      return;
+    }
+
     if (sub !== "status") {
       ctx.ui.notify(
-        `[pi-jev-eye] Unknown argument "${sub}". Use: status | on | review | off | toggle | login | logout | routing [on|off], or no argument for the menu (cycle mode is ${TOGGLE_KEY}).`,
+        `[pi-jev-eye] Unknown argument "${sub}". Use: status | usage | on | review | off | toggle | login | logout | routing [on|off], or no argument for the menu (cycle mode is ${TOGGLE_KEY}).`,
         "warning"
       );
       return;

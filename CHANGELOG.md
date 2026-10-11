@@ -7,10 +7,14 @@
 - A Clef credential is an account id plus a Workers AI token: the account id is asked for first (or read from `$CLOUDFLARE_ACCOUNT_ID`), then verified against the real `…/accounts/{id}/ai/run/@cf/cloudflare/clef-flash` route before anything is saved. The model is chosen at login (`clef-flash` — cheapest, the default — or `clef`).
 - `clefBody` / `clefError` in `extensions/layer1.ts`: the Workers AI route wraps the answer in `{ result, success, errors }`, and unwrapping it is now a tested pure function instead of an inline assumption.
 - `cfRunUrl` / `isCloudflareAccountId`: the account id is validated (32 hex chars) before it reaches a URL, and the account-less base stays safe to commit.
+- **`/jev-eye usage` panel.** Separates real spend from the free tier: totals for today / month / all time across both ledgers, a per-provider breakdown, and the Cloudflare Clef block — model in use, neurons spent today against the 10,000/day free allowance, a fill bar, and the overage cost at `$0.011/1,000` neurons once the allowance is used up.
+- `clefUsdPerMTok`, `clefNeuronsPerMTok`, `clefNeuronsFor`, `clefBudget`, `neuronsSpentOn` in `extensions/layer1.ts`: the real per-model rates (`clef` 21,818 neurons/M, `clef-flash` 3,455, `clef-omni` 13,636) instead of one flat rate. An unknown model id is charged as the cheaper model, never as free.
+- The ledger now records `providers` (a per-provider counter map) and `neurons` as optional fields, so one panel can split Jev from Clef without a second file.
 
 ### Changed
 - A stored Cloudflare key without an account id is treated as "not logged in", so the gate says `run /jev-eye login` instead of failing every request. `/jev-eye status` explains the specific case.
-- Ledger cost for Clef uses the real `$0.24/M` input rate instead of the generic TypeSafe estimate.
+- Ledger cost for Clef uses the real per-model rate (`clef-flash` `$0.038/M`, `clef` `$0.24/M`) instead of the generic TypeSafe `$0.042/M` estimate, and the balance line reports free neurons left today.
+- `StatusPanel` takes an optional title and description, so `/jev-eye usage` reuses the status frame instead of duplicating it.
 - `/jev-eye login` now warns before overwriting when a `$TYPESAFE_API_KEY` / `$OPENROUTER_API_KEY` / `$CLOUDFLARE_API_TOKEN` is already exported and takes precedence.
 
 ---
