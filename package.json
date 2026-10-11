@@ -2,7 +2,7 @@
   "name": "@bismawy/pi-jev-eye",
   "version": "0.1.16",
   "type": "module",
-  "description": "Ultra-lean supervisor. Three-layer guardrails. Semantic gate for Pi. Blocks destructive commands offline, checks tests, gates diffs through TypeSafe Jev.",
+  "description": "Ultra-lean supervisor. Three-layer guardrails. Semantic gate for Pi. Blocks destructive commands offline, checks tests, gates diffs through TypeSafe Jev, OpenRouter, or Cloudflare Workers AI (Clef), and reports Jev/Clef spend in /jev-eye usage.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -12,7 +12,12 @@
     "jev",
     "guardrail",
     "supervisor",
-    "security"
+    "security",
+    "clef",
+    "cloudflare",
+    "workers-ai",
+    "clef-flash",
+    "semantic-gate"
   ],
   "author": "bismawy",
   "license": "MIT",

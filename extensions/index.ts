@@ -1641,9 +1641,10 @@ export default function (pi: ExtensionAPI) {
       : "off · configure light & heavy targets";
 
     const options = [
-      `Login    ·  ${auth ? `switch key (current: ${auth.provider.label})` : "TypeSafe, OpenRouter, or Cloudflare Workers AI key"}`,
+      `Login    ·  ${auth ? `switch key (current: ${auth.provider.label})` : "TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef) key"}`,
       `Logout   ·  ${auth ? `remove key from ${auth.source}` : "no active key stored"}`,
-      `Status   ·  supervisor, gate scope, usage & metrics`,
+      `Status   ·  supervisor, gate scope & metrics`,
+      `Usage    ·  Jev/Clef spend, per-provider split & free-neuron budget`,
       `Routing  ·  ${routingDesc}`,
     ];
 
@@ -1666,6 +1667,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (choice === options[3]) {
+      await showUsage(ctx);
+      return;
+    }
+
+    if (choice === options[4]) {
       await openRoutingMenu(ctx);
       return;
     }

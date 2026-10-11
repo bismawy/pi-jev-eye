@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **`Usage` entry in the `/jev-eye` menu.** The menu lists `Usage · Jev/Clef spend, per-provider split & free-neuron budget` next to `Status`, opening the same panel as `/jev-eye usage`.
 - **Cloudflare Workers AI (Clef) as a third Jev provider.** `/jev-eye login` now offers `Cloudflare Workers AI (Clef)` alongside TypeSafe and OpenRouter. Clef speaks the same System One request shape (`noul` / `choice` / `score`), so the write gate, the reviewed-turn `answers_request` dimension, and per-turn routing all work against it unchanged.
 - A Clef credential is an account id plus a Workers AI token: the account id is asked for first (or read from `$CLOUDFLARE_ACCOUNT_ID`), then verified against the real `…/accounts/{id}/ai/run/@cf/cloudflare/clef-flash` route before anything is saved. The model is chosen at login (`clef-flash` — cheapest, the default — or `clef`).
 - `clefBody` / `clefError` in `extensions/layer1.ts`: the Workers AI route wraps the answer in `{ result, success, errors }`, and unwrapping it is now a tested pure function instead of an inline assumption.
@@ -12,6 +13,7 @@
 - The ledger now records `providers` (a per-provider counter map) and `neurons` as optional fields, so one panel can split Jev from Clef without a second file.
 
 ### Changed
+- **Discoverability:** `package.json` `description` and `keywords` now name Cloudflare Workers AI, Clef, and `clef-flash`, and the README leads with a keyword line plus a "Why Clef" section — so a search for the Clef backend surfaces this package.
 - A stored Cloudflare key without an account id is treated as "not logged in", so the gate says `run /jev-eye login` instead of failing every request. `/jev-eye status` explains the specific case.
 - Ledger cost for Clef uses the real per-model rate (`clef-flash` `$0.038/M`, `clef` `$0.24/M`) instead of the generic TypeSafe `$0.042/M` estimate, and the balance line reports free neurons left today.
 - `StatusPanel` takes an optional title and description, so `/jev-eye usage` reuses the status frame instead of duplicating it.

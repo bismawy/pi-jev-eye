@@ -2,6 +2,8 @@
 
 Ultra-lean supervisor. Three-layer guardrails. Semantic gate for Pi.
 
+> **Keywords:** `clef`, `Cloudflare Workers AI`, `workers-ai`, `clef-flash`, `Jev`, `TypeSafe`, `OpenRouter`, `semantic gate`, `guardrails`.
+
 [![Custom badge](https://shieldcn.dev/badge/pi-%20Packages.svg?variant=outline&size=xs&logo=ri%3APiPiBold)](https://pi.dev/packages/@bismawy/pi-jev-eye)
 [![badge](https://shieldcn.dev/npm/@bismawy/pi-jev-eye.svg?variant=outline&size=xs)](https://www.npmjs.com/package/@bismawy/pi-jev-eye)
 [![license](https://shieldcn.dev/github/bismawy/pi-jev-eye/license.svg?variant=outline&size=xs)](https://github.com/bismawy/pi-jev-eye)
@@ -10,12 +12,13 @@ Ultra-lean supervisor. Three-layer guardrails. Semantic gate for Pi.
 
 ## Overview
 
-pi-jev-eye is an ultra-lean, zero-dependency supervisor for [pi](https://github.com/earendil-works/pi-coding-agent). It protects your workspace from destructive commands, prevents credential leaks, enforces testing verification, routes models per-turn, and uses [TypeSafe Jev](https://typesafe.ai/) to catch code slop before disk writes.
+pi-jev-eye is an ultra-lean, zero-dependency supervisor for [pi](https://github.com/earendil-works/pi-coding-agent). It protects your workspace from destructive commands, prevents credential leaks, enforces testing verification, routes models per-turn, and runs a semantic gate through [TypeSafe Jev](https://typesafe.ai/), OpenRouter, or [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/clef/) (Clef) to catch code slop before disk writes.
 
 - **Instant Regex Gate:** 0 ms, 0 token barrier blocking wipes (`rm -rf /`, `DROP DATABASE`), protected branch force-pushes, and hardcoded secrets (`sk-...`, `ghp_...`, SSH keys).
 - **Done-Check Verification:** Warns when the agent claims done after editing files without running verification suites (`npm test`, `cargo test`, `pytest`).
 - **Targeted Jev Semantic Gate:** Evaluates diffs ≥ 10 lines via TypeSafe Jev (`has_slop`) to reject placeholder stubs and unfulfilled TODOs.
-- **Three Decision Backends:** TypeSafe Jev, OpenRouter, or Cloudflare Workers AI (Clef, free inside the daily 10,000-neuron allowance) — same gated pipeline, chosen once at `/jev-eye login`.
+- **Three Decision Backends:** TypeSafe Jev, OpenRouter, or **Cloudflare Workers AI (Clef / `clef-flash`)** — same gated pipeline, chosen once at `/jev-eye login`. Clef runs inside Cloudflare's free daily allowance of 10,000 neurons, so the gate costs nothing for most sessions.
+- **Jev + Clef Usage Panel (`/jev-eye usage`):** Totals across both ledgers (today / month / all time), a per-provider split so Jev and Clef spend never blend, and the Cloudflare free-neuron budget with its reset time and overage cost.
 - **Reviewed Turns (`jev` / `@jev`):** Calibrated review contract with machine facts, Jev scoring tables, and single-flight prompt alignment (`answers_request`).
 - **Per-Turn Model Routing:** Routes light chores (git commit, push, status) to a fast model and complex engineering tasks to a heavy model with independent reasoning controls.
 - **Fail-Open Reliability:** Network timeouts or offline provider APIs gracefully degrade so coding sessions never stall or freeze.
@@ -54,6 +57,15 @@ pi -e ./extensions/index.ts
 | TypeSafe | `$TYPESAFE_API_KEY` or `/jev-eye login` | `jev-latest` | Per-token, ledger-based |
 | OpenRouter | `$OPENROUTER_API_KEY` or `/jev-eye login` | `typesafe/jev-1.13` | Reported by the provider |
 | Cloudflare Workers AI | `$CLOUDFLARE_ACCOUNT_ID` + `$CLOUDFLARE_API_TOKEN`, or `/jev-eye login` (asks for both) | `clef-flash` (default) or `clef` | Clef: $0.24/M input; clef-flash: $0.038/M input; output free; 10,000 free neurons/day at 00:00 UTC |
+
+### Why Clef
+
+Clef is Cloudflare's decision model (`@cf/cloudflare/clef`). It answers the same typed System One questions the gate already asks (`noul` / `choice` / `score`), so switching the backend changes no gate logic — only the route and the credential. Two properties make it the cheapest way to run the gate per write:
+
+- **Free for normal sessions.** Every account gets 10,000 neurons per day, reset at 00:00 UTC. `clef-flash` bills 3,455 neurons per million input tokens, so a typical session stays inside the allowance; `/jev-eye usage` shows the exact figure and the overage cost (`$0.011/1,000` neurons) once it does not.
+- **No output-token billing.** Clef charges input tokens only, so its cost is a function of the diff you send, not of the model's reasoning length.
+
+The credential is the account id **plus** a Workers AI token (`Workers AI: Read`) — a token alone cannot build the account-scoped route. The account id is checked as 32 hex characters and the credential is probed against the real run route before anything is saved.
 
 The Cloudflare route is `…/accounts/{ACCOUNT_ID}/ai/run/@cf/cloudflare/clef-flash`; the account id is validated (32 hex chars) and the credential is probed against that exact route before it is saved. Clef interprets the same typed questions (`noul` / `choice` / `score`), so no gate logic changes per provider.
 
