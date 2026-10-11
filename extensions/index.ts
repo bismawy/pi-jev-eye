@@ -395,15 +395,10 @@ class ListPicker {
     this.paint = paint;
     this.onBack = onBack;
     // A menu inside an extension goes back to the previous menu with [←]; the root has nowhere to go.
-    this.footer = onBack ? "[↑↓] Move  [Enter] Choose  [←] Back  [Esc] Cancel" : "[↑↓] Move  [Enter] Choose  [Esc] Back";
+    this.footer = onBack ? "[↑↓] Move  [Enter] Choose  [←] Back  [Esc] Cancel" : "[↑↓] Move  [Enter] Choose  [Esc] Cancel";
   }
 
   handleInput(data: string): void {
-    if (this.onBack && matchesKey(data, Key.left)) {
-      this.onBack();
-      this.done(BACK);
-      return;
-    }
     if (matchesKey(data, Key.up)) {
       this.index = (this.index - 1 + this.rows.length) % this.rows.length;
       return;
@@ -424,8 +419,13 @@ class ListPicker {
       this.done(this.index);
       return;
     }
-    // Esc and [←] both step back; the caller decides whether a previous menu still exists.
-    if (matchesKey(data, Key.escape) || matchesKey(data, Key.left)) this.done(BACK);
+    // [←] steps back to the previous menu, [Esc] closes the screen — different exits. The root menu
+    // has nothing behind it, so [←] is ignored there rather than quietly closing the screen.
+    if (matchesKey(data, Key.left)) {
+      if (this.onBack) this.done(BACK);
+      return;
+    }
+    if (matchesKey(data, Key.escape)) this.done(null);
   }
 
   render(width: number): string[] {

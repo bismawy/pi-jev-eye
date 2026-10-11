@@ -5,7 +5,7 @@
 ### Added
 - **`/jev-eye` screens now use the Arnative rounded-box template**, and the template itself is the default in the `arnative-pi` skill: title with a description underneath, chosen row in `accentSoft`, `·` dividers in `dim`, keybind legend in brackets (`[Enter] Choose`), and **`[←] Back`** inside extension menus to reopen the previous one.
 - **Thinking-adaptive box border.** Every `/jev-eye` screen derives its border from the session's thinking level via `thinkingColorSlot` (`thinkingOff`…`thinkingMax`), and prefers `accentSoft` where the theme defines it. `thinking*` exists in every theme, so a built-in theme no longer loses the frame.
-- `[←] Back` and `[Esc] Back` in an extension menu return to the previous menu. `/jev-eye`'s root menu reopens after Login, Logout, Status, Usage and Routing exit this way; the root itself carries no Back because nothing is behind it.
+- `[←] Back` in an extension menu returns to the previous menu, while `[Esc]` closes the screen — two different exits, never merged. `/jev-eye`'s root menu reopens after Login, Logout, Status, Usage and Routing leave with `[←]`; the root itself carries no `[←]`, because nothing is behind it.
 - `[Home]`/`[End]` jump to the ends of a rounded-box list.
 
 ### Changed
