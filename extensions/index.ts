@@ -9,7 +9,6 @@ import {
   VERIFICATION_COMMAND_PATTERNS,
   addProviderTotals,
   backendTotals,
-  boxBorderPainter,
   boxEdge,
   boxRow,
   cfRunUrl,
@@ -29,6 +28,7 @@ import {
   removeCredentials,
   storedProviderIds,
   sumDays,
+  thinkingColorSlot,
   wipeTarget,
   type AuthStore,
   type DayTotals,
@@ -260,6 +260,22 @@ function keySources(): { usable: string[]; cfTokenWithoutAccount: boolean } {
 }
 
 /**
+ * Border painter for a screen: the session's thinking level colours the box, as in `/arnative`.
+ * `thinking*` exists in every theme, `accentSoft` only in arnative themes, so the soft token is probed
+ * once and the box falls back to the thinking tint of the level. */
+const borderPainterFor = (theme: any, ctx?: any) => {
+  const level = thinkingColorSlot(ctx?.thinkingLevel);
+  const fg = theme?.fg?.bind(theme);
+  if (!fg) return (text: string) => text;
+  try {
+    fg("accentSoft", "");
+    return (text: string) => fg("accentSoft", text);
+  } catch {
+    return (text: string) => fg(level, text);
+  }
+};
+
+/**
  * The login menu, as a real component rather than `ctx.ui.select`.
  *
  * `select` renders one fixed string per row, so it can show state but cannot react to the highlighted
@@ -282,6 +298,10 @@ class LoginPicker {
     }));
   }
 
+  /** Set when the operator pressed [←]; the caller then reopens the menu instead of leaving.
+   *  Kept as a plain field: `ctx.ui.custom` resolves one value, and `null` already means "cancelled". */
+  wentBack = false;
+
   /** Exposed so the caller can drive it from tests and from the headless fallback. */
   get providers(): JevProvider[] {
     return this.options.map((o) => o.provider);
@@ -301,11 +321,15 @@ class LoginPicker {
       return;
     }
     if (matchesKey(data, Key.escape)) this.done(null);
+    if (matchesKey(data, Key.left)) {
+      this.wentBack = true;
+      this.done(null);
+    }
   }
 
   render(width: number): string[] {
     const t = this.theme;
-    const paint = boxBorderPainter(t);
+    const paint = this.paint;
     const inner = width - 4; // two walls, two spaces
     const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
     const lines = [
@@ -327,7 +351,7 @@ class LoginPicker {
       lines.push(t.fg("dim", `Or export ${hint}${current.provider.accountEnv ? ` + $${current.provider.keyEnv}` : ""}`));
     }
     lines.push("");
-    lines.push(t.fg("dim", "[↑↓] move  [Enter] choose  [Esc] cancel"));
+    lines.push(t.fg("dim", "[↑↓] Move  [Enter] Choose  [←] Back  [Esc] Cancel"));
     // Arnative frame: round corners, one content row per line, so a short terminal clips cleanly.
     return [boxEdge("╭", "╮", width, paint), ...lines.map(row), boxEdge("╰", "╯", width, paint)];
   }
@@ -340,25 +364,46 @@ class LoginPicker {
  * `ctx.ui.select` renders itself with two full-width rules, so a menu that must be rounded has to own its
  * component. `rows` are pre-styled one-liners; the arrow is the only thing this class adds.
  */
+/** `done()` value meaning the user pressed [←] Back rather than choosing or cancelling. */
+const BACK = -2;
+
 class ListPicker {
-  private readonly rows: string[];
+  private readonly rows: { label: string; note: string }[];
   private readonly title: string;
-  private readonly subtitle: string | undefined;
+  private readonly subtitle: string;
   private readonly footer: string;
   private readonly theme: any;
+  private readonly paint: (text: string) => string;
+  private readonly onBack: (() => void) | undefined;
   private readonly done: (value: number | null) => void;
   private index = 0;
 
-  constructor(theme: any, title: string, rows: string[], done: (value: number | null) => void, subtitle?: string, footer = "[↑↓] move  [Enter] choose  [Esc] cancel") {
+  constructor(
+    theme: any,
+    title: string,
+    rows: { label: string; note: string }[],
+    subtitle: string,
+    done: (value: number | null) => void,
+    paint: (text: string) => string,
+    onBack?: () => void,
+  ) {
     this.theme = theme;
     this.title = title;
-    this.subtitle = subtitle;
     this.rows = rows;
-    this.footer = footer;
+    this.subtitle = subtitle;
     this.done = done;
+    this.paint = paint;
+    this.onBack = onBack;
+    // A menu inside an extension goes back to the previous menu with [←]; the root has nowhere to go.
+    this.footer = onBack ? "[↑↓] Move  [Enter] Choose  [←] Back  [Esc] Cancel" : "[↑↓] Move  [Enter] Choose  [Esc] Back";
   }
 
   handleInput(data: string): void {
+    if (this.onBack && matchesKey(data, Key.left)) {
+      this.onBack();
+      this.done(BACK);
+      return;
+    }
     if (matchesKey(data, Key.up)) {
       this.index = (this.index - 1 + this.rows.length) % this.rows.length;
       return;
@@ -367,23 +412,34 @@ class ListPicker {
       this.index = (this.index + 1) % this.rows.length;
       return;
     }
+    if (matchesKey(data, Key.home)) {
+      this.index = 0;
+      return;
+    }
+    if (matchesKey(data, Key.end)) {
+      this.index = this.rows.length - 1;
+      return;
+    }
     if (matchesKey(data, Key.enter)) {
       this.done(this.index);
       return;
     }
-    if (matchesKey(data, Key.escape)) this.done(null);
+    // Esc and [←] both step back; the caller decides whether a previous menu still exists.
+    if (matchesKey(data, Key.escape) || matchesKey(data, Key.left)) this.done(BACK);
   }
 
   render(width: number): string[] {
     const t = this.theme;
-    const paint = boxBorderPainter(t);
+    const paint = this.paint;
     const inner = width - 4; // two walls, two spaces
     const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
-    const lines = [t.fg("accent", t.bold(this.title))];
-    if (this.subtitle) lines.push(t.fg("muted", this.subtitle));
-    lines.push("");
-    for (const [i, content] of this.rows.entries()) {
-      lines.push(`${i === this.index ? t.fg("accent", "→ ") : "  "}${content}`);
+    const lines = [t.fg("accent", t.bold(this.title)), t.fg("muted", this.subtitle), ""];
+    for (const [i, item] of this.rows.entries()) {
+      const chosen = i === this.index;
+      const label = chosen ? this.soft(item.label) : t.fg(item.note ? "text" : "muted", item.label);
+      // Two spaces per side keeps the `·` divider in its own column, so labels and notes line up.
+      const note = item.note ? `${t.fg("dim", " · ")}${t.fg("dim", item.note)}` : "";
+      lines.push(`${chosen ? t.fg("accent", "→ ") : "  "}${label}${note}`);
     }
     lines.push("");
     lines.push(t.fg("dim", this.footer));
@@ -391,16 +447,32 @@ class ListPicker {
   }
 
   invalidate(): void {}
+
+  /** Chosen rows take the soft accent when the theme has one, the thinking tint otherwise. */
+  private soft(text: string): string {
+    try {
+      return this.theme.fg("accentSoft", text);
+    } catch {
+      return this.theme.fg("thinkingText", text);
+    }
+  }
 }
 
 /** Drive the same picker everywhere: TUI gets the rounded box, RPC and headless keep `ctx.ui.select`. */
-async function pickRow(ctx: any, title: string, rows: string[], subtitle?: string): Promise<number | null> {
+async function pickRow(
+  ctx: any,
+  title: string,
+  rows: { label: string; note: string }[],
+  subtitle: string,
+  options: { onBack?: () => void } = {},
+): Promise<number | "back" | null> {
   if (ctx.mode !== "tui") {
-    const choice = await ctx.ui.select(title, rows);
-    return choice ? rows.indexOf(choice) : null;
+    const labels = rows.map((row) => (row.note ? `${row.label} · ${row.note}` : row.label));
+    const choice = await ctx.ui.select(title, labels);
+    return choice ? labels.indexOf(choice) : null;
   }
-  return await ctx.ui.custom<number | null>((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
-    const picker = new ListPicker(theme, title, rows, done, subtitle);
+  const picked = await ctx.ui.custom<number | null>((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
+    const picker = new ListPicker(theme, title, rows, subtitle, done, borderPainterFor(theme, ctx), options.onBack);
     return {
       render: (width: number) => picker.render(width),
       invalidate: () => picker.invalidate(),
@@ -410,6 +482,7 @@ async function pickRow(ctx: any, title: string, rows: string[], subtitle?: strin
       },
     };
   });
+  return picked === BACK ? "back" : picked;
 }
 
 /**
@@ -508,13 +581,22 @@ class RoutingPicker {
   private readonly models: any[];
   private readonly theme: any;
   private readonly done: (value: Routing | null) => void;
+  private readonly paint: (text: string) => string;
   private static readonly WINDOW = 10;
 
-  constructor(theme: any, models: any[], initial: Routing, focus: "light" | "heavy", done: (value: Routing | null) => void) {
+  constructor(
+    theme: any,
+    models: any[],
+    initial: Routing,
+    focus: "light" | "heavy",
+    done: (value: Routing | null) => void,
+    paint: (text: string) => string,
+  ) {
     this.theme = theme;
     this.models = models;
     this.pending = { ...initial };
     this.done = done;
+    this.paint = paint;
     const preferred = focus === "light" ? initial.light : initial.heavy;
     const at = models.findIndex((m) => modelRef(m) === preferred);
     this.index = at >= 0 ? at : 0;
@@ -573,6 +655,7 @@ class RoutingPicker {
       const both = !!this.pending.light && !!this.pending.heavy;
       return this.done({ ...this.pending, enabled: this.pending.enabled && both });
     }
+    if (matchesKey(data, Key.left)) return this.done(BACK);
     if (matchesKey(data, Key.escape)) return this.done(null);
     if (data.length === 1 && data >= " ") {
       this.query += data;
@@ -582,7 +665,7 @@ class RoutingPicker {
 
   render(width: number): string[] {
     const t = this.theme;
-    const paint = boxBorderPainter(t);
+    const paint = this.paint;
     const inner = width - 4; // two walls, two spaces
     const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
     const rows = this.filtered();
@@ -628,12 +711,14 @@ class RoutingPicker {
     lines.push("");
     const count = `${this.models.length} models`;
     const legend = [
+      "[↑↓] Move",
       "[Enter] Done",
       "[Space] Light",
       "[Ctrl+h] Heavy",
       "[Ctrl+r] Routing",
       "[Ctrl+t] Light Think",
       "[Ctrl+Shift+t] Heavy Think",
+      "[←] Back",
       "[Esc] Cancel",
     ].join("  ");
     lines.push(`${t.fg("accent", count)}${t.fg("dim", ` · ${legend}`)}`);
@@ -647,6 +732,7 @@ class RoutingPicker {
  *  both advertised keybindings live so the footer never promises a key that does nothing here. */
 class StatusPanel {
   private lines: string[];
+  private readonly paint: (text: string) => string;
   private readonly theme: any;
   private readonly actions: {
     rebuild: () => string[];
@@ -666,9 +752,11 @@ class StatusPanel {
     done: (value?: void) => void,
     title: string = STATUS_TITLE,
     desc: string = STATUS_DESC,
-    controls = true
+    controls = true,
+    paint: (text: string) => string = borderPainterFor(theme)
   ) {
     this.theme = theme;
+    this.paint = paint;
     this.lines = lines;
     this.actions = actions;
     this.done = done;
@@ -684,6 +772,10 @@ class StatusPanel {
   }
 
   handleInput(data: string): void {
+    if (matchesKey(data, Key.left)) {
+      this.done(BACK);
+      return;
+    }
     if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape) || matchesKey(data, "ctrl+c")) {
       this.done();
       return;
@@ -699,7 +791,7 @@ class StatusPanel {
 
   render(width: number): string[] {
     const t = this.theme;
-    const paint = boxBorderPainter(t);
+    const paint = this.paint;
     const inner = width - 4; // two walls, two spaces
     const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
     // Same round frame as the routing and login pickers; the controls line stays live.
@@ -783,14 +875,16 @@ async function promptForAccountId(ctx: any, provider: JevProvider): Promise<stri
 /** Clef has two models; the choice is per credential, so it is asked while the credential is set up. */
 async function promptForModel(ctx: any, provider: JevProvider): Promise<string | undefined> {
   const models = provider.models ?? [provider.model];
-  const labels = models.map((m) =>
-    m === "clef-flash" ? "clef-flash  ·  cheapest, best for the per-write gate" : "clef  ·  strongest, costs about 6x more"
-  );
-  const index = await pickRow(ctx, "Jev Eye · Clef model", labels, "Per credential: the cheaper model suits the per-write gate.");
-  return index === null ? undefined : models[index];
+  const rows = models.map((m) => ({
+    label: m,
+    note: m === "clef-flash" ? "cheapest, best for the per-write gate" : "strongest, costs about 6x more",
+  }));
+  const index = await pickRow(ctx, "Jev Eye · Clef model", rows, "Per credential: the cheaper model suits the per-write gate.", { onBack: () => {} });
+  return typeof index === "number" ? models[index] : undefined;
 }
 
-const loginFlow = async (ctx: any): Promise<void> => {
+/** Resolves `"back"` when the operator pressed [←] on the provider picker, so the menu reopens. */
+const loginFlow = async (ctx: any): Promise<void | "back"> => {
   // A key already exported in the environment is described, never overwritten by a stored one.
   const sources = keySources();
   if (sources.usable.length > 0 || sources.cfTokenWithoutAccount) {
@@ -808,24 +902,28 @@ const loginFlow = async (ctx: any): Promise<void> => {
   // `ctx.ui.custom` is a documented no-op there (rpc-extension-ui.md).
   const { store } = readAuthStore();
   let provider: JevProvider | null;
+  let back = false;
   if (ctx.mode === "tui") {
+    let picker: LoginPicker | undefined;
     provider = await ctx.ui.custom<JevProvider | null>((tui: any, theme: any, _kb: any, done: (value: JevProvider | null) => void) => {
-      const picker = new LoginPicker(theme, store, done);
+      picker = new LoginPicker(theme, store, done);
       return {
-        render: (width: number) => picker.render(width),
-        invalidate: () => picker.invalidate(),
+        render: (width: number) => picker!.render(width),
+        invalidate: () => picker!.invalidate(),
         handleInput: (data: string) => {
-          picker.handleInput(data);
+          picker!.handleInput(data);
           tui.requestRender();
         },
       };
     });
+    // `custom` resolves one value, so the Back flag is read from the component instance afterwards.
+    back = picker?.wentBack === true;
   } else {
     const labels = loginOptionLabels(store);
     const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", labels);
     provider = choice ? JEV_PROVIDERS[labels.indexOf(choice)] ?? null : null;
   }
-  if (!provider) return;
+  if (!provider) return back ? "back" : undefined;
   ctx.ui.notify(`[pi-jev-eye] ${providerTip(provider)}`, "info");
 
   // Clef cannot be reached without an account id, so collect it before the secret.
@@ -876,7 +974,7 @@ const loginFlow = async (ctx: any): Promise<void> => {
  * The store holds one credential per provider, so a picker is possible; environment-supplied keys are
  * reported instead, because a process cannot unset a variable that belongs to its caller.
  */
-const logoutFlow = async (ctx: any): Promise<void> => {
+const logoutFlow = async (ctx: any): Promise<void | "back"> => {
   const { store } = readAuthStore();
   const storedIds = storedProviderIds(store);
   const fromEnv = JEV_PROVIDERS.filter((p) => process.env[p.keyEnv]?.trim()).map((p) => `$${p.keyEnv}`);
@@ -906,8 +1004,15 @@ const logoutFlow = async (ctx: any): Promise<void> => {
     return;
   }
 
-  const index = await pickRow(ctx, "Jev Eye · Logout", choices.map((c) => c.label), `Stored in ${AUTH_PATH}.`);
-  if (index === null) return;
+  const index = await pickRow(
+    ctx,
+    "Jev Eye · Logout",
+    choices.map((c) => ({ label: c.label, note: c.ids.map(providerLabelOf).join(", ") })),
+    `Stored in ${AUTH_PATH}.`,
+    { onBack: () => {} },
+  );
+  if (index === "back") return "back";
+  if (typeof index !== "number") return;
   const target = choices[index] ?? choices[choices.length - 1];
   const confirmed = await ctx.ui.confirm(`Log out of ${target.label}?`, `Remove ${target.ids.map(providerLabelOf).join(", ")} from ${AUTH_PATH}?${envNote}`);
   if (!confirmed) return;
@@ -1762,7 +1867,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   /** `/jev-eye usage`: the same framed panel as status, with the spend breakdown. */
-  const showUsage = async (ctx: any): Promise<void> => {
+  const showUsage = async (ctx: any): Promise<void | "back"> => {
     const balance = await usageBalance(resolveJevAuth());
     // `custom` is a no-op in RPC (rpc-extension-ui.md): it resolves undefined without drawing anything,
     // so the text fallback must be chosen by mode, not by the method existing.
@@ -1770,7 +1875,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify([USAGE_TITLE, USAGE_DESC, "", ...buildUsage(ctx, undefined, balance)].join("\n"), "info");
       return;
     }
-    await ctx.ui.custom<void>((tui: any, theme: any, _kb: any, done: (value?: void) => void) => {
+    const outcome = await ctx.ui.custom<number | null>((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
       const panel = new StatusPanel(
         theme,
         buildUsage(ctx, theme, balance),
@@ -1778,7 +1883,8 @@ export default function (pi: ExtensionAPI) {
         done,
         USAGE_TITLE,
         USAGE_DESC,
-        false // read-only: no Mode / Grant-folder toggles on the usage screen
+        false, // read-only: no Mode / Grant-folder toggles on the usage screen
+        borderPainterFor(theme, ctx)
       );
       return {
         render: (width: number) => panel.render(width),
@@ -1789,6 +1895,7 @@ export default function (pi: ExtensionAPI) {
         },
       };
     });
+    return outcome === BACK ? "back" : undefined;
   };
 
   /** Status body only: plain text in headless mode, colourised when the panel hands over a theme.
@@ -1846,13 +1953,13 @@ export default function (pi: ExtensionAPI) {
   };
 
   /** `/jev-eye status`: the framed panel, falling back to the same body as plain text without a TUI. */
-  const showStatus = async (ctx: any): Promise<void> => {
+  const showStatus = async (ctx: any): Promise<void | "back"> => {
     if (ctx.mode !== "tui") {
       ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx), "", statusFooter(state.enabled, state.reviewMode)].join("\n"), "info");
       return;
     }
 
-    await ctx.ui.custom<void>((tui: any, theme: any, _kb: any, done: (value?: void) => void) => {
+    const outcome = await ctx.ui.custom<number | null>((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
       const panel = new StatusPanel(
         theme,
         buildStatus(ctx, theme),
@@ -1863,7 +1970,11 @@ export default function (pi: ExtensionAPI) {
           },
           cycleGate: () => writeConsent(nextConsent(readConsent(), ctx.cwd)),
         },
-        done
+        done,
+        STATUS_TITLE,
+        STATUS_DESC,
+        true,
+        borderPainterFor(theme, ctx)
       );
       return {
         render: (width: number) => panel.render(width),
@@ -1874,6 +1985,7 @@ export default function (pi: ExtensionAPI) {
         },
       };
     });
+    return outcome === BACK ? "back" : undefined;
   };
 
   const saveRouting = (ctx: any, next: Routing): void => {
@@ -1887,7 +1999,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   /** The whole routing screen: one keybind-driven picker for both targets. */
-  const openRoutingMenu = async (ctx: any, focus: "light" | "heavy" = "light"): Promise<void> => {
+  const openRoutingMenu = async (ctx: any, focus: "light" | "heavy" = "light"): Promise<void | "back"> => {
     const available: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
     if (available.length === 0) {
       ctx.ui.notify("[pi-jev-eye] No authenticated models found to route to.", "error");
@@ -1909,7 +2021,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const result = await ctx.ui.custom<Routing | null>((tui: any, theme: any, _kb: any, done: (value: Routing | null) => void) => {
-      const picker = new RoutingPicker(theme, available, current, focus, done);
+      const picker = new RoutingPicker(theme, available, current, focus, done, borderPainterFor(theme, ctx));
       return {
         render: (width: number) => picker.render(width),
         invalidate: () => picker.invalidate(),
@@ -1920,6 +2032,7 @@ export default function (pi: ExtensionAPI) {
       };
     });
 
+    if (result === BACK) return "back";
     if (!result) {
       ctx.ui.notify("[pi-jev-eye] Routing unchanged.", "info");
       return;
@@ -1935,40 +2048,34 @@ export default function (pi: ExtensionAPI) {
       ? `ON · ${routing.light || "unset"} → ${routing.heavy || "unset"}`
       : "off · configure light & heavy targets";
 
-    const options = [
-      `Login    ·  ${auth ? `switch key (current: ${auth.provider.label})` : "TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef) key"}`,
-      `Logout   ·  ${auth ? `remove key from ${auth.source}` : "no active key stored"}`,
-      `Status   ·  supervisor, gate scope & metrics`,
-      `Usage    ·  Jev/Clef spend, per-provider split & free-neuron budget`,
-      `Routing  ·  ${routingDesc}`,
+    const rows = [
+      { label: "Login", note: auth ? `switch key (current: ${auth.provider.label})` : "TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef) key" },
+      { label: "Logout", note: auth ? `remove key from ${auth.source}` : "no active key stored" },
+      { label: "Status", note: "supervisor, gate scope & metrics" },
+      { label: "Usage", note: "Jev/Clef spend, per-provider split & free-neuron budget" },
+      { label: "Routing", note: routingDesc },
     ];
 
-    const index = await pickRow(ctx, "Jev Eye · Menu", options);
-    if (index === null) return;
-
-    if (index === 0) {
-      await loginFlow(ctx);
-      return;
-    }
-
-    if (index === 1) {
-      await logoutFlow(ctx);
-      return;
-    }
-
-    if (index === 2) {
-      await showStatus(ctx);
-      return;
-    }
-
-    if (index === 3) {
-      await showUsage(ctx);
-      return;
-    }
-
-    if (index === 4) {
-      await openRoutingMenu(ctx);
-      return;
+    // The root menu has no previous screen, so it carries no [←] Back. Sub-screens that end with
+    // [Esc] fall back here too, so the operator never lands in the editor with a half-open menu.
+    while (true) {
+      const index = await pickRow(ctx, "Jev Eye · Menu", rows, "Supervisor settings and live state for this session.");
+      if (index === "back") return; // nothing behind the root
+      if (index === null) return;
+      let outcome: void | "back";
+      if (index === 0) {
+        outcome = await loginFlow(ctx);
+      } else if (index === 1) {
+        outcome = await logoutFlow(ctx);
+      } else if (index === 2) {
+        outcome = await showStatus(ctx);
+      } else if (index === 3) {
+        outcome = await showUsage(ctx);
+      } else {
+        outcome = await openRoutingMenu(ctx);
+      }
+      // Any screen that was left with [←] reopens this menu; anything else ends the command.
+      if (outcome !== "back") return;
     }
   };
 

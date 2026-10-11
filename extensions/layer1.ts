@@ -341,6 +341,27 @@ export const VERIFICATION_COMMAND_PATTERNS = [
   /\bvitest\b/i,
 ];
 
+/** Theme slot for a thinking level. Pi defines one `thinking*` token per level in every theme, so the
+ *  border follows the theme instead of a hardcoded palette. A level the theme lacks falls back to `off`. */
+export function thinkingColorSlot(level: string | undefined): string {
+  switch ((level ?? "off").toLowerCase()) {
+    case "minimal":
+      return "thinkingMinimal";
+    case "low":
+      return "thinkingLow";
+    case "medium":
+      return "thinkingMedium";
+    case "high":
+      return "thinkingHigh";
+    case "xhigh":
+      return "thinkingXhigh";
+    case "max":
+      return "thinkingMax";
+    default:
+      return "thinkingOff";
+  }
+}
+
 // --- Arnative box chrome (pure: hand the theme's fg function in, so `npm test` needs no pi-tui) ---
 // Same glyphs as `@bismawy/pi-arnative` lib/box.ts: round corners, one content row per item. Border
 // colour is a parameter because arnative themes have a soft token while built-in themes only have accent.

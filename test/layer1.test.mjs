@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, boxBorderPainter, boxEdge, boxRow, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, sumDays, visibleWidth, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, boxBorderPainter, boxEdge, boxRow, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, sumDays, thinkingColorSlot, visibleWidth, wipeTarget } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -301,4 +301,14 @@ test("the border uses the soft accent when the theme has it and falls back to ac
   });
   assert.equal(withoutSoft("x"), "<accent>x</accent>", "a built-in theme must not throw the box away");
   assert.equal(boxBorderPainter(null)("x"), "x", "no theme yet means no colour, not a crash");
+});
+
+test("the box border slot follows the thinking level", () => {
+  assert.equal(thinkingColorSlot(undefined), "thinkingOff", "no level yet");
+  assert.equal(thinkingColorSlot("off"), "thinkingOff");
+  assert.equal(thinkingColorSlot("minimal"), "thinkingMinimal");
+  assert.equal(thinkingColorSlot("low"), "thinkingLow");
+  assert.equal(thinkingColorSlot("HIGH"), "thinkingHigh", "matching is case-insensitive");
+  assert.equal(thinkingColorSlot("max"), "thinkingMax");
+  assert.equal(thinkingColorSlot("levels-from-the-future"), "thinkingOff", "an unknown level never throws");
 });
