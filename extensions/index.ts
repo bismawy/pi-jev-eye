@@ -1380,8 +1380,9 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
 const KEY_SETS = {
   /** Cycle ON → REVIEW → OFF. `Ctrl+Shift+e` has no built-in pi binding, unlike `Ctrl+Shift+g`. */
   toggle: "ctrl+shift+e",
-  /** Cycle the Jev gate value: all folders / this folder / disabled. */
-  gate: "ctrl+shift+g",
+  /** Cycle the Jev gate value: all folders / this folder / disabled.
+   *  `Ctrl+Shift+g` is pi's own `tui.altScreen.searchPrevious`; `Ctrl+Shift+u` is bound to nothing. */
+  gate: "ctrl+shift+u",
   /** Cycle the model router on/off inside the routing screen. */
   routingToggle: "ctrl+r",
 } as const;
