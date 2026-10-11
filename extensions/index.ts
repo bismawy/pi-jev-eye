@@ -782,7 +782,7 @@ class StatusPanel {
       this.done();
       return;
     }
-    if (matchesKey(data, TOGGLE_KEY) || matchesKey(data, LEGACY_TOGGLE_KEY)) {
+    if (matchesKey(data, TOGGLE_KEY)) {
       if (this.controls) this.apply(this.actions.cycleMode);
       return;
     }
@@ -1378,10 +1378,8 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
  * footer is measured from the strings themselves. One line per value so a writer can grep it.
  */
 const KEY_SETS = {
-  /** Cycle ON → REVIEW → OFF. */
-  toggle: "ctrl+shift+s",
-  /** Legacy alias, still registered so an existing muscle memory keeps working. */
-  toggleLegacy: "ctrl+shift+e",
+  /** Cycle ON → REVIEW → OFF. `Ctrl+Shift+e` has no built-in pi binding, unlike `Ctrl+Shift+g`. */
+  toggle: "ctrl+shift+e",
   /** Cycle the Jev gate value: all folders / this folder / disabled. */
   gate: "ctrl+shift+g",
   /** Cycle the model router on/off inside the routing screen. */
@@ -1389,7 +1387,6 @@ const KEY_SETS = {
 } as const;
 
 const TOGGLE_KEY = KEY_SETS.toggle;
-const LEGACY_TOGGLE_KEY = KEY_SETS.toggleLegacy;
 // Gate scope cycle, announced in the same footer.
 const GATE_KEY = KEY_SETS.gate;
 
@@ -1586,15 +1583,6 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerShortcut(TOGGLE_KEY, {
     description: "Cycle pi-jev-eye mode: ON -> REVIEW -> OFF",
-    handler: async (ctx: any) => {
-      const mode = cycleEyeState(ctx);
-      const desc = mode === "OFF" ? "supervisor disabled" : mode === "REVIEW" ? "all turns reviewed" : "prompt trigger";
-      ctx.ui.notify(`[pi-jev-eye] Mode: ${mode} (${desc}). Cycle with ${TOGGLE_KEY}.`, mode === "OFF" ? "warning" : "info");
-    },
-  });
-
-  pi.registerShortcut(LEGACY_TOGGLE_KEY, {
-    description: `Cycle pi-jev-eye mode (alias for ${keycap(TOGGLE_KEY)})`,
     handler: async (ctx: any) => {
       const mode = cycleEyeState(ctx);
       const desc = mode === "OFF" ? "supervisor disabled" : mode === "REVIEW" ? "all turns reviewed" : "prompt trigger";

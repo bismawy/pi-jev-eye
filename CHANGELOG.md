@@ -4,7 +4,7 @@
 
 ### Changed
 - **`/jev-eye status` rows are a table, not sentences.** Every row now reads `Label · status | detail` — `Supervisor ENABLED | Review prompt trigger`, `Scope folders ON | All Folders`, `Gate READY | TypeSafe · jev-latest`, `Rules ACTIVE | …`, `Routing OFF | …`, `Blocked STATS | …`, `Context USED | …` — with the status word coloured by state, so one pass down the left column answers "is it on?".
-- **Mode toggle moved to `Ctrl+Shift+s`** (`Alt+Shift+J` is gone; `Ctrl+Shift+e` stays as the alias). Its hint lives in `KEY_SETS` now, along with the gate key and the routing toggle, so the footer, the notifications and the alias description cannot drift apart.
+- **Mode toggle is `Ctrl+Shift+e`** — one shortcut, no alias. `Alt+Shift+J` is gone, and so is `Ctrl+Shift+s`: in the same terminal where `Ctrl+Shift+e` cycles the mode, `Ctrl+Shift+s` produced no event at all, so it was advertised but never arrived. `Ctrl+Shift+e` also has no built-in pi binding, unlike `Ctrl+Shift+g`. Every hint reads from one `KEY_SETS` table, so the footer, the notifications and the shortcut registration cannot drift apart.
 - `/jev-eye status` footer advertises `[←] Back` next to `[Ctrl+Shift+s] Supervisor`, and the read-only usage footer does the same.
 
 ### Added
