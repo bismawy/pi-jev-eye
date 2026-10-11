@@ -1,5 +1,33 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **The chosen row is the soft tint, not the accent.** `LoginPicker` and `RoutingPicker` painted the highlighted row's body with `accent`, which is what Pi's own selector does and what the `arnative-pi` template warns against — `accent` is structural chrome. The `→` marker keeps `accent`; the label moves to `accentSoft`, and the secondary metadata (the `[provider]` tag, the `·` notes) stays `muted`/`dim` so one column reads as state and the other as evidence. `chosenRowPainter` in `extensions/layer1.ts` probes `accentSoft`, falls back to `thinkingText`, then to `accent`, and is covered by `npm test`.
+- **`/jev-eye status` rows keep the `·` divider.** The label is padded so the divider lands in the same column as the list menus, and the row reads `Label · STATUS | detail · detail`; the status word carries its own token (`success` on, `muted` idle, `warning` broken). `statusRow` in `extensions/layer1.ts` owns the layout and is covered by `npm test`.
+- **`/jev-eye status` rows are a table, not sentences.** Every row now reads `Label · status | detail` — `Supervisor ENABLED | Review prompt trigger`, `Scope folders ON | All Folders`, `Gate READY | TypeSafe · jev-latest`, `Rules ACTIVE | …`, `Routing OFF | …`, `Blocked STATS | …`, `Context USED | …` — with the status word coloured by state, so one pass down the left column answers "is it on?".
+- **Grant folder moved to `Ctrl+Shift+u`.** `Ctrl+Shift+g` *is* pi's own `tui.altScreen.searchPrevious`, so every boot printed a shortcut conflict for it and the gate key could fire a search action. `Ctrl+Shift+u` is bound to nothing.
+- **Mode toggle is `Ctrl+Shift+e`** — one shortcut, no alias. `Alt+Shift+J` is gone, and so is `Ctrl+Shift+s`: in the same terminal where `Ctrl+Shift+e` cycled the mode, `Ctrl+Shift+s` produced no event at all, so it was advertised but never arrived. Every hint reads from one `KEY_SETS` table, so the footer, the notifications and the shortcut registration cannot drift apart.
+- `/jev-eye status` footer advertises `[←] Back` next to `[Ctrl+Shift+e] Supervisor` and `[Ctrl+Shift+u] Grant folder`; the read-only usage footer shows `[←] Back` too.
+
+### Added
+- **`/jev-eye` screens now use the Arnative rounded-box template**, and the template itself is the default in the `arnative-pi` skill: title with a description underneath, chosen row in `accentSoft`, `·` dividers in `dim`, keybind legend in brackets (`[Enter] Choose`), and **`[←] Back`** inside extension menus to reopen the previous one.
+- **Thinking-adaptive box border.** Every `/jev-eye` screen derives its border from the session's thinking level via `thinkingColorSlot` (`thinkingOff`…`thinkingMax`), and prefers `accentSoft` where the theme defines it. `thinking*` exists in every theme, so a built-in theme no longer loses the frame.
+- `[←] Back` in an extension menu returns to the previous menu, while `[Esc]` closes the screen — two different exits, never merged. `/jev-eye`'s root menu reopens after Login, Logout, Status, Usage and Routing leave with `[←]`; the root itself carries no `[←]`, because nothing is behind it.
+- `[Home]`/`[End]` jump to the ends of a rounded-box list.
+
+### Changed
+- Picker rows are split into a label and a note, and every label is padded to the widest one, so all `·` dividers land in a single column (`Login    ·  …` / `Routing  ·  …`) instead of drifting with the label length.
+- Keybind legends follow one style everywhere: explicitly bracketed keys, action capitalized, `dim` paint.
+- **Every `/jev-eye` menu is now a rounded box.** The root `/jev-eye` menu, the logout picker, and the Clef model picker were still `ctx.ui.select`, which Pi renders itself with two full-width rules, so no frame could reach them. A shared `pickRow` helper now drives all of them: the rounded box in TUI mode, `ctx.ui.select` over RPC and headless. This is what the earlier frame change missed — the screens it converted were the custom ones, and the menus were not custom.
+- `ListPicker` in `extensions/index.ts`: one list component for every menu (title, optional subtitle, pre-styled rows, footer), so a new menu does not re-implement the frame or the key handling.
+- **The three `/jev-eye` screens are drawn inside an Arnative box** — `╭───╮ … ╰───╯` with one row per line, matching `/arnative`. The old top-and-bottom dashed rules became a real frame for `login`, `routing`, `status`, and `usage`.
+- `boxBorderPainter`, `boxEdge`, `boxRow`, `visibleWidth` in `extensions/layer1.ts`: the frame math is pure (theme `fg` handed in as an argument), so `npm test` covers it without importing `pi-tui`. Border colour probes `accentSoft` once and falls back to `accent`, which is the only token a built-in theme has.
+- A row wider than the frame is truncated before it is wrapped, so a styled wide-glyph row still lands exactly on the frame width; a component handed a 1–3 column width degrades instead of shifting the screen.
+- Every custom screen (`login` picker, `routing`, `status`, `usage`) now guards on `ctx.mode === "tui"`. In RPC mode `ctx.ui.custom` is a documented no-op that resolves `undefined` without drawing, so the old `typeof ctx.ui.custom === "function"` test passed and then silently did nothing — login was cancelled and status/usage printed a blank panel over RPC.
+
+---
+
 ## [0.1.17] - 2026-10-11
 
 ### Added

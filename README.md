@@ -42,8 +42,8 @@ pi -e ./extensions/index.ts
 
 | Trigger | Scope | Action |
 | --- | --- | --- |
-| `alt+shift+j` | Keybinding | Cycle supervisor mode: **ON** → **REVIEW** → **OFF** |
-| `ctrl+shift+g` | Keybinding | Cycle Jev folder gate: **Enable all** → **This folder** → **Disabled** |
+| `ctrl+shift+e` | Keybinding | Cycle supervisor mode: **ON** → **REVIEW** → **OFF** |
+| `ctrl+shift+u` | Keybinding | Cycle Jev folder gate: **Enable all** → **This folder** → **Disabled** |
 | `/jev-eye` | Global | Interactive menu: Login, Logout, Status, Routing (`/eye` is an alias) |
 | `/jev-eye login` | Setup | Authenticate with TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef); verified against the live route, mode 0600 |
 | `/jev-eye logout` | Setup | Remove stored credentials — pick **Jev**, **Clef**, or **All** when several backends are logged in |
@@ -73,12 +73,12 @@ The Cloudflare route is `…/accounts/{ACCOUNT_ID}/ai/run/@cf/cloudflare/clef-fl
 
 > **Notes:**
 > - **pi-arnative status bar:** Shows real-time mode indicator as `Jev: ● ON` / `● REVIEW` / `○ OFF`.
-> - **Legacy alias:** `ctrl+shift+e` is preserved as a fallback alias for `alt+shift+j`.
+> - **Why these chords:** neither `ctrl+shift+e` nor `ctrl+shift+u` is bound by pi. `ctrl+shift+g` used to carry the gate, but it is pi's own `tui.altScreen.searchPrevious`, so pi warns about the clash at boot.
 
 ### Modes
 
 ```
-Alt+Shift+J ──► ON ──► REVIEW ──► OFF ──┐
+Ctrl+Shift+E ──► ON ──► REVIEW ──► OFF ──┐
                  ▲                     │
                  └─────────────────────┘
 ```

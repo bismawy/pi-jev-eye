@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, sumDays, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, boxBorderPainter, boxEdge, boxRow, cfRunUrl, chosenRowPainter, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, statusRow, sumDays, thinkingColorSlot, visibleWidth, wipeTarget } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -263,4 +263,94 @@ test("the free-neuron budget reports what is left and what overage would cost", 
   assert.equal(over.overageUsd, 0.022, "2000 neurons over at $0.011/1000");
 
   assert.equal(clefBudget(-5).used, 0, "a negative counter clamps instead of reporting extra budget");
+});
+
+test("the box chrome frames every line to the requested width", () => {
+  const plain = (text) => text;
+  assert.equal(boxEdge("╭", "╮", 10, plain), "╭────────╮");
+  assert.equal(boxRow("abc", 10, plain), "│ abc    │", "content then padding then the right wall");
+  assert.equal(visibleWidth(boxRow("abc", 10, plain)), 10);
+  assert.equal(visibleWidth(boxEdge("╭", "╮", 10, plain)), 10);
+});
+
+test("the box survives widths where the frame does not fit", () => {
+  // Pi can hand a component width 3; a frame that is longer than the width shifts the whole screen.
+  for (const width of [1, 2, 3, 4, 8]) {
+    assert.equal(visibleWidth(boxEdge("╭", "╮", width, (t) => t)) <= Math.max(width, 2), true, `edge at width ${width}`);
+    const row = visibleWidth(boxRow("a", width, (t) => t));
+    assert.equal(row <= width, true, `row at width ${width} is ${row} wide`);
+  }
+});
+
+test("box width ignores ANSI escapes and counts wide glyphs as two", () => {
+  assert.equal(visibleWidth("\x1b[31mab\x1b[0m"), 2, "an SGR sequence occupies no columns");
+  assert.equal(visibleWidth("\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\"), 4, "an OSC 8 hyperlink occupies no columns");
+  assert.equal(visibleWidth("日本"), 4, "two full-width glyphs");
+  const row = boxRow("\x1b[31m日本\x1b[0m", 8, (t) => t);
+  assert.equal(visibleWidth(row), 8, "a styled wide row still lands on the frame width");
+});
+
+test("the border uses the soft accent when the theme has it and falls back to accent", () => {
+  const withSoft = boxBorderPainter({ fg: (color, text) => `<${color}>${text}</${color}>` });
+  assert.equal(withSoft("x"), "<accentSoft>x</accentSoft>");
+  const withoutSoft = boxBorderPainter({
+    fg: (color, text) => {
+      if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
+      return `<${color}>${text}</${color}>`;
+    },
+  });
+  assert.equal(withoutSoft("x"), "<accent>x</accent>", "a built-in theme must not throw the box away");
+  assert.equal(boxBorderPainter(null)("x"), "x", "no theme yet means no colour, not a crash");
+});
+
+test("the box border slot follows the thinking level", () => {
+  assert.equal(thinkingColorSlot(undefined), "thinkingOff", "no level yet");
+  assert.equal(thinkingColorSlot("off"), "thinkingOff");
+  assert.equal(thinkingColorSlot("minimal"), "thinkingMinimal");
+  assert.equal(thinkingColorSlot("low"), "thinkingLow");
+  assert.equal(thinkingColorSlot("HIGH"), "thinkingHigh", "matching is case-insensitive");
+  assert.equal(thinkingColorSlot("max"), "thinkingMax");
+  assert.equal(thinkingColorSlot("levels-from-the-future"), "thinkingOff", "an unknown level never throws");
+});
+
+test("a chosen row's body takes the soft tint, never the accent", () => {
+  const withSoft = chosenRowPainter({ fg: (color, text) => `<${color}>${text}</${color}>` });
+  assert.equal(withSoft("Login"), "<accentSoft>Login</accentSoft>");
+  const withoutSoft = chosenRowPainter({
+    fg: (color, text) => {
+      if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
+      return `<${color}>${text}</${color}>`;
+    },
+  });
+  assert.equal(withoutSoft("Login"), "<thinkingText>Login</thinkingText>", "a theme without the soft token keeps its own tint");
+  const neither = chosenRowPainter({
+    fg: (color, text) => {
+      if (color !== "accent") throw new Error(`Unknown theme color: ${color}`);
+      return `<${color}>${text}</${color}>`;
+    },
+  });
+  assert.equal(neither("Login"), "<accent>Login</accent>", "a theme with neither token falls back to accent");
+  assert.equal(chosenRowPainter(null)("Login"), "Login", "no theme yet means no colour, not a crash");
+});
+
+test("a status row keeps its divider in one column and its status on its own token", () => {
+  const p = (token, text) => `<${token}>${text}</${token}>`;
+  const plain = (token, text) => (token === "dim" ? text : `${token}:${text}`);
+
+  const rows = [
+    statusRow("Supervisor", "ENABLED", ["Review prompt trigger"], plain, "success"),
+    statusRow("Scope folders", "ON", ["All Folders"], plain, "success"),
+    statusRow("Gate", "READY", ["TypeSafe · jev-latest"], plain, "success"),
+    statusRow("Context", "USED", ["0 tokens"], plain, "muted"),
+  ];
+  const dividers = rows.map((row) => row.indexOf("·"));
+  assert.equal(new Set(dividers).size, 1, `all dividers share one column: ${dividers.join(",")}`);
+
+  assert.equal(rows[0], "Supervisor    · success:ENABLED | Review prompt trigger");
+  assert.equal(rows[1], "Scope folders · success:ON | All Folders");
+  assert.equal(statusRow("Gate", "OFFLINE", [], plain, "warning"), "Gate          · warning:OFFLINE", "no details -> no trailing pipe");
+  assert.equal(statusRow("Gate", "READY", [false, undefined, "only"], plain), "Gate          · muted:READY | only", "falsy details drop out");
+  assert.equal(statusRow("Supervisor", "ENABLED", [], p, "success").includes("<dim>·</dim>"), true, "divider is dim");
+  // A label wider than the column must widen the column instead of eating the divider.
+  assert.equal(statusRow("A very long label", "ON", [], plain, "success"), "A very long label· success:ON");
 });

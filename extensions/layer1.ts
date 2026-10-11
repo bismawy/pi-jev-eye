@@ -340,3 +340,116 @@ export const VERIFICATION_COMMAND_PATTERNS = [
   /\b(go\s+(test|vet))\b/i,
   /\bvitest\b/i,
 ];
+
+/** Theme slot for a thinking level. Pi defines one `thinking*` token per level in every theme, so the
+ *  border follows the theme instead of a hardcoded palette. A level the theme lacks falls back to `off`. */
+export function thinkingColorSlot(level: string | undefined): string {
+  switch ((level ?? "off").toLowerCase()) {
+    case "minimal":
+      return "thinkingMinimal";
+    case "low":
+      return "thinkingLow";
+    case "medium":
+      return "thinkingMedium";
+    case "high":
+      return "thinkingHigh";
+    case "xhigh":
+      return "thinkingXhigh";
+    case "max":
+      return "thinkingMax";
+    default:
+      return "thinkingOff";
+  }
+}
+
+// --- Status-panel rows (pure: the caller paints, this only lays the columns out) ---
+/** Painter for one status row: a theme token plus its text. Handed in, so the layout stays pure. */
+export type StatusPainter = (token: string, text: string) => string;
+
+/**
+ * One `/jev-eye status` row: `Label · STATUS | detail · detail`.
+ *
+ * The label is padded to `column` so every `·` divider lands in the same column, exactly like the
+ * list menus. The status word carries its own token (`success` on, `muted` idle, `warning` broken),
+ * so a glance down the left column answers "is it on?" without reading the details.
+ */
+export function statusRow(
+  label: string,
+  status: string,
+  details: (string | false | undefined)[],
+  paint: StatusPainter = (_token, text) => text,
+  statusToken = "muted",
+  column = 14
+): string {
+  const divider = paint("dim", "·");
+  const head = `${paint("dim", label.padEnd(Math.max(label.length, column)))}${divider} `;
+  const body = details.filter(Boolean).join(paint("dim", " · "));
+  const tail = body ? `${paint("dim", "|")} ${body}` : "";
+  return `${head}${paint(statusToken, status)}${tail ? ` ${tail}` : ""}`;
+}
+
+// --- Arnative box chrome (pure: hand the theme's fg function in, so `npm test` needs no pi-tui) ---
+// Same glyphs as `@bismawy/pi-arnative` lib/box.ts: round corners, one content row per item. Border
+// colour is a parameter because arnative themes have a soft token while built-in themes only have accent.
+export type BoxTheme = { fg(color: string, text: string): string };
+
+/** The arnative themes' `accentSoft`; any other theme gets `accent`. Probed once, like the reference. */
+export function boxBorderPainter(theme: BoxTheme | null | undefined): (text: string) => string {
+  const fg = theme?.fg?.bind(theme);
+  if (!fg) return (text) => text;
+  try {
+    fg("accentSoft", "");
+    return (text) => fg("accentSoft", text);
+  } catch {
+    return (text) => fg("accent", text);
+  }
+}
+
+/**
+ * Painter for a chosen row's body — the arnative rule: the `→` marker keeps the accent, the text moves
+ * to the soft tint. `accentSoft` is arnative-only, so probe it and fall back to `thinkingText`, which
+ * every theme defines (unlike `tint`). Picking rows (`accent`) is the built-in look, not this one. */
+export function chosenRowPainter(theme: BoxTheme | null | undefined): (text: string) => string {
+  const fg = theme?.fg?.bind(theme);
+  if (!fg) return (text) => text;
+  const accent = (text: string) => fg("accent", text);
+  try {
+    fg("accentSoft", ""); // probe once here, or the first row would throw instead of falling back
+    return (text) => fg("accentSoft", text);
+  } catch {
+    try {
+      fg("thinkingText", "");
+      return (text) => fg("thinkingText", text);
+    } catch {
+      return accent;
+    }
+  }
+}
+
+/** `╭───╮` / `╰───╯`. Width holds at 1-2 because a line shorter than the frame beats a downshifted one. */
+export function boxEdge(left: string, right: string, width: number, paint: (text: string) => string = (text) => text): string {
+  return paint(`${left}${"─".repeat(Math.max(0, width - 2))}${right}`);
+}
+
+/**
+ * `│ text │` for one already-styled row. Visible width is computed from the already-styled string
+ * because layer1 must stay free of pi-tui imports.
+ */
+export function boxRow(content: string, width: number, paint: (text: string) => string = (text) => text): string {
+  // Two walls, two spaces and one content column need four; below that a blank line beats an overflowing one.
+  if (width < 4) return "";
+  return `${paint("│")} ${content}${" ".repeat(Math.max(0, width - visibleWidth(content) - 3))}${paint("│")}`;
+}
+
+/** ANSI escape sequences (CSI, OSC, and single-character escapes) — they occupy no terminal columns. */
+const ANSI_ESCAPE = /\x1b(?:\[[0-9;:?]*[A-Za-z]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
+
+/** Terminal columns of a styled string: strip ANSI, then count full-width glyphs as two (East Asian W/F). */
+export function visibleWidth(text: string): number {
+  let wide = 0;
+  for (const char of text.replace(ANSI_ESCAPE, "")) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code >= 0x1100 && (code <= 0x115f || code === 0x2329 || code === 0x232a || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) || (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe30 && code <= 0xfe6f) || (code >= 0xff00 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6) || (code >= 0x1f300 && code <= 0x1f64f) || (code >= 0x20000 && code <= 0x3fffd))) wide += 1;
+  }
+  return [...text.replace(ANSI_ESCAPE, "")].length + wide;
+}
