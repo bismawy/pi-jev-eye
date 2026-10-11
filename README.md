@@ -42,7 +42,7 @@ pi -e ./extensions/index.ts
 
 | Trigger | Scope | Action |
 | --- | --- | --- |
-| `alt+shift+j` | Keybinding | Cycle supervisor mode: **ON** → **REVIEW** → **OFF** |
+| `ctrl+shift+s` | Keybinding | Cycle supervisor mode: **ON** → **REVIEW** → **OFF** |
 | `ctrl+shift+g` | Keybinding | Cycle Jev folder gate: **Enable all** → **This folder** → **Disabled** |
 | `/jev-eye` | Global | Interactive menu: Login, Logout, Status, Routing (`/eye` is an alias) |
 | `/jev-eye login` | Setup | Authenticate with TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef); verified against the live route, mode 0600 |
@@ -73,12 +73,12 @@ The Cloudflare route is `…/accounts/{ACCOUNT_ID}/ai/run/@cf/cloudflare/clef-fl
 
 > **Notes:**
 > - **pi-arnative status bar:** Shows real-time mode indicator as `Jev: ● ON` / `● REVIEW` / `○ OFF`.
-> - **Legacy alias:** `ctrl+shift+e` is preserved as a fallback alias for `alt+shift+j`.
+> - **Legacy alias:** `ctrl+shift+e` is preserved as a fallback alias for `ctrl+shift+s`.
 
 ### Modes
 
 ```
-Alt+Shift+J ──► ON ──► REVIEW ──► OFF ──┐
+Ctrl+Shift+S ──► ON ──► REVIEW ──► OFF ──┐
                  ▲                     │
                  └─────────────────────┘
 ```
