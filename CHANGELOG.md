@@ -1,39 +1,36 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.17] - 2026-10-11
 
 ### Added
+- **Cloudflare Workers AI (Clef) as a third Jev provider.** `/jev-eye login` now offers `Cloudflare Workers AI (Clef)` alongside TypeSafe and OpenRouter. Clef speaks the same System One request shape (`noul` / `choice` / `score`), so the write gate, the reviewed-turn `answers_request` dimension, and per-turn routing all work against it unchanged.
 - **Multi-credential auth store and a logout picker.** `auth.json` is now version 2 — a `providers` map keyed by provider id — so TypeSafe, OpenRouter and Clef can stay logged in at the same time. `/jev-eye logout` offers **Jev**, **Clef**, or **All** when several are stored; with one stored it just confirms that one. A v1 single-key file is migrated on first read and the original is kept at `auth.json.v1.bak`.
 - **`/jev-eye login` shows what is already stored.** Each provider row carries its state — `✓ stored` in the theme's `success` green, or a dim `• not configured` — read from `auth.json`, so the menu answers "what am I logged in with?" before a key is typed. Choosing a provider then prints its exact key source.
 - Logging in now **adds** a credential instead of replacing the file, so switching backend no longer discards the previous key. An empty key is refused rather than overwriting a good credential.
 - Keys supplied by the environment are reported by logout (`$TYPESAFE_API_KEY comes from the environment and cannot be removed here.`) because a process cannot unset a variable belonging to its caller.
-- `migrateAuthStore`, `putCredential`, `removeCredentials`, `storedProviderIds` in `extensions/layer1.ts`: the store folds are pure and covered by `npm test`.
-
-### Fixed
-- **Read-only `/jev-eye usage` footer.** The panel reused the status frame, so it advertised `[Alt+Shift+j] Mode` and `[Ctrl+Shift+g] Grant folder` and acted on those keys, though a spend view has nothing to toggle. It now shows `[Enter] Done  [Esc] Cancel` and ignores the toggle keys.
-
-### Added
-- **Compact `/jev-eye usage` panel** that reports **Jev and Clef side by side** in one table: requests, input tokens and cost per backend for the month, three one-line period totals (today / month / all time), and the Clef free-neuron budget with a fill bar and reset time. 22 lines became 18.
-- `backendTotals` in `extensions/layer1.ts`: one pass splits a period's provider map into Clef (Cloudflare) and every other Jev provider. It normalizes each entry first, so a partially written record contributes zeros instead of poisoning the sum with `NaN`.
-- An **`Earlier`** row appears only when some of the period predates provider attribution, showing exactly how many requests could not be split. Without it the table would look complete while covering a fraction of the month — an error would be invisible.
-- **`Usage` entry in the `/jev-eye` menu.** The menu lists `Usage · Jev/Clef spend, per-provider split & free-neuron budget` next to `Status`, opening the same panel as `/jev-eye usage`.
-- **Cloudflare Workers AI (Clef) as a third Jev provider.** `/jev-eye login` now offers `Cloudflare Workers AI (Clef)` alongside TypeSafe and OpenRouter. Clef speaks the same System One request shape (`noul` / `choice` / `score`), so the write gate, the reviewed-turn `answers_request` dimension, and per-turn routing all work against it unchanged.
 - A Clef credential is an account id plus a Workers AI token: the account id is asked for first (or read from `$CLOUDFLARE_ACCOUNT_ID`), then verified against the real `…/accounts/{id}/ai/run/@cf/cloudflare/clef-flash` route before anything is saved. The model is chosen at login (`clef-flash` — cheapest, the default — or `clef`).
+- **Compact `/jev-eye usage` panel** that reports **Jev and Clef side by side**: requests, input tokens and cost per backend for the month, three one-line period totals (today / month / all time), and the Clef free-neuron budget — model in use, neurons spent today against the 10,000/day free allowance, a fill bar, the reset time, and the `$0.011/1,000` neuron overage once it runs out. Real spend is separated from the free tier in 18 lines instead of 22.
+- **`Usage` entry in the `/jev-eye` menu.** The menu lists `Usage · Jev/Clef spend, per-provider split & free-neuron budget` next to `Status`, opening the same panel as `/jev-eye usage`.
+- An **`Earlier`** row appears only when some of the period predates provider attribution, showing exactly how many requests could not be split. Without it the table would look complete while covering a fraction of the month — an error would be invisible.
+- `migrateAuthStore`, `putCredential`, `removeCredentials`, `storedProviderIds` in `extensions/layer1.ts`: the store folds are pure and covered by `npm test`.
+- `backendTotals` in `extensions/layer1.ts`: one pass splits a period's provider map into Clef (Cloudflare) and every other Jev provider. It normalizes each entry first, so a partially written record contributes zeros instead of poisoning the sum with `NaN`.
 - `clefBody` / `clefError` in `extensions/layer1.ts`: the Workers AI route wraps the answer in `{ result, success, errors }`, and unwrapping it is now a tested pure function instead of an inline assumption.
 - `cfRunUrl` / `isCloudflareAccountId`: the account id is validated (32 hex chars) before it reaches a URL, and the account-less base stays safe to commit.
-- **`/jev-eye usage` panel.** Separates real spend from the free tier: totals for today / month / all time across both ledgers, a side-by-side Jev vs Clef table, and the Cloudflare Clef block — model in use, neurons spent today against the 10,000/day free allowance, a fill bar, and the overage cost at `$0.011/1,000` neurons once the allowance is used up.
 - `clefUsdPerMTok`, `clefNeuronsPerMTok`, `clefNeuronsFor`, `clefBudget`, `neuronsSpentOn` in `extensions/layer1.ts`: the real per-model rates (`clef` 21,818 neurons/M, `clef-flash` 3,455, `clef-omni` 13,636) instead of one flat rate. An unknown model id is charged as the cheaper model, never as free.
 - The ledger now records `providers` (a per-provider counter map) and `neurons` as optional fields, so one panel can split Jev from Clef without a second file.
 
 ### Changed
 - **The login picker renders the key-source tip live.** `ctx.ui.select` paints one fixed string per row, so the tip could not follow the cursor and sat in the list as dead filler. The menu is now a small custom component (`LoginPicker`) that re-renders on every move and shows the highlighted provider's key source and environment fallback underneath the list. Headless and RPC sessions, which have no `custom` UI, keep the plain select with the same rows. The store is re-read after the picker closes, so a key added elsewhere mid-flow is still counted when deciding which backends stayed logged in.
 - **`/jev-eye status` no longer carries usage.** Spend had two homes after `/jev-eye usage` shipped. Status is now a nine-line live-state view (supervisor, gate key, rules, routing, block counts, context), and the balance lookup moved to `usage` — so status is instant and never waits on a network call.
-- Jev providers gained a short name (`short`) for one-line rows: `Cloudflare Workers AI (Clef)` reads as `Clef` in the status line, while the login menu keeps the full label.
 - **Discoverability:** `package.json` `description` and `keywords` now name Cloudflare Workers AI, Clef, and `clef-flash`, and the README leads with a keyword line plus a "Why Clef" section — so a search for the Clef backend surfaces this package.
+- Jev providers gained a short name (`short`) for one-line rows: `Cloudflare Workers AI (Clef)` reads as `Clef` in the status line, while the login menu keeps the full label.
 - A stored Cloudflare key without an account id is treated as "not logged in", so the gate says `run /jev-eye login` instead of failing every request. `/jev-eye status` explains the specific case.
 - Ledger cost for Clef uses the real per-model rate (`clef-flash` `$0.038/M`, `clef` `$0.24/M`) instead of the generic TypeSafe `$0.042/M` estimate, and the balance line reports free neurons left today.
 - `StatusPanel` takes an optional title and description, so `/jev-eye usage` reuses the status frame instead of duplicating it.
 - `/jev-eye login` now warns before overwriting when a `$TYPESAFE_API_KEY` / `$OPENROUTER_API_KEY` / `$CLOUDFLARE_API_TOKEN` is already exported and takes precedence.
+
+### Fixed
+- **Read-only `/jev-eye usage` footer.** The panel reused the status frame, so it advertised `[Alt+Shift+j] Mode` and `[Ctrl+Shift+g] Grant folder` and acted on those keys, though a spend view has nothing to toggle. It now shows `[Enter] Done  [Esc] Cancel` and ignores the toggle keys.
 
 ---
 
