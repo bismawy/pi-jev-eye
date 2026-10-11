@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, neuronsSpentOn, normalizeTotals, sumDays, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, sumDays, wipeTarget } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -188,6 +188,57 @@ test("an empty or missing split reads as two zeroed backends", () => {
     assert.equal(clef.requests + jev.requests, 0);
     assert.equal(clef.cost + jev.cost, 0, "no invented spend");
   }
+});
+
+// --- Credential store v2: several backends logged in at once, which is what a logout picker needs ---
+// The v1 file held one credential and every login overwrote it, silently discarding the others.
+test("a v1 single-credential file migrates to a providers map", () => {
+  const { store, migratedFromV1 } = migrateAuthStore({ version: 1, provider: "cloudflare", model: "clef-flash", accountId: "a".repeat(32), apiKey: "cf-key-123456" });
+  assert.equal(migratedFromV1, true);
+  assert.equal(store.version, 2);
+  assert.deepEqual(Object.keys(store.providers), ["cloudflare"]);
+  assert.equal(store.providers.cloudflare.model, "clef-flash");
+  assert.equal(store.providers.cloudflare.apiKey, "cf-key-123456");
+});
+
+test("a v1 file with no usable key migrates to an empty store, not a broken one", () => {
+  for (const input of [{ version: 1 }, { version: 1, provider: "cloudflare" }, null, "nonsense"]) {
+    const { store, migratedFromV1 } = migrateAuthStore(input);
+    assert.equal(migratedFromV1, false);
+    assert.deepEqual(storedProviderIds(store), []);
+  }
+});
+
+test("a v2 store is read as-is and a half-written entry is dropped", () => {
+  const { store, migratedFromV1 } = migrateAuthStore({ version: 2, providers: { typesafe: { apiKey: "ts-123" }, cloudflare: { model: "clef" } } });
+  assert.equal(migratedFromV1, false);
+  assert.deepEqual(storedProviderIds(store), ["typesafe"], "an entry without a key is not a credential");
+});
+
+test("adding one provider leaves the others logged in", () => {
+  let store = migrateAuthStore({ version: 2, providers: { typesafe: { apiKey: "ts-123" } } }).store;
+  store = putCredential(store, "cloudflare", { apiKey: "cf-456", accountId: "b".repeat(32), model: "clef-flash" });
+  assert.deepEqual(storedProviderIds(store).sort(), ["cloudflare", "typesafe"]);
+  // Replacing the same provider updates in place rather than duplicating it.
+  store = putCredential(store, "cloudflare", { apiKey: "cf-new", accountId: "b".repeat(32) });
+  assert.equal(store.providers.cloudflare.apiKey, "cf-new");
+  assert.deepEqual(storedProviderIds(store).sort(), ["cloudflare", "typesafe"]);
+});
+
+test("an empty key is refused instead of replacing a good credential with nothing", () => {
+  const store = migrateAuthStore({ version: 2, providers: { typesafe: { apiKey: "ts-123" } } }).store;
+  const same = putCredential(store, "typesafe", { apiKey: "   " });
+  assert.equal(same, store, "the store is returned unchanged");
+  assert.equal(store.providers.typesafe.apiKey, "ts-123");
+});
+
+test("removing a provider keeps the rest, and unknown ids are ignored", () => {
+  const store = migrateAuthStore({ version: 2, providers: { typesafe: { apiKey: "a" }, openrouter: { apiKey: "b" }, cloudflare: { apiKey: "c" } } }).store;
+  const afterClef = removeCredentials(store, ["cloudflare"]);
+  assert.deepEqual(storedProviderIds(afterClef).sort(), ["openrouter", "typesafe"]);
+  const afterJev = removeCredentials(afterClef, ["typesafe", "openrouter"]);
+  assert.deepEqual(storedProviderIds(afterJev), [], "removing every backend empties the store");
+  assert.deepEqual(storedProviderIds(removeCredentials(store, ["nope"])).sort(), ["cloudflare", "openrouter", "typesafe"], "an unknown id changes nothing");
 });
 
 // --- Clef pricing: clef-flash bills 6x less than clef, and the free tier is 10,000 neurons/day ---

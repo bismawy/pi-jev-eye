@@ -15,15 +15,22 @@ import {
   clefError,
   clefNeuronsFor,
   clefUsdPerMTok,
+  CLEF_PROVIDER_ID,
   isCloudflareAccountId,
   legacyTotals,
   mergeTotals,
+  migrateAuthStore,
   neuronsSpentOn,
   normalizeTotals,
+  putCredential,
+  removeCredentials,
+  storedProviderIds,
   sumDays,
   wipeTarget,
+  type AuthStore,
   type DayTotals,
   type ProviderTotals,
+  type StoredCredential,
 } from "./layer1.ts";
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -148,6 +155,37 @@ function readJsonFile(path: string, requirePrivate = false): any | undefined {
   }
 }
 
+/** A stored provider id as a readable name; an id this build no longer ships stays as it was stored. */
+const providerLabelOf = (id: string): string => providerById(id)?.short ?? id;
+
+// --- Credential store (v2: one entry per provider, so several backends stay logged in) ---
+// The pure shapes and folds live in ./layer1.ts (covered by `npm test`); this is the file I/O around them.
+const AUTH_BACKUP_PATH = `${AUTH_PATH}.v1.bak`;
+
+/** Read the store, migrating a v1 file in place once (keeping a `.v1.bak` copy for rollback). */
+function readAuthStore(): { store: AuthStore; migrated: boolean } {
+  const raw = readJsonFile(AUTH_PATH, true);
+  if (!raw) return { store: { version: 2, providers: {} }, migrated: false };
+  const { store, migratedFromV1 } = migrateAuthStore(raw);
+  if (migratedFromV1) {
+    try {
+      writeFileSync(AUTH_BACKUP_PATH, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
+      writeAuthStore(store);
+    } catch {
+      // A read-only home must not stop the gate: the migrated store is still returned in memory.
+    }
+  }
+  return { store, migrated: migratedFromV1 };
+}
+
+function writeAuthStore(store: AuthStore): void {
+  mkdirSync(EYE_DIR, { recursive: true });
+  writeFileSync(AUTH_PATH, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+}
+
+/** One provider's credential in the store, or undefined when that backend is not logged in. */
+const storedCredential = (store: AuthStore, id: string): StoredCredential | undefined => store.providers[id];
+
 interface JevAuth {
   provider: JevProvider;
   key: string;
@@ -178,16 +216,16 @@ function resolveJevAuth(): JevAuth | undefined {
     return { provider, key: fromEnv, source: `$${provider.keyEnv}`, model: provider.model, accountId };
   }
 
-  const stored = readJsonFile(AUTH_PATH, true);
-  const storedKey = typeof stored?.apiKey === "string" ? stored.apiKey.trim() : "";
-  if (storedKey) {
-    const provider = providerById(String(stored.provider)) ?? JEV_PROVIDERS[0];
-    const accountId = typeof stored?.accountId === "string" ? stored.accountId.trim() : undefined;
-    // A Cloudflare entry saved without an account id is unusable; treat it as "not logged in" so the
-    // prompt to run `/jev-eye login` shows instead of every gate call failing.
-    if (provider.accountEnv && !accountId) return undefined;
-    const model = provider.models?.includes(String(stored.model)) ? String(stored.model) : provider.model;
-    return { provider, key: storedKey, source: "/jev-eye login", model, accountId };
+  const stored = readAuthStore().store;
+  // The store holds one credential per provider. Prefer the order in JEV_PROVIDERS so TypeSafe keeps
+  // winning when several are logged in, exactly as the environment loop above does.
+  for (const provider of JEV_PROVIDERS) {
+    const credential = storedCredential(stored, provider.id);
+    if (!credential) continue;
+    const model = provider.models?.includes(String(credential.model)) ? String(credential.model) : provider.model;
+    // A Cloudflare entry without an account id is unusable; treat it as "not logged in" for that provider.
+    if (provider.accountEnv && !credential.accountId) continue;
+    return { provider, key: credential.apiKey, source: "/jev-eye login", model, accountId: credential.accountId };
   }
 
   // Back-compat: keep working for anyone who already logged in with pi-typesafe installed.
@@ -645,35 +683,78 @@ const loginFlow = async (ctx: any): Promise<void> => {
     return;
   }
 
-  mkdirSync(EYE_DIR, { recursive: true });
-  writeFileSync(AUTH_PATH, `${JSON.stringify({ version: 1, provider: provider.id, model, ...(accountId ? { accountId } : {}), apiKey: key }, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  // Additive: another backend's stored key stays usable. The probe above must pass before this line.
+  const { store, migrated } = readAuthStore();
+  const others = storedProviderIds(store).filter((id) => id !== provider.id);
+  writeAuthStore(putCredential(store, provider.id, { apiKey: key, model, ...(accountId ? { accountId } : {}) }));
   const shadows = process.env[provider.keyEnv]?.trim() ? ` Note: $${provider.keyEnv} is set and takes precedence over this stored key.` : "";
+  const keptNote = others.length > 0 ? ` ${others.map(providerLabelOf).join(", ")} stayed logged in.` : "";
+  const migrationNote = migrated ? ` Migrated the old single-key store (backup: ${AUTH_BACKUP_PATH}).` : "";
   ctx.ui.notify(
-    `[pi-jev-eye] Logged in via ${provider.label} (${model}): ${probe.detail}. Stored in ${AUTH_PATH} (0600).${shadows}`,
+    `[pi-jev-eye] Logged in via ${provider.label} (${model}): ${probe.detail}. Stored in ${AUTH_PATH} (0600).${keptNote}${shadows}${migrationNote}`,
     "info"
   );
 };
 
+/**
+ * `/jev-eye logout`: pick which backend to remove, or all of them.
+ * The store holds one credential per provider, so a picker is possible; environment-supplied keys are
+ * reported instead, because a process cannot unset a variable that belongs to its caller.
+ */
 const logoutFlow = async (ctx: any): Promise<void> => {
-  const stored = readJsonFile(AUTH_PATH, true);
+  const { store } = readAuthStore();
+  const storedIds = storedProviderIds(store);
   const fromEnv = JEV_PROVIDERS.filter((p) => process.env[p.keyEnv]?.trim()).map((p) => `$${p.keyEnv}`);
-  const kept = fromEnv.length ? ` ${fromEnv.join(", ")} stays and keeps working.` : "";
+  const envNote = fromEnv.length ? ` ${fromEnv.join(", ")} comes from the environment and cannot be removed here.` : "";
 
-  if (!stored?.apiKey) {
-    ctx.ui.notify(`[pi-jev-eye] No key from /jev-eye login to remove.${kept}`, "warning");
+  if (storedIds.length === 0) {
+    ctx.ui.notify(`[pi-jev-eye] Nothing stored by /jev-eye login to remove.${envNote}`, "warning");
     return;
   }
 
-  const confirmed = await ctx.ui.confirm("Log out of pi-jev-eye?", `Delete ${AUTH_PATH}?${kept}`);
-  if (!confirmed) return;
+  // "Jev" is every non-Clef provider (TypeSafe / OpenRouter); Clef is Cloudflare.
+  const jevIds = storedIds.filter((id) => id !== CLEF_PROVIDER_ID);
+  const clefIds = storedIds.filter((id) => id === CLEF_PROVIDER_ID);
+  const names = (ids: string[]) => ids.map(providerLabelOf).join(", ");
 
+  const choices: { label: string; ids: string[] }[] = [];
+  if (jevIds.length > 0) choices.push({ label: `Jev (${names(jevIds)})`, ids: jevIds });
+  if (clefIds.length > 0) choices.push({ label: `Clef (${names(clefIds)})`, ids: clefIds });
+  choices.push({ label: `All (${names(storedIds)})`, ids: storedIds });
+
+  // One backend logged in: no picker worth showing, just confirm that one.
+  if (storedIds.length === 1) {
+    const only = storedIds[0];
+    const confirmed = await ctx.ui.confirm(`Log out of ${providerLabelOf(only)}?`, `Remove the stored key for ${providerLabelOf(only)} from ${AUTH_PATH}?${envNote}`);
+    if (!confirmed) return;
+    await removeStoredCredentials(ctx, [only], envNote);
+    return;
+  }
+
+  const choice = await ctx.ui.select("pi-jev-eye · log out which key?", choices.map((c) => c.label));
+  if (!choice) return;
+  const target = choices.find((c) => c.label === choice) ?? choices[choices.length - 1];
+  const confirmed = await ctx.ui.confirm(`Log out of ${target.label}?`, `Remove ${target.ids.map(providerLabelOf).join(", ")} from ${AUTH_PATH}?${envNote}`);
+  if (!confirmed) return;
+  await removeStoredCredentials(ctx, target.ids, envNote);
+};
+
+/** Delete the given providers from the store; an emptied store removes the file so status reads OFFLINE. */
+const removeStoredCredentials = async (ctx: any, ids: string[], envNote: string): Promise<void> => {
   try {
-    unlinkSync(AUTH_PATH);
-    ctx.ui.notify("[pi-jev-eye] Logged out; the stored key was deleted.", "info");
+    const { store } = readAuthStore();
+    const next = removeCredentials(store, ids);
+    const removed = ids.map(providerLabelOf).join(", ");
+    if (storedProviderIds(next).length === 0) {
+      unlinkSync(AUTH_PATH);
+      ctx.ui.notify(`[pi-jev-eye] Logged out of ${removed}; the store is now empty.${envNote}`, "info");
+      return;
+    }
+    writeAuthStore(next);
+    const left = storedProviderIds(next).map(providerLabelOf).join(", ");
+    ctx.ui.notify(`[pi-jev-eye] Logged out of ${removed}. Still logged in: ${left}.${envNote}`, "info");
   } catch (error) {
-    ctx.ui.notify(`[pi-jev-eye] Could not delete ${AUTH_PATH}: ${(error as Error).message}`, "error");
+    ctx.ui.notify(`[pi-jev-eye] Could not update ${AUTH_PATH}: ${(error as Error).message}`, "error");
   }
 };
 

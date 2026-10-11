@@ -267,6 +267,72 @@ export function clefBudget(neuronsToday: number): { used: number; free: number; 
   return { used, free: CLEF_FREE_NEURONS_PER_DAY, remaining, overageUsd: (over / 1000) * CLEF_USD_PER_KN };
 }
 
+/**
+ * The on-disk credential store, version 2.
+ *
+ * v1 held exactly one credential at the top level (`{version:1, provider, apiKey, model?, accountId?}`),
+ * and every login overwrote it — so logging in with Clef silently discarded a TypeSafe key. v2 keeps one
+ * entry per provider id, which is what lets several backends stay logged in and lets logout target one.
+ * A v1 file is migrated on read; nothing else in the file needs to change.
+ */
+export interface StoredCredential {
+  apiKey: string;
+  model?: string;
+  accountId?: string;
+}
+
+export interface AuthStore {
+  version: 2;
+  providers: Record<string, StoredCredential>;
+}
+
+/** Keep only entries that carry a usable key, so a half-written store cannot resolve to an empty key. */
+export function normalizeCredential(raw: any): StoredCredential | undefined {
+  const apiKey = typeof raw?.apiKey === "string" ? raw.apiKey.trim() : "";
+  if (!apiKey) return undefined;
+  const credential: StoredCredential = { apiKey };
+  if (typeof raw?.model === "string" && raw.model.trim()) credential.model = raw.model.trim();
+  if (typeof raw?.accountId === "string" && raw.accountId.trim()) credential.accountId = raw.accountId.trim();
+  return credential;
+}
+
+/**
+ * Read a store of any known shape into v2. A v1 file's single credential becomes `providers[provider]`;
+ * an unknown or broken shape reads as empty rather than throwing, so a corrupt file never wedges the gate.
+ */
+export function migrateAuthStore(raw: any): { store: AuthStore; migratedFromV1: boolean } {
+  const providers: Record<string, StoredCredential> = {};
+  const from = raw?.providers;
+  if (from && typeof from === "object" && !Array.isArray(from)) {
+    for (const [id, value] of Object.entries(from)) {
+      const credential = normalizeCredential(value);
+      if (credential) providers[id] = credential;
+    }
+    return { store: { version: 2, providers }, migratedFromV1: false };
+  }
+  const legacy = normalizeCredential(raw);
+  const id = typeof raw?.provider === "string" && raw.provider.trim() ? raw.provider.trim() : "";
+  if (legacy && id) providers[id] = legacy;
+  return { store: { version: 2, providers }, migratedFromV1: Boolean(legacy && id) };
+}
+
+/** Add or replace one provider's credential, leaving every other provider untouched. */
+export function putCredential(store: AuthStore, id: string, credential: StoredCredential): AuthStore {
+  const normalized = normalizeCredential(credential);
+  if (!normalized) return store;
+  return { version: 2, providers: { ...store.providers, [id]: normalized } };
+}
+
+/** Remove the given provider ids; ids that are not stored are ignored. */
+export function removeCredentials(store: AuthStore, ids: string[]): AuthStore {
+  const providers = { ...store.providers };
+  for (const id of ids) delete providers[id];
+  return { version: 2, providers };
+}
+
+/** Provider ids that hold a credential, in store order (callers map them to labels). */
+export const storedProviderIds = (store: AuthStore): string[] => Object.keys(store.providers);
+
 export const VERIFICATION_COMMAND_PATTERNS = [
   /\b(npm|pnpm|bun|yarn)\s+(test|run\s+(test|typecheck|lint|build|check))\b/i,
   /\b(cargo\s+(test|check))\b/i,
