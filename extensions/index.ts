@@ -336,6 +336,83 @@ class LoginPicker {
 }
 
 /**
+ * Rounded-box list picker: same frame as `@bismawy/pi-arnative`'s ListPicker and the screens beside it.
+ * `ctx.ui.select` renders itself with two full-width rules, so a menu that must be rounded has to own its
+ * component. `rows` are pre-styled one-liners; the arrow is the only thing this class adds.
+ */
+class ListPicker {
+  private readonly rows: string[];
+  private readonly title: string;
+  private readonly subtitle: string | undefined;
+  private readonly footer: string;
+  private readonly theme: any;
+  private readonly done: (value: number | null) => void;
+  private index = 0;
+
+  constructor(theme: any, title: string, rows: string[], done: (value: number | null) => void, subtitle?: string, footer = "[↑↓] move  [Enter] choose  [Esc] cancel") {
+    this.theme = theme;
+    this.title = title;
+    this.subtitle = subtitle;
+    this.rows = rows;
+    this.footer = footer;
+    this.done = done;
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.up)) {
+      this.index = (this.index - 1 + this.rows.length) % this.rows.length;
+      return;
+    }
+    if (matchesKey(data, Key.down)) {
+      this.index = (this.index + 1) % this.rows.length;
+      return;
+    }
+    if (matchesKey(data, Key.enter)) {
+      this.done(this.index);
+      return;
+    }
+    if (matchesKey(data, Key.escape)) this.done(null);
+  }
+
+  render(width: number): string[] {
+    const t = this.theme;
+    const paint = boxBorderPainter(t);
+    const inner = width - 4; // two walls, two spaces
+    const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
+    const lines = [t.fg("accent", t.bold(this.title))];
+    if (this.subtitle) lines.push(t.fg("muted", this.subtitle));
+    lines.push("");
+    for (const [i, content] of this.rows.entries()) {
+      lines.push(`${i === this.index ? t.fg("accent", "→ ") : "  "}${content}`);
+    }
+    lines.push("");
+    lines.push(t.fg("dim", this.footer));
+    return [boxEdge("╭", "╮", width, paint), ...lines.map(row), boxEdge("╰", "╯", width, paint)];
+  }
+
+  invalidate(): void {}
+}
+
+/** Drive the same picker everywhere: TUI gets the rounded box, RPC and headless keep `ctx.ui.select`. */
+async function pickRow(ctx: any, title: string, rows: string[], subtitle?: string): Promise<number | null> {
+  if (ctx.mode !== "tui") {
+    const choice = await ctx.ui.select(title, rows);
+    return choice ? rows.indexOf(choice) : null;
+  }
+  return await ctx.ui.custom<number | null>((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
+    const picker = new ListPicker(theme, title, rows, done, subtitle);
+    return {
+      render: (width: number) => picker.render(width),
+      invalidate: () => picker.invalidate(),
+      handleInput: (data: string) => {
+        picker.handleInput(data);
+        tui.requestRender();
+      },
+    };
+  });
+}
+
+/**
  * The login menu's options as plain strings, for the headless path where `custom` UI does not exist.
  * The tip is appended as an extra, non-selectable row for the highlighted provider only.
  */
@@ -709,8 +786,8 @@ async function promptForModel(ctx: any, provider: JevProvider): Promise<string |
   const labels = models.map((m) =>
     m === "clef-flash" ? "clef-flash  ·  cheapest, best for the per-write gate" : "clef  ·  strongest, costs about 6x more"
   );
-  const choice = await ctx.ui.select("pi-jev-eye · which Clef model?", labels);
-  return choice ? models[labels.indexOf(choice)] : undefined;
+  const index = await pickRow(ctx, "Jev Eye · Clef model", labels, "Per credential: the cheaper model suits the per-write gate.");
+  return index === null ? undefined : models[index];
 }
 
 const loginFlow = async (ctx: any): Promise<void> => {
@@ -829,9 +906,9 @@ const logoutFlow = async (ctx: any): Promise<void> => {
     return;
   }
 
-  const choice = await ctx.ui.select("pi-jev-eye · log out which key?", choices.map((c) => c.label));
-  if (!choice) return;
-  const target = choices.find((c) => c.label === choice) ?? choices[choices.length - 1];
+  const index = await pickRow(ctx, "Jev Eye · Logout", choices.map((c) => c.label), `Stored in ${AUTH_PATH}.`);
+  if (index === null) return;
+  const target = choices[index] ?? choices[choices.length - 1];
   const confirmed = await ctx.ui.confirm(`Log out of ${target.label}?`, `Remove ${target.ids.map(providerLabelOf).join(", ")} from ${AUTH_PATH}?${envNote}`);
   if (!confirmed) return;
   await removeStoredCredentials(ctx, target.ids, envNote);
@@ -1866,30 +1943,30 @@ export default function (pi: ExtensionAPI) {
       `Routing  ·  ${routingDesc}`,
     ];
 
-    const choice = await ctx.ui.select("Jev Eye · Menu", options);
-    if (!choice) return;
+    const index = await pickRow(ctx, "Jev Eye · Menu", options);
+    if (index === null) return;
 
-    if (choice === options[0]) {
+    if (index === 0) {
       await loginFlow(ctx);
       return;
     }
 
-    if (choice === options[1]) {
+    if (index === 1) {
       await logoutFlow(ctx);
       return;
     }
 
-    if (choice === options[2]) {
+    if (index === 2) {
       await showStatus(ctx);
       return;
     }
 
-    if (choice === options[3]) {
+    if (index === 3) {
       await showUsage(ctx);
       return;
     }
 
-    if (choice === options[4]) {
+    if (index === 4) {
       await openRoutingMenu(ctx);
       return;
     }

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Changed
+- **Every `/jev-eye` menu is now a rounded box.** The root `/jev-eye` menu, the logout picker, and the Clef model picker were still `ctx.ui.select`, which Pi renders itself with two full-width rules, so no frame could reach them. A shared `pickRow` helper now drives all of them: the rounded box in TUI mode, `ctx.ui.select` over RPC and headless. This is what the earlier frame change missed — the screens it converted were the custom ones, and the menus were not custom.
+- `ListPicker` in `extensions/index.ts`: one list component for every menu (title, optional subtitle, pre-styled rows, footer), so a new menu does not re-implement the frame or the key handling.
 - **The three `/jev-eye` screens are drawn inside an Arnative box** — `╭───╮ … ╰───╯` with one row per line, matching `/arnative`. The old top-and-bottom dashed rules became a real frame for `login`, `routing`, `status`, and `usage`.
 - `boxBorderPainter`, `boxEdge`, `boxRow`, `visibleWidth` in `extensions/layer1.ts`: the frame math is pure (theme `fg` handed in as an argument), so `npm test` covers it without importing `pi-tui`. Border colour probes `accentSoft` once and falls back to `accent`, which is the only token a built-in theme has.
 - A row wider than the frame is truncated before it is wrapped, so a styled wide-glyph row still lands exactly on the frame width; a component handed a 1–3 column width degrades instead of shifting the screen.
