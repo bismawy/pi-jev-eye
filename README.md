@@ -15,6 +15,7 @@ pi-jev-eye is an ultra-lean, zero-dependency supervisor for [pi](https://github.
 - **Instant Regex Gate:** 0 ms, 0 token barrier blocking wipes (`rm -rf /`, `DROP DATABASE`), protected branch force-pushes, and hardcoded secrets (`sk-...`, `ghp_...`, SSH keys).
 - **Done-Check Verification:** Warns when the agent claims done after editing files without running verification suites (`npm test`, `cargo test`, `pytest`).
 - **Targeted Jev Semantic Gate:** Evaluates diffs ≥ 10 lines via TypeSafe Jev (`has_slop`) to reject placeholder stubs and unfulfilled TODOs.
+- **Three Decision Backends:** TypeSafe Jev, OpenRouter, or Cloudflare Workers AI (Clef, free inside the daily 10,000-neuron allowance) — same gated pipeline, chosen once at `/jev-eye login`.
 - **Reviewed Turns (`jev` / `@jev`):** Calibrated review contract with machine facts, Jev scoring tables, and single-flight prompt alignment (`answers_request`).
 - **Per-Turn Model Routing:** Routes light chores (git commit, push, status) to a fast model and complex engineering tasks to a heavy model with independent reasoning controls.
 - **Fail-Open Reliability:** Network timeouts or offline provider APIs gracefully degrade so coding sessions never stall or freeze.
@@ -25,7 +26,7 @@ pi-jev-eye is an ultra-lean, zero-dependency supervisor for [pi](https://github.
 pi install npm:@bismawy/pi-jev-eye
 ```
 
-Supply your Jev API key via `/jev-eye login` (TypeSafe or OpenRouter), or export `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY`.
+Supply your Jev API key via `/jev-eye login` (TypeSafe, OpenRouter, or Cloudflare Workers AI), or export `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY`. For Cloudflare Clef, export `CLOUDFLARE_ACCOUNT_ID` **and** `CLOUDFLARE_API_TOKEN` — a token alone cannot build the account-scoped route.
 
 To test locally without installing:
 ```bash
@@ -39,11 +40,21 @@ pi -e ./extensions/index.ts
 | `alt+shift+j` | Keybinding | Cycle supervisor mode: **ON** → **REVIEW** → **OFF** |
 | `ctrl+shift+g` | Keybinding | Cycle Jev folder gate: **Enable all** → **This folder** → **Disabled** |
 | `/jev-eye` | Global | Interactive menu: Login, Logout, Status, Routing (`/eye` is an alias) |
-| `/jev-eye login` | Setup | Authenticate with TypeSafe or OpenRouter account (verified, mode 0600) |
+| `/jev-eye login` | Setup | Authenticate with TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef); verified against the live route, mode 0600 |
 | `/jev-eye logout` | Setup | Remove locally stored credentials |
 | `/jev-eye status` | Inspect | Real-time telemetry, provider balance, gate scope, and block counts |
 | `/jev-eye routing` | Routing | Interactive TUI model router for light and heavy task slots |
 | `jev` · `@jev` in prompt | Prompt | Trigger calibrated review format and task alignment check |
+
+### Providers
+
+| Provider | Credential | Model | Cost |
+| --- | --- | --- | --- |
+| TypeSafe | `$TYPESAFE_API_KEY` or `/jev-eye login` | `jev-latest` | Per-token, ledger-based |
+| OpenRouter | `$OPENROUTER_API_KEY` or `/jev-eye login` | `typesafe/jev-1.13` | Reported by the provider |
+| Cloudflare Workers AI | `$CLOUDFLARE_ACCOUNT_ID` + `$CLOUDFLARE_API_TOKEN`, or `/jev-eye login` (asks for both) | `clef-flash` (default) or `clef` | Clef: $0.24/M input; clef-flash: $0.038/M input; output free; 10,000 free neurons/day at 00:00 UTC |
+
+The Cloudflare route is `…/accounts/{ACCOUNT_ID}/ai/run/@cf/cloudflare/clef-flash`; the account id is validated (32 hex chars) and the credential is probed against that exact route before it is saved. Clef interprets the same typed questions (`noul` / `choice` / `score`), so no gate logic changes per provider.
 
 > **Notes:**
 > - **pi-arnative status bar:** Shows real-time mode indicator as `Jev: ● ON` / `● REVIEW` / `○ OFF`.

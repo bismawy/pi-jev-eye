@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, legacyTotals, mergeTotals, normalizeTotals, sumDays, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, cfRunUrl, clefBody, clefError, isCloudflareAccountId, legacyTotals, mergeTotals, normalizeTotals, sumDays, wipeTarget } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -77,4 +77,43 @@ test("sumDays counts only the requested day or month", () => {
   assert.equal(sumDays(days, "2026-09-20", normalizeTotals).requests, 12);
   assert.equal(sumDays(days, "2026-07", normalizeTotals), undefined);
   assert.equal(sumDays(undefined, "2026-09", normalizeTotals), undefined);
+});
+
+// --- Cloudflare Workers AI route (Clef): the account id is a credential-adjacent value, the base is not. ---
+const accountId = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+test("only a 32-char hex string is accepted as an account id", () => {
+  assert.ok(isCloudflareAccountId(accountId));
+  assert.ok(isCloudflareAccountId(accountId.toUpperCase()));
+  assert.equal(isCloudflareAccountId("a1b2c3"), false);
+  assert.equal(isCloudflareAccountId("a1b2c3d4e5f60718293a4b5c6d7e8f9g"), false);
+  assert.equal(isCloudflareAccountId(""), false);
+});
+
+test("the Clef route carries the account id and the chosen model", () => {
+  assert.equal(cfRunUrl(accountId, "clef-flash"), `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/cloudflare/clef-flash`);
+  assert.ok(cfRunUrl(accountId, "clef").endsWith("/@cf/cloudflare/clef"));
+});
+
+// The REST route wraps the System One answer in { result, success, errors }; missing that wrapper reads
+// as "the model answered nothing" and silently fails the write gate open.
+test("a Workers AI envelope unwraps to its result", () => {
+  const body = { model: "clef", answers: { has_slop: { type: "noul", noul: 0.91 } }, usage: { input_tokens: 1200 } };
+  assert.deepEqual(clefBody({ result: body, success: true, errors: [] }), body);
+});
+
+test("a raw (non-enveloped) answer still reads", () => {
+  const body = { model: "jev-1.13.0", answers: { has_slop: { type: "noul", noul: 0.1 } } };
+  assert.deepEqual(clefBody(body), body);
+});
+
+test("success:false is a failure even when a result is present", () => {
+  assert.equal(clefBody({ result: { answers: {} }, success: false, errors: [{ message: "invalid account id" }] }), undefined);
+  assert.equal(clefBody(undefined), undefined);
+  assert.equal(clefBody("nope"), undefined);
+});
+
+test("the Cloudflare error list becomes one readable line", () => {
+  assert.equal(clefError({ errors: [{ message: "invalid api token" }, { message: "retry later" }] }), "invalid api token; retry later");
+  assert.equal(clefError({ success: false }), "no result");
 });

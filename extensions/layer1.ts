@@ -54,6 +54,34 @@ export const SECRET_PATTERNS = [
   /-----BEGIN\s+(RSA|OPENSSH|EC|DSA)?\s*PRIVATE\s+KEY-----/,
 ];
 
+// --- Cloudflare Workers AI route (Clef). Pure string building: the base is fine to commit, an account id is not. ---
+export const CF_USD_PER_MTOK = 0.24; // @cf/cloudflare/clef input-token rate; clef-flash bills 6x less
+
+/** A 32-char lowercase hex string is the only shape Cloudflare account ids come in. */
+export const isCloudflareAccountId = (value: string): boolean => /^[0-9a-f]{32}$/i.test(value);
+
+/** One Clef route: the model is the path segment, the account id comes from whoever stores the credential. */
+export const cfRunUrl = (accountId: string, model: string): string =>
+  `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/cloudflare/${model}`;
+
+/**
+ * The Clef answer inside a Workers AI response. The REST route wraps it in `{ result, success, errors }`,
+ * so unwrapping has to happen in one place: a missed envelope reads as "model said nothing" and silently
+ * fails the gate open. Returns undefined when Cloudflare reported a failure.
+ */
+export function clefBody(json: any): { model?: string; answers?: Record<string, any>; usage?: Record<string, any> } | undefined {
+  if (!json || typeof json !== "object") return undefined;
+  if (json.success === false) return undefined;
+  const result = "result" in json ? json.result : json;
+  return result && typeof result === "object" ? result : undefined;
+}
+
+/** Cloudflare's error list as one line, for a message that says why the request failed. */
+export function clefError(json: any): string {
+  const messages = Array.isArray(json?.errors) ? json.errors.map((e: any) => e?.message).filter(Boolean) : [];
+  return messages.length > 0 ? messages.join("; ") : "no result";
+}
+
 // --- Usage-ledger math (pure: no fs, no network, so `npm test` can check it) ---
 // This package's ledger and the older pi-typesafe one count the same requests under different names.
 export interface DayTotals {

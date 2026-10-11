@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Cloudflare Workers AI (Clef) as a third Jev provider.** `/jev-eye login` now offers `Cloudflare Workers AI (Clef)` alongside TypeSafe and OpenRouter. Clef speaks the same System One request shape (`noul` / `choice` / `score`), so the write gate, the reviewed-turn `answers_request` dimension, and per-turn routing all work against it unchanged.
+- A Clef credential is an account id plus a Workers AI token: the account id is asked for first (or read from `$CLOUDFLARE_ACCOUNT_ID`), then verified against the real `…/accounts/{id}/ai/run/@cf/cloudflare/clef-flash` route before anything is saved. The model is chosen at login (`clef-flash` — cheapest, the default — or `clef`).
+- `clefBody` / `clefError` in `extensions/layer1.ts`: the Workers AI route wraps the answer in `{ result, success, errors }`, and unwrapping it is now a tested pure function instead of an inline assumption.
+- `cfRunUrl` / `isCloudflareAccountId`: the account id is validated (32 hex chars) before it reaches a URL, and the account-less base stays safe to commit.
+
+### Changed
+- A stored Cloudflare key without an account id is treated as "not logged in", so the gate says `run /jev-eye login` instead of failing every request. `/jev-eye status` explains the specific case.
+- Ledger cost for Clef uses the real `$0.24/M` input rate instead of the generic TypeSafe estimate.
+- `/jev-eye login` now warns before overwriting when a `$TYPESAFE_API_KEY` / `$OPENROUTER_API_KEY` / `$CLOUDFLARE_API_TOKEN` is already exported and takes precedence.
+
+---
+
 ## [0.1.16] - 2026-10-04
 
 ### Changed

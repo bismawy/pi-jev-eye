@@ -2,11 +2,16 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, CURSOR_MARKER, Input, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
+  CF_USD_PER_MTOK,
   DESTRUCTIVE_BASH_PATTERNS,
   EMPTY_TOTALS,
   SECRET_PATTERNS,
   USD_PER_MTOK,
   VERIFICATION_COMMAND_PATTERNS,
+  cfRunUrl,
+  clefBody,
+  clefError,
+  isCloudflareAccountId,
   legacyTotals,
   mergeTotals,
   normalizeTotals,
@@ -65,12 +70,14 @@ const state: EyeState = {
 
 // --- Layer 3: Jev accounts (pi-typesafe is optional; /jev-eye login owns its own key) ---
 interface JevProvider {
-  id: "typesafe" | "openrouter";
+  id: "typesafe" | "openrouter" | "cloudflare";
   label: string;
   url: string;
   model: string;
   keyEnv: string;
   keyHint: string;
+  accountEnv?: string; // Cloudflare only: the account is chosen separately from the token
+  models?: string[]; // Cloudflare only: the model is chosen per provider
 }
 
 const JEV_PROVIDERS: JevProvider[] = [
@@ -89,6 +96,17 @@ const JEV_PROVIDERS: JevProvider[] = [
     model: "typesafe/jev-1.13",
     keyEnv: "OPENROUTER_API_KEY",
     keyHint: "openrouter.ai/settings/keys",
+  },
+  {
+    id: "cloudflare",
+    label: "Cloudflare Workers AI (Clef)",
+    // The real route needs an account id, so it is built by cfRunUrl at request time; this stays the account-less display form.
+    url: "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/cloudflare/clef-flash",
+    model: "clef-flash", // cheaper than `clef` for the per-write gate; both are free inside the daily neuron allowance
+    keyEnv: "CLOUDFLARE_API_TOKEN",
+    keyHint: "dash.cloudflare.com > Account API tokens (Workers AI: Read)",
+    accountEnv: "CLOUDFLARE_ACCOUNT_ID",
+    models: ["clef-flash", "clef"],
   },
 ];
 
@@ -123,41 +141,88 @@ interface JevAuth {
   provider: JevProvider;
   key: string;
   source: string; // where the key came from; shown in status, never the key itself
+  model: string; // Cloudflare allows a per-account model choice; every other provider keeps its fixed one
+  accountId?: string; // Cloudflare only: the account the run route targets
 }
+
+/** The per-request route: only Cloudflare needs an id that the provider entry cannot carry. */
+const authUrl = (auth: JevAuth): string =>
+  auth.provider.id === "cloudflare" ? cfRunUrl(auth.accountId ?? "", auth.model) : auth.provider.url;
 
 function resolveJevAuth(): JevAuth | undefined {
   // Environment first: an explicit export (headless run, CI, shared machine) must win over a stored key,
   // the same precedence pi-typesafe uses.
   for (const provider of JEV_PROVIDERS) {
     const fromEnv = process.env[provider.keyEnv]?.trim();
-    if (fromEnv) return { provider, key: fromEnv, source: `$${provider.keyEnv}` };
+    if (!fromEnv) continue;
+    const accountId = provider.accountEnv ? process.env[provider.accountEnv]?.trim() : undefined;
+    if (provider.accountEnv && !accountId) continue; // a Clef token without its account id cannot build a route
+    return { provider, key: fromEnv, source: `$${provider.keyEnv}`, model: provider.model, accountId };
   }
 
   const stored = readJsonFile(AUTH_PATH, true);
   const storedKey = typeof stored?.apiKey === "string" ? stored.apiKey.trim() : "";
   if (storedKey) {
-    return { provider: providerById(String(stored.provider)) ?? JEV_PROVIDERS[0], key: storedKey, source: "/jev-eye login" };
+    const provider = providerById(String(stored.provider)) ?? JEV_PROVIDERS[0];
+    const accountId = typeof stored?.accountId === "string" ? stored.accountId.trim() : undefined;
+    // A Cloudflare entry saved without an account id is unusable; treat it as "not logged in" so the
+    // prompt to run `/jev-eye login` shows instead of every gate call failing.
+    if (provider.accountEnv && !accountId) return undefined;
+    const model = provider.models?.includes(String(stored.model)) ? String(stored.model) : provider.model;
+    return { provider, key: storedKey, source: "/jev-eye login", model, accountId };
   }
 
   // Back-compat: keep working for anyone who already logged in with pi-typesafe installed.
   const legacy = readJsonFile(LEGACY_AUTH_PATH, true);
   const legacyKey = typeof legacy?.apiKey === "string" ? legacy.apiKey.trim() : "";
-  if (legacyKey) return { provider: JEV_PROVIDERS[0], key: legacyKey, source: "pi-typesafe login" };
+  if (legacyKey) return { provider: JEV_PROVIDERS[0], key: legacyKey, source: "pi-typesafe login", model: JEV_PROVIDERS[0].model };
 
   return undefined;
 }
 
+/** What `/jev-eye status` has to explain when a Cloudflare credential is incomplete. */
+const envAccountId = (provider: JevProvider): string | undefined =>
+  provider.accountEnv ? process.env[provider.accountEnv]?.trim() || undefined : undefined;
+
 const isPlausibleKey = (key: string): boolean =>
   key.length >= 16 && key.length <= 512 && !/\s/.test(key) && /^[\x21-\x7e]+$/.test(key);
 
+/** Where a key can come from right now, and what to say when a Cloudflare token has no account id. */
+function keySources(): { usable: string[]; cfTokenWithoutAccount: boolean } {
+  const usable: string[] = [];
+  let cfTokenWithoutAccount = false;
+  for (const provider of JEV_PROVIDERS) {
+    const key = process.env[provider.keyEnv]?.trim();
+    if (!key) continue;
+    if (provider.accountEnv && !envAccountId(provider)) cfTokenWithoutAccount = true;
+    else usable.push(`$${provider.keyEnv}`);
+  }
+  return { usable, cfTokenWithoutAccount };
+}
+
+const providerChoices = () => JEV_PROVIDERS.map((p) => `${p.label}  ·  key from ${p.keyHint}`);
+
+const providerNameByLabel = (label: string): JevProvider | undefined => {
+  const index = providerChoices().indexOf(label);
+  return index >= 0 ? JEV_PROVIDERS[index] : undefined;
+};
+
+// --- Cloudflare Workers AI envelope: the REST route wraps the System One answer in { result, success } ---
+// `clefBody` / `clefError` live in ./layer1.ts (pure, covered by `npm test`); the offline gate must not
+// depend on an inline copy that a later change can drift from.
+type ClefAnswer = { model?: string; answers?: Record<string, any>; usage?: { input_tokens?: number; output_tokens?: number } };
+
+const workersAiBody = (json: any): ClefAnswer | undefined => clefBody(json) as ClefAnswer | undefined;
+const workersAiError = clefError;
+
 /** One tiny request: proves the key AND that the route works, before anything is saved. */
-async function probeJev(provider: JevProvider, key: string): Promise<{ ok: boolean; detail: string }> {
+async function probeJev(provider: JevProvider, key: string, url = provider.url, model = provider.model): Promise<{ ok: boolean; detail: string }> {
   try {
-    const res = await fetch(provider.url, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: provider.model,
+        model,
         state: { probe: "connectivity check from pi-jev-eye login" },
         questions: {
           reachable: {
@@ -171,12 +236,17 @@ async function probeJev(provider: JevProvider, key: string): Promise<{ ok: boole
     if (res.status === 401 || res.status === 403) {
       return { ok: false, detail: `the provider rejected the key (HTTP ${res.status})` };
     }
-    if (!res.ok) return { ok: false, detail: `HTTP ${res.status} from ${provider.url}` };
+    if (res.status === 404) {
+      return { ok: false, detail: `HTTP 404 from ${url} — check the Cloudflare account id` };
+    }
+    if (!res.ok) return { ok: false, detail: `HTTP ${res.status} from ${url}` };
     const json: any = await res.json();
-    if (typeof json?.answers?.reachable?.noul !== "number") return { ok: false, detail: "unexpected answer shape" };
-    return { ok: true, detail: `answer received from ${json?.model ?? provider.model}` };
+    const body = workersAiBody(json);
+    if (!body) return { ok: false, detail: `Cloudflare rejected the request: ${workersAiError(json)}` };
+    if (typeof body?.answers?.reachable?.noul !== "number") return { ok: false, detail: "unexpected answer shape" };
+    return { ok: true, detail: `answer received from ${body?.model ?? model}` };
   } catch (error) {
-    return { ok: false, detail: `could not reach ${provider.url} (${(error as Error)?.message ?? "network error"})` };
+    return { ok: false, detail: `could not reach ${url} (${(error as Error)?.message ?? "network error"})` };
   }
 }
 
@@ -474,12 +544,58 @@ async function promptForSecret(ctx: any, provider: JevProvider): Promise<string 
   return ctx.ui.input(`${title} (visible while typing)`, hint);
 }
 
+/** Cloudflare needs the account id next to the token; it is not a secret, so it is typed in the clear. */
+async function promptForAccountId(ctx: any, provider: JevProvider): Promise<string | undefined> {
+  const hint = provider.accountEnv
+    ? `${provider.accountEnv} is not set. Paste the 32-char account id from dash.cloudflare.com (Workers AI > Use REST API). Enter confirms, Esc cancels.`
+    : "Paste the account id. Enter confirms, Esc cancels.";
+  const entered = await ctx.ui.input("Cloudflare account ID", hint);
+  if (entered === undefined) return undefined;
+  const accountId = String(entered).trim();
+  if (!isCloudflareAccountId(accountId)) {
+    ctx.ui.notify("[pi-jev-eye] A Cloudflare account id is 32 hexadecimal characters. Nothing was saved.", "error");
+    return undefined;
+  }
+  return accountId;
+}
+
+/** Clef has two models; the choice is per credential, so it is asked while the credential is set up. */
+async function promptForModel(ctx: any, provider: JevProvider): Promise<string | undefined> {
+  const models = provider.models ?? [provider.model];
+  const labels = models.map((m) =>
+    m === "clef-flash" ? "clef-flash  ·  cheapest, best for the per-write gate" : "clef  ·  strongest, costs about 6x more"
+  );
+  const choice = await ctx.ui.select("pi-jev-eye · which Clef model?", labels);
+  return choice ? models[labels.indexOf(choice)] : undefined;
+}
+
 const loginFlow = async (ctx: any): Promise<void> => {
-  const labels = JEV_PROVIDERS.map((p) => `${p.label}  ·  key from ${p.keyHint}`);
+  // A key already exported in the environment is described, never overwritten by a stored one.
+  const sources = keySources();
+  if (sources.usable.length > 0 || sources.cfTokenWithoutAccount) {
+    const parts = [`Keys already active from the environment: ${sources.usable.join(", ") || "none"}.`];
+    if (sources.cfTokenWithoutAccount) {
+      parts.push(`$CLOUDFLARE_API_TOKEN is set but $CLOUDFLARE_ACCOUNT_ID is not, so Clef stays unavailable.`);
+    }
+    parts.push("An exported key always takes precedence over the one stored here. Continue anyway?");
+    const proceed = await ctx.ui.confirm("pi-jev-eye · keys already in the environment", parts.join(" "));
+    if (!proceed) return;
+  }
+
+  const labels = providerChoices();
   const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", labels);
   if (!choice) return;
 
-  const provider = JEV_PROVIDERS[labels.indexOf(choice)] ?? JEV_PROVIDERS[0];
+  const provider = providerNameByLabel(choice) ?? JEV_PROVIDERS[0];
+
+  // Clef cannot be reached without an account id, so collect it before the secret.
+  let accountId: string | undefined;
+  if (provider.accountEnv) {
+    const envId = envAccountId(provider);
+    accountId = envId ?? (await promptForAccountId(ctx, provider));
+    if (!accountId) return;
+  }
+
   const entered = await promptForSecret(ctx, provider);
   if (entered === undefined) return;
 
@@ -489,20 +605,25 @@ const loginFlow = async (ctx: any): Promise<void> => {
     return;
   }
 
+  const model = provider.models ? await promptForModel(ctx, provider) : provider.model;
+  if (!model) return;
+
+  // Final check on the exact route the gate will use, not on a generic credential probe.
+  const url = provider.accountEnv ? cfRunUrl(accountId ?? "", model) : provider.url;
   ctx.ui.notify(`[pi-jev-eye] Checking the key against ${provider.label}…`, "info");
-  const probe = await probeJev(provider, key);
+  const probe = await probeJev(provider, key, url, model);
   if (!probe.ok) {
     ctx.ui.notify(`[pi-jev-eye] Login failed: ${probe.detail}. Nothing was saved.`, "error");
     return;
   }
 
   mkdirSync(EYE_DIR, { recursive: true });
-  writeFileSync(AUTH_PATH, `${JSON.stringify({ version: 1, provider: provider.id, apiKey: key }, null, 2)}\n`, {
+  writeFileSync(AUTH_PATH, `${JSON.stringify({ version: 1, provider: provider.id, model, ...(accountId ? { accountId } : {}), apiKey: key }, null, 2)}\n`, {
     mode: 0o600,
   });
   const shadows = process.env[provider.keyEnv]?.trim() ? ` Note: $${provider.keyEnv} is set and takes precedence over this stored key.` : "";
   ctx.ui.notify(
-    `[pi-jev-eye] Logged in via ${provider.label}: ${probe.detail}. Stored in ${AUTH_PATH} (0600).${shadows}`,
+    `[pi-jev-eye] Logged in via ${provider.label} (${model}): ${probe.detail}. Stored in ${AUTH_PATH} (0600).${shadows}`,
     "info"
   );
 };
@@ -570,10 +691,16 @@ function recordOwnUsage(patch: Partial<DayTotals>): void {
   }
 }
 
-// Account balance: only OpenRouter exposes one; TypeSafe has no balance route (every /v1/* guess 404s).
+// Account balance: OpenRouter exposes one directly, Cloudflare has no remaining-neuron route, TypeSafe has none at all.
 let balanceCache: { provider: string; at: number; text: string } | undefined;
 
 async function fetchBalanceText(auth: JevAuth): Promise<string> {
+  // Cloudflare has a real per-model money figure; the API has no route that returns the remaining
+  // neuron allowance, so only what this session spent against Clef is shown.
+  if (auth.provider.id === "cloudflare") {
+    const spent = ((readOwnUsage()?.inputTokens ?? 0) * CF_USD_PER_MTOK) / 1e6;
+    return `not exposed by the API; today's est. spend $${spent.toFixed(4)} (10,000 free neurons/day at 00:00 UTC)`;
+  }
   const usd = (value: number) => `$${value.toFixed(4)}`;
   const get = (path: string) =>
     fetch(`https://openrouter.ai/api/v1/${path}`, {
@@ -687,11 +814,11 @@ const isLightByPattern = (prompt: string): boolean => LIGHT_TASK_PATTERNS.some((
 async function classifyWeight(prompt: string, auth: JevAuth): Promise<"light" | "heavy" | "unclear" | null> {
   try {
     state.stats.jevRoutingCalls++;
-    const res = await fetch(auth.provider.url, {
+    const res = await fetch(authUrl(auth), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth.key}` },
       body: JSON.stringify({
-        model: auth.provider.model,
+        model: auth.model,
         state: { request: { text: prompt.slice(0, 600) } },
         questions: {
           weight: {
@@ -709,8 +836,8 @@ async function classifyWeight(prompt: string, auth: JevAuth): Promise<"light" | 
       signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
     });
     if (!res.ok) return null;
-    const json: any = await res.json();
-    const choice = json?.answers?.weight?.choice;
+    const body = workersAiBody(await res.json());
+    const choice = body?.answers?.weight?.choice;
     return choice === "light" || choice === "heavy" || choice === "unclear" ? choice : null;
   } catch {
     return null; // Fail-open: keep the current model
@@ -814,7 +941,7 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
     }
 
     const payload = {
-      model: auth.provider.model,
+      model: auth.model,
       state: {
         code: codeSnippet.slice(0, JEV_MAX_STATE_CHARS),
         facts: codeFacts(codeSnippet),
@@ -824,7 +951,7 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
     };
 
     state.stats.jevRequests++;
-    const res = await fetch(auth.provider.url, {
+    const res = await fetch(authUrl(auth), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -838,20 +965,27 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
       recordOwnUsage({ requests: 1, failed: 1 });
       return null;
     }
-    const json: any = await res.json();
-    const inputTokens = Number(json?.usage?.input_tokens) || 0;
-    const reportedCost = Number(json?.usage?.cost); // OpenRouter reports real cost; TypeSafe does not
+    const body = workersAiBody(await res.json());
+    if (!body) {
+      recordOwnUsage({ requests: 1, failed: 1 });
+      return null;
+    }
+    const inputTokens = Number(body.usage?.input_tokens) || 0;
+    // OpenRouter and Cloudflare report real cost; TypeSafe does not, so its ledger uses the flat estimate.
+    const reportedCost =
+      Number((body.usage as any)?.cost) ||
+      (auth.provider.id === "cloudflare" ? (inputTokens * CF_USD_PER_MTOK) / 1e6 : NaN);
     recordOwnUsage({
       requests: 1,
       ok: 1,
       inputTokens,
-      outputTokens: Number(json?.usage?.output_tokens) || 0,
+      outputTokens: Number(body.usage?.output_tokens) || 0,
       cost: Number.isFinite(reportedCost) ? reportedCost : (inputTokens * USD_PER_MTOK) / 1e6,
     });
     return {
-      has_slop: json?.answers?.has_slop?.noul ?? null,
-      has_unfinished_todo: json?.answers?.has_unfinished_todo?.noul ?? null,
-      answers_request: json?.answers?.answers_request?.noul ?? null,
+      has_slop: body.answers?.has_slop?.noul ?? null,
+      has_unfinished_todo: body.answers?.has_unfinished_todo?.noul ?? null,
+      answers_request: body.answers?.answers_request?.noul ?? null,
     };
   } catch {
     recordOwnUsage({ requests: 1, failed: 1 });
@@ -903,7 +1037,7 @@ const EYE_SUBCOMMANDS = [
   { value: "on", label: "on", description: "Set mode to ON (supervisor active, prompt trigger)" },
   { value: "review", label: "review", description: "Set mode to REVIEW (all turns reviewed)" },
   { value: "off", label: "off", description: "Set mode to OFF (supervisor disabled)" },
-  { value: "login", label: "login", description: "Store a Jev key: TypeSafe account or OpenRouter account" },
+  { value: "login", label: "login", description: "Store a Jev key: TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef)" },
   { value: "logout", label: "logout", description: "Delete the key stored by /jev-eye login" },
   { value: "routing", label: "routing", description: "Routing models menu, or direct: routing light | routing heavy | routing on | routing off" },
 ];
@@ -1221,6 +1355,15 @@ export default function (pi: ExtensionAPI) {
   });
 
   // --- `/jev-eye` command ---
+  /** A stored Cloudflare key without an account id is invisible everywhere else: say why, in status. */
+  const cloudflareHint = (paint: (color: string, text: string) => string): string[] => {
+    const stored = readJsonFile(AUTH_PATH, true);
+    if (stored?.provider !== "cloudflare" || typeof stored?.accountId === "string") return [];
+    return [
+      `${paint("warning", "Clef hint: ")}a Cloudflare key is stored without an account id, so it is ignored. Run \`/jev-eye login\` again, or export $CLOUDFLARE_ACCOUNT_ID.`,
+    ];
+  };
+
   /** Status body only: plain text in headless mode, colourised when the panel hands over a theme.
    *  Synchronous on purpose — the balance is fetched once by {@link showStatus} and passed in, so the
    *  panel never has a pending state to render. */
@@ -1253,9 +1396,10 @@ export default function (pi: ExtensionAPI) {
       `${paint("dim", "Routing: ")}${paint(routing.enabled ? "success" : "muted", routing.enabled ? "ON" : "off")} | ${paint("dim", "Light: ")}${modelLabelFor(models, routing.light) || "unset"} | ${paint("dim", "Heavy: ")}${modelLabelFor(models, routing.heavy) || "unset"} | ${state.stats.lightTurns} light / ${state.stats.heavyTurns} heavy turns | ${classified}/${JEV_MAX_ROUTING_CALLS} classified`,
       `${paint("dim", "Jev Gate: ")}${
         auth
-          ? `${paint("success", "READY")} | ${auth.provider.label} (key from ${auth.source})`
+          ? `${paint("success", "READY")} | ${auth.provider.label} · ${auth.model} (key from ${auth.source})`
           : `${paint("warning", "OFFLINE (no key)")} — run \`/jev-eye login\``
       }`,
+      ...cloudflareHint(paint),
       `${paint("dim", "Gate Scope: ")}${paint(consent.mode === "disabled" ? "warning" : "text", scopeValue)}${scopeState}`,
       // Named prefix + a plain-word gloss, so the numbers below stop being a riddle.
       `${paint("dim", "Gate Rules: ")}block when Jev's chance of slop or an unfinished TODO is p≥${JEV_BLOCK_THRESHOLD} | checked only on diffs ≥${JEV_MIN_DIFF_LINES} lines | ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} Jev requests used this session`,
@@ -1367,7 +1511,7 @@ export default function (pi: ExtensionAPI) {
       : "off · configure light & heavy targets";
 
     const options = [
-      `Login    ·  ${auth ? `switch key (current: ${auth.provider.label})` : "TypeSafe or OpenRouter API key"}`,
+      `Login    ·  ${auth ? `switch key (current: ${auth.provider.label})` : "TypeSafe, OpenRouter, or Cloudflare Workers AI key"}`,
       `Logout   ·  ${auth ? `remove key from ${auth.source}` : "no active key stored"}`,
       `Status   ·  supervisor, gate scope, usage & metrics`,
       `Routing  ·  ${routingDesc}`,
