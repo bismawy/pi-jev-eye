@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- **`/jev-eye status` rows keep the `·` divider.** The label is padded so the divider lands in the same column as the list menus, and the row reads `Label · STATUS | detail · detail`; the status word carries its own token (`success` on, `muted` idle, `warning` broken). `statusRow` in `extensions/layer1.ts` owns the layout and is covered by `npm test`.
 - **`/jev-eye status` rows are a table, not sentences.** Every row now reads `Label · status | detail` — `Supervisor ENABLED | Review prompt trigger`, `Scope folders ON | All Folders`, `Gate READY | TypeSafe · jev-latest`, `Rules ACTIVE | …`, `Routing OFF | …`, `Blocked STATS | …`, `Context USED | …` — with the status word coloured by state, so one pass down the left column answers "is it on?".
 - **Grant folder moved to `Ctrl+Shift+u`.** `Ctrl+Shift+g` *is* pi's own `tui.altScreen.searchPrevious`, so every boot printed a shortcut conflict for it and the gate key could fire a search action. `Ctrl+Shift+u` is bound to nothing.
 - **Mode toggle is `Ctrl+Shift+e`** — one shortcut, no alias. `Alt+Shift+J` is gone, and so is `Ctrl+Shift+s`: in the same terminal where `Ctrl+Shift+e` cycled the mode, `Ctrl+Shift+s` produced no event at all, so it was advertised but never arrived. Every hint reads from one `KEY_SETS` table, so the footer, the notifications and the shortcut registration cannot drift apart.

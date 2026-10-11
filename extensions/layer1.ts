@@ -362,6 +362,32 @@ export function thinkingColorSlot(level: string | undefined): string {
   }
 }
 
+// --- Status-panel rows (pure: the caller paints, this only lays the columns out) ---
+/** Painter for one status row: a theme token plus its text. Handed in, so the layout stays pure. */
+export type StatusPainter = (token: string, text: string) => string;
+
+/**
+ * One `/jev-eye status` row: `Label · STATUS | detail · detail`.
+ *
+ * The label is padded to `column` so every `·` divider lands in the same column, exactly like the
+ * list menus. The status word carries its own token (`success` on, `muted` idle, `warning` broken),
+ * so a glance down the left column answers "is it on?" without reading the details.
+ */
+export function statusRow(
+  label: string,
+  status: string,
+  details: (string | false | undefined)[],
+  paint: StatusPainter = (_token, text) => text,
+  statusToken = "muted",
+  column = 14
+): string {
+  const divider = paint("dim", "·");
+  const head = `${paint("dim", label.padEnd(Math.max(label.length, column)))}${divider} `;
+  const body = details.filter(Boolean).join(paint("dim", " · "));
+  const tail = body ? `${paint("dim", "|")} ${body}` : "";
+  return `${head}${paint(statusToken, status)}${tail ? ` ${tail}` : ""}`;
+}
+
 // --- Arnative box chrome (pure: hand the theme's fg function in, so `npm test` needs no pi-tui) ---
 // Same glyphs as `@bismawy/pi-arnative` lib/box.ts: round corners, one content row per item. Border
 // colour is a parameter because arnative themes have a soft token while built-in themes only have accent.

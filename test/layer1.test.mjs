@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, boxBorderPainter, boxEdge, boxRow, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, sumDays, thinkingColorSlot, visibleWidth, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, boxBorderPainter, boxEdge, boxRow, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, statusRow, sumDays, thinkingColorSlot, visibleWidth, wipeTarget } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -311,4 +311,26 @@ test("the box border slot follows the thinking level", () => {
   assert.equal(thinkingColorSlot("HIGH"), "thinkingHigh", "matching is case-insensitive");
   assert.equal(thinkingColorSlot("max"), "thinkingMax");
   assert.equal(thinkingColorSlot("levels-from-the-future"), "thinkingOff", "an unknown level never throws");
+});
+
+test("a status row keeps its divider in one column and its status on its own token", () => {
+  const p = (token, text) => `<${token}>${text}</${token}>`;
+  const plain = (token, text) => (token === "dim" ? text : `${token}:${text}`);
+
+  const rows = [
+    statusRow("Supervisor", "ENABLED", ["Review prompt trigger"], plain, "success"),
+    statusRow("Scope folders", "ON", ["All Folders"], plain, "success"),
+    statusRow("Gate", "READY", ["TypeSafe · jev-latest"], plain, "success"),
+    statusRow("Context", "USED", ["0 tokens"], plain, "muted"),
+  ];
+  const dividers = rows.map((row) => row.indexOf("·"));
+  assert.equal(new Set(dividers).size, 1, `all dividers share one column: ${dividers.join(",")}`);
+
+  assert.equal(rows[0], "Supervisor    · success:ENABLED | Review prompt trigger");
+  assert.equal(rows[1], "Scope folders · success:ON | All Folders");
+  assert.equal(statusRow("Gate", "OFFLINE", [], plain, "warning"), "Gate          · warning:OFFLINE", "no details -> no trailing pipe");
+  assert.equal(statusRow("Gate", "READY", [false, undefined, "only"], plain), "Gate          · muted:READY | only", "falsy details drop out");
+  assert.equal(statusRow("Supervisor", "ENABLED", [], p, "success").includes("<dim>·</dim>"), true, "divider is dim");
+  // A label wider than the column must widen the column instead of eating the divider.
+  assert.equal(statusRow("A very long label", "ON", [], plain, "success"), "A very long label· success:ON");
 });

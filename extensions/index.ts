@@ -27,6 +27,7 @@ import {
   putCredential,
   removeCredentials,
   storedProviderIds,
+  statusRow,
   sumDays,
   thinkingColorSlot,
   wipeTarget,
@@ -1911,13 +1912,9 @@ export default function (pi: ExtensionAPI) {
     const auth = resolveJevAuth();
     const consent = readConsent();
     const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
-    const label = (text: string) => paint("dim", text.padEnd(14));
+
     // A zero count is the healthy value, so only a non-zero one draws the eye.
     const count = (value: number) => paint(value > 0 ? "warning" : "text", String(value));
-    const dot = paint("dim", " · ");
-    // Every row is `status · detail`, so one reading of the left column answers "is it on?".
-    const row = (status: string, detail: (string | false | undefined)[], accent?: string) =>
-      paint(accent ?? "muted", status) + paint("dim", " | ") + detail.filter(Boolean).join(dot);
 
     const routing = readRouting();
     const models: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
@@ -1927,38 +1924,40 @@ export default function (pi: ExtensionAPI) {
     const gate = Math.min(s.jevRequests, JEV_MAX_REQUESTS);
     const classified = Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS);
 
+    // One row = `Label · STATUS | detail`: the left column is scannable, the right column is the
+    // evidence. `statusRow` pads the label so every `·` lands in one column, like the list menus.
+    const row = (name: string, status: string, details: (string | false | undefined)[], accent: string) =>
+      statusRow(name, status, details, (token, text) => paint(token, text), accent);
+
     const lines = [
-      label("Supervisor") +
-        row(state.enabled ? "ENABLED" : "DISABLED", [state.reviewMode ? "Review all turns" : "Review prompt trigger"], state.enabled ? "success" : "warning"),
-      label("Scope folders") + row(consent.mode === "disabled" ? "OFF" : "ON", [scope], consent.mode === "disabled" ? "warning" : "success"),
-      label("Gate") +
-        (auth
-          ? row("READY", [`${auth.provider.short} · ${auth.model}`, `Key from ${auth.source}`], "success")
-          : `${paint("warning", "OFFLINE")} | no key, run \`/jev-eye login\``),
-      label("Rules") + row("ACTIVE", [`Block at p≥${JEV_BLOCK_THRESHOLD} on diffs ≥${JEV_MIN_DIFF_LINES} lines`, `gate ${gate}/${JEV_MAX_REQUESTS}`, `routing ${classified}/${JEV_MAX_ROUTING_CALLS}`], "success"),
-      label("Routing") +
-        row(
-          routing.enabled ? "ON" : "OFF",
-          [
-            `light ${modelLabelFor(models, routing.light) || "unset"}`,
-            `heavy ${modelLabelFor(models, routing.heavy) || "unset"}`,
-            `${s.lightTurns} light / ${s.heavyTurns} heavy turns`,
-          ],
-          routing.enabled ? "success" : "muted",
-        ),
-      label("Blocked") +
-        row("STATS", [
-          `${count(s.destructiveBlocked)} dangerous`,
-          `${count(s.secretsBlocked)} secrets`,
-          `${count(s.slopBlocked)} slop`,
-          `${count(s.verificationReminders)} unverified`,
-          `${s.reviewTurns} reviewed turns`,
-        ]),
+      row("Supervisor", state.enabled ? "ENABLED" : "DISABLED", [state.reviewMode ? "Review all turns" : "Review prompt trigger"], state.enabled ? "success" : "warning"),
+      row("Scope folders", consent.mode === "disabled" ? "OFF" : "ON", [scope], consent.mode === "disabled" ? "warning" : "success"),
+      auth
+        ? row("Gate", "READY", [`${auth.provider.short} · ${auth.model}`, `Key from ${auth.source}`], "success")
+        : row("Gate", "OFFLINE", ["no key, run `/jev-eye login`"], "warning"),
+      row("Rules", "ACTIVE", [`Block at p≥${JEV_BLOCK_THRESHOLD} on diffs ≥${JEV_MIN_DIFF_LINES} lines`, `gate ${gate}/${JEV_MAX_REQUESTS}`, `routing ${classified}/${JEV_MAX_ROUTING_CALLS}`], "success"),
+      row(
+        "Routing",
+        routing.enabled ? "ON" : "OFF",
+        [
+          `light ${modelLabelFor(models, routing.light) || "unset"}`,
+          `heavy ${modelLabelFor(models, routing.heavy) || "unset"}`,
+          `${s.lightTurns} light / ${s.heavyTurns} heavy turns`,
+        ],
+        routing.enabled ? "success" : "muted",
+      ),
+      row("Blocked", "STATS", [
+        `${count(s.destructiveBlocked)} dangerous`,
+        `${count(s.secretsBlocked)} secrets`,
+        `${count(s.slopBlocked)} slop`,
+        `${count(s.verificationReminders)} unverified`,
+        `${s.reviewTurns} reviewed turns`,
+      ], "muted"),
       ...cloudflareHint(paint),
     ];
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
-    if (typeof contextTokens === "number") lines.push(label("Context") + row("USED", [`${contextTokens.toLocaleString("en-US")} tokens`]));
+    if (typeof contextTokens === "number") lines.push(row("Context", "USED", [`${contextTokens.toLocaleString("en-US")} tokens`], "muted"));
     return lines;
   };
 
