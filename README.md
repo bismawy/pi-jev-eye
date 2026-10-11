@@ -45,8 +45,8 @@ pi -e ./extensions/index.ts
 | `/jev-eye` | Global | Interactive menu: Login, Logout, Status, Routing (`/eye` is an alias) |
 | `/jev-eye login` | Setup | Authenticate with TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef); verified against the live route, mode 0600 |
 | `/jev-eye logout` | Setup | Remove locally stored credentials |
-| `/jev-eye status` | Inspect | Real-time telemetry, provider balance, gate scope, and block counts |
-| `/jev-eye usage` | Inspect | Spend breakdown: totals across both ledgers, per-provider split, and the Cloudflare free-neuron budget |
+| `/jev-eye status` | Inspect | Five-line live state: supervisor, gate key, rules, routing, block counts. Spend lives in `usage` |
+| `/jev-eye usage` | Inspect | Spend breakdown: Jev vs Clef side by side, period totals, and the Cloudflare free-neuron budget |
 | `/jev-eye routing` | Routing | Interactive TUI model router for light and heavy task slots |
 | `jev` · `@jev` in prompt | Prompt | Trigger calibrated review format and task alignment check |
 

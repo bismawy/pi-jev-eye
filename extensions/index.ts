@@ -78,6 +78,8 @@ const state: EyeState = {
 interface JevProvider {
   id: "typesafe" | "openrouter" | "cloudflare";
   label: string;
+  /** Short name for one-line status rows and tables, where the login-menu label would not fit. */
+  short: string;
   url: string;
   model: string;
   keyEnv: string;
@@ -90,6 +92,7 @@ const JEV_PROVIDERS: JevProvider[] = [
   {
     id: "typesafe",
     label: "TypeSafe account",
+    short: "TypeSafe",
     url: "https://api.typesafe.ai/v1/systemone",
     model: "jev-latest",
     keyEnv: "TYPESAFE_API_KEY",
@@ -98,6 +101,7 @@ const JEV_PROVIDERS: JevProvider[] = [
   {
     id: "openrouter",
     label: "OpenRouter account",
+    short: "OpenRouter",
     url: "https://openrouter.ai/api/alpha/decisions", // OpenRouter's System One route (same request/response shape)
     model: "typesafe/jev-1.13",
     keyEnv: "OPENROUTER_API_KEY",
@@ -106,6 +110,7 @@ const JEV_PROVIDERS: JevProvider[] = [
   {
     id: "cloudflare",
     label: "Cloudflare Workers AI (Clef)",
+    short: "Clef",
     // The real route needs an account id, so it is built by cfRunUrl at request time; this stays the account-less display form.
     url: "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/cloudflare/clef-flash",
     model: "clef-flash", // cheaper than `clef` for the per-write gate; both are free inside the daily neuron allowance
@@ -687,9 +692,6 @@ function readUsage(period: string): DayTotals | undefined {
   );
 }
 
-const readOwnUsage = (): DayTotals | undefined => readUsage(today());
-const readMonthUsage = (): DayTotals | undefined => readUsage(today().slice(0, 7));
-
 function recordOwnUsage(patch: Partial<DayTotals>, providerId?: string): void {
   try {
     const file = readJsonFile(OWN_USAGE_PATH) ?? { version: 1, days: {} };
@@ -720,16 +722,8 @@ function recordOwnUsage(patch: Partial<DayTotals>, providerId?: string): void {
 }
 
 // Account balance: OpenRouter exposes one directly, Cloudflare has no remaining-neuron route, TypeSafe has none at all.
-let balanceCache: { provider: string; at: number; text: string } | undefined;
-
+// Only `/jev-eye usage` reads it; `/jev-eye status` stays offline and instant.
 async function fetchBalanceText(auth: JevAuth): Promise<string> {
-  // Cloudflare exposes no remaining-neuron route, so the ledger is the only source: what today cost and
-  // how much of the free daily allowance is left.
-  if (auth.provider.id === "cloudflare") {
-    const budget = clefBudget(neuronsSpentOn(readJsonFile(OWN_USAGE_PATH)?.days, today()));
-    const over = budget.overageUsd > 0 ? ` · overage $${budget.overageUsd.toFixed(4)}` : " · still free";
-    return `not exposed by the API; free neurons left today ${Math.round(budget.remaining).toLocaleString("en-US")}/${budget.free.toLocaleString("en-US")}${over}`;
-  }
   const usd = (value: number) => `$${value.toFixed(4)}`;
   const get = (path: string) =>
     fetch(`https://openrouter.ai/api/v1/${path}`, {
@@ -737,7 +731,7 @@ async function fetchBalanceText(auth: JevAuth): Promise<string> {
       signal: AbortSignal.timeout(4000),
     });
 
-  if (auth.provider.id !== "openrouter") return "not exposed by api.typesafe.ai (spend above is ledger-based)";
+  if (auth.provider.id !== "openrouter") return "no balance route for this provider";
 
   try {
     const keyRes = await get("key");
@@ -764,17 +758,6 @@ async function fetchBalanceText(auth: JevAuth): Promise<string> {
   } catch (error) {
     return `unavailable (${(error as Error)?.message ?? "network error"})`;
   }
-}
-
-async function balanceText(auth: JevAuth | undefined): Promise<string> {
-  if (!auth) return "no account — run `/jev-eye login`";
-  const now = Date.now();
-  if (balanceCache && balanceCache.provider === auth.provider.id && now - balanceCache.at < 300_000) {
-    return balanceCache.text;
-  }
-  const text = await fetchBalanceText(auth);
-  balanceCache = { provider: auth.provider.id, at: now, text };
-  return text;
 }
 
 // --- Explicit review request: the operator writes `jev` (or @jev, /jev-review) to open one reviewed turn ---
@@ -1034,7 +1017,7 @@ const GATE_KEY = "ctrl+shift+g";
 
 // `/jev-eye status` panel chrome: title, one-line description, footer.
 const STATUS_TITLE = "Jev Eye · Status";
-const STATUS_DESC = "Supervisor, Jev gate, model routing, interception and usage for this Pi session.";
+const STATUS_DESC = "Supervisor, gate, routing and interception for this Pi session.";
 // Keycap hint only: `ctrl+shift+e` -> `Ctrl+Shift+e`.
 const keycap = (key: string) =>
   key
@@ -1405,12 +1388,23 @@ export default function (pi: ExtensionAPI) {
   const USAGE_TITLE = "Jev Eye · Usage";
   const USAGE_DESC = "Jev and Clef spend, tokens and the free-neuron budget.";
 
+  /** The provider balance line for the panel. Only OpenRouter exposes a real one; the Clef block above
+   *  already reports its own neuron budget, and TypeSafe has no balance route at all. */
+  const usageBalance = async (auth: JevAuth | undefined): Promise<string | undefined> => {
+    if (auth?.provider.id !== "openrouter") return undefined;
+    try {
+      return await fetchBalanceText(auth);
+    } catch {
+      return "unavailable";
+    }
+  };
+
   /**
    * Usage body: one compact table holding Jev (TypeSafe/OpenRouter) and Clef side by side, so both
    * backends are read at a glance. Data is the same ledger `/jev-eye status` uses; nothing is estimated
    * except the dollar figure for a provider that does not report its own cost.
    */
-  const buildUsage = (ctx: any, theme?: any): string[] => {
+  const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
     const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
     const n = (value: number) => value.toLocaleString("en-US");
     const usd = (value: number) => (value >= 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(6)}`);
@@ -1507,20 +1501,22 @@ export default function (pi: ExtensionAPI) {
         paint("dim", `${s.destructiveBlocked} dangerous · ${s.secretsBlocked} secret · ${s.slopBlocked} slop`) +
         (typeof ctx?.getContextUsage?.()?.tokens === "number" ? paint("dim", ` · context ${n(ctx.getContextUsage().tokens)} tok`) : "")
     );
+    if (balance) lines.push(paint("accent", "Balance ") + paint("dim", balance));
     return lines;
   };
 
   /** `/jev-eye usage`: the same framed panel as status, with the spend breakdown. */
   const showUsage = async (ctx: any): Promise<void> => {
+    const balance = await usageBalance(resolveJevAuth());
     if (typeof ctx.ui.custom !== "function") {
-      ctx.ui.notify([USAGE_TITLE, USAGE_DESC, "", ...buildUsage(ctx)].join("\n"), "info");
+      ctx.ui.notify([USAGE_TITLE, USAGE_DESC, "", ...buildUsage(ctx, undefined, balance)].join("\n"), "info");
       return;
     }
     await ctx.ui.custom<void>((tui: any, theme: any, _kb: any, done: (value?: void) => void) => {
       const panel = new StatusPanel(
         theme,
-        buildUsage(ctx, theme),
-        { rebuild: () => buildUsage(ctx, theme), cycleMode: () => cycleEyeState(ctx), cycleGate: () => writeConsent(nextConsent(readConsent(), ctx.cwd)) },
+        buildUsage(ctx, theme, balance),
+        { rebuild: () => buildUsage(ctx, theme, balance), cycleMode: () => cycleEyeState(ctx), cycleGate: () => writeConsent(nextConsent(readConsent(), ctx.cwd)) },
         done,
         USAGE_TITLE,
         USAGE_DESC,
@@ -1538,74 +1534,72 @@ export default function (pi: ExtensionAPI) {
   };
 
   /** Status body only: plain text in headless mode, colourised when the panel hands over a theme.
-   *  Synchronous on purpose — the balance is fetched once by {@link showStatus} and passed in, so the
-   *  panel never has a pending state to render. */
-  const buildStatus = (ctx: any, balance: string, theme?: any): string[] => {
+   *  Spend lives in `/jev-eye usage`; this screen answers "what is active right now" in five lines. */
+  const buildStatus = (ctx: any, theme?: any): string[] => {
     const auth = resolveJevAuth();
     const consent = readConsent();
-    const n = (value: number) => value.toLocaleString("en-US");
-    const usd = (value: number) => `$${value.toFixed(6)}`;
     const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
+    const label = (text: string) => paint("dim", text.padEnd(11));
     // A zero count is the healthy value, so only a non-zero one draws the eye.
     const count = (value: number) => paint(value > 0 ? "warning" : "text", String(value));
-    const window = (label: string, period: string, totals: DayTotals | undefined) =>
-      totals
-        ? `${paint("dim", label.padEnd(8))}${period} | ${totals.requests} requests (${totals.ok} ok / ${totals.failed} failed) | ${n(totals.inputTokens)} in / ${n(totals.outputTokens)} out | ${usd(totals.cost)}`
-        : `${paint("dim", label.padEnd(8))}${period} | no requests`;
+    const bits = (parts: (string | false | undefined)[]) => parts.filter(Boolean).join(paint("dim", " · "));
 
     const routing = readRouting();
     const models: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
     const thisFolderOn = consentAllows(ctx.cwd, consent);
-    // One line, one state: this folder, all folders, or off. The folder list never renders.
-    const scopeValue =
-      consent.mode === "folder" ? "This folder" : consent.mode === "all" ? "All folders" : "Disabled";
-    const scopeState =
-      consent.mode === "folder"
-        ? ` (${paint(thisFolderOn ? "success" : "muted", thisFolderOn ? "ON" : "off")})`
-        : "";
-    const classified = Math.min(state.stats.jevRoutingCalls, JEV_MAX_ROUTING_CALLS);
+    const scope = consent.mode === "folder" ? `This folder (${thisFolderOn ? "ON" : "off"})` : consent.mode === "all" ? "All folders" : "Disabled";
+    const s = state.stats;
+    const gate = Math.min(s.jevRequests, JEV_MAX_REQUESTS);
+    const classified = Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS);
+
     const lines = [
-      `${paint("dim", "Supervisor: ")}${paint(state.enabled ? "success" : "warning", state.enabled ? "ENABLED" : "DISABLED")} | ${paint("dim", "Review Mode: ")}${paint(state.reviewMode ? "warning" : "muted", state.reviewMode ? "ALWAYS ON" : "prompt trigger")}`,
-      `${paint("dim", "Routing: ")}${paint(routing.enabled ? "success" : "muted", routing.enabled ? "ON" : "off")} | ${paint("dim", "Light: ")}${modelLabelFor(models, routing.light) || "unset"} | ${paint("dim", "Heavy: ")}${modelLabelFor(models, routing.heavy) || "unset"} | ${state.stats.lightTurns} light / ${state.stats.heavyTurns} heavy turns | ${classified}/${JEV_MAX_ROUTING_CALLS} classified`,
-      `${paint("dim", "Jev Gate: ")}${
-        auth
-          ? `${paint("success", "READY")} | ${auth.provider.label} · ${auth.model} (key from ${auth.source})`
-          : `${paint("warning", "OFFLINE (no key)")} — run \`/jev-eye login\``
-      }`,
+      label("Supervisor") +
+        bits([
+          paint(state.enabled ? "success" : "warning", state.enabled ? "ENABLED" : "DISABLED"),
+          `review ${state.reviewMode ? "always" : "prompt trigger"}`,
+          `scope ${consent.mode === "disabled" ? paint("warning", scope) : scope}`,
+        ]),
+      label("Gate") +
+        (auth
+          ? bits([paint("success", "READY"), `${auth.provider.short} · ${auth.model}`, `key from ${auth.source}`])
+          : `${paint("warning", "OFFLINE")} — no key, run \`/jev-eye login\``),
+      label("Rules") + bits([`block at p≥${JEV_BLOCK_THRESHOLD} on diffs ≥${JEV_MIN_DIFF_LINES} lines`, `gate ${gate}/${JEV_MAX_REQUESTS}`, `routing ${classified}/${JEV_MAX_ROUTING_CALLS}`]),
+      label("Routing") +
+        bits([
+          paint(routing.enabled ? "success" : "muted", routing.enabled ? "ON" : "off"),
+          `light ${modelLabelFor(models, routing.light) || "unset"}`,
+          `heavy ${modelLabelFor(models, routing.heavy) || "unset"}`,
+          `${s.lightTurns} light / ${s.heavyTurns} heavy turns`,
+        ]),
+      label("Blocked") +
+        bits([
+          `${count(s.destructiveBlocked)} dangerous`,
+          `${count(s.secretsBlocked)} secrets`,
+          `${count(s.slopBlocked)} slop`,
+          `${count(s.verificationReminders)} unverified`,
+          `${s.reviewTurns} reviewed turns`,
+        ]),
       ...cloudflareHint(paint),
-      `${paint("dim", "Gate Scope: ")}${paint(consent.mode === "disabled" ? "warning" : "text", scopeValue)}${scopeState}`,
-      // Named prefix + a plain-word gloss, so the numbers below stop being a riddle.
-      `${paint("dim", "Gate Rules: ")}block when Jev's chance of slop or an unfinished TODO is p≥${JEV_BLOCK_THRESHOLD} | checked only on diffs ≥${JEV_MIN_DIFF_LINES} lines | ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} Jev requests used this session`,
-      "",
-      paint("accent", "Usage"),
-      window("Today", today(), readOwnUsage()),
-      window("Month", today().slice(0, 7), readMonthUsage()),
-      `${paint("dim", "Balance ")}${paint("muted", balance)}`,
-      "",
-      paint("accent", "Interception (this session)"),
-      `${paint("dim", "Blocked: ")}${count(state.stats.destructiveBlocked)} dangerous | ${paint("dim", "Secrets: ")}${count(state.stats.secretsBlocked)} | ${paint("dim", "Jev slop: ")}${count(state.stats.slopBlocked)} | ${paint("dim", "Unverified-done warnings: ")}${count(state.stats.verificationReminders)} | ${paint("dim", "Reviewed turns: ")}${count(state.stats.reviewTurns)}`,
     ];
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
-    if (typeof contextTokens === "number") lines.push(`${paint("dim", "Model context: ")}${n(contextTokens)} tokens`);
+    if (typeof contextTokens === "number") lines.push(label("Context") + paint("muted", `${contextTokens.toLocaleString("en-US")} tokens`));
     return lines;
   };
 
   /** `/jev-eye status`: the framed panel, falling back to the same body as plain text without a TUI. */
   const showStatus = async (ctx: any): Promise<void> => {
-    const balance = await balanceText(resolveJevAuth());
-
     if (typeof ctx.ui.custom !== "function") {
-      ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx, balance), "", statusFooter(state.enabled, state.reviewMode)].join("\n"), "info");
+      ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx), "", statusFooter(state.enabled, state.reviewMode)].join("\n"), "info");
       return;
     }
 
     await ctx.ui.custom<void>((tui: any, theme: any, _kb: any, done: (value?: void) => void) => {
       const panel = new StatusPanel(
         theme,
-        buildStatus(ctx, balance, theme),
+        buildStatus(ctx, theme),
         {
-          rebuild: () => buildStatus(ctx, balance, theme),
+          rebuild: () => buildStatus(ctx, theme),
           cycleMode: () => {
             cycleEyeState(ctx);
           },
