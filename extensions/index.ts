@@ -8,6 +8,7 @@ import {
   USD_PER_MTOK,
   VERIFICATION_COMMAND_PATTERNS,
   addProviderTotals,
+  backendTotals,
   cfRunUrl,
   clefBody,
   clefBudget,
@@ -1395,76 +1396,110 @@ export default function (pi: ExtensionAPI) {
 
   // `/jev-eye usage` panel chrome.
   const USAGE_TITLE = "Jev Eye · Usage";
-  const USAGE_DESC = "Jev gate spend and Cloudflare Clef neurons across both ledgers.";
-
-  /** A provider's label for the panel; an unknown id stays as it was stored. */
-  const providerLabel = (id: string): string => providerById(id)?.label ?? id;
+  const USAGE_DESC = "Jev and Clef spend, tokens and the free-neuron budget.";
 
   /**
-   * The per-provider rows for one period. `readUsage` already folds provider maps from both ledgers, so
-   * a provider this build no longer ships (or one added later) still reports its recorded spend.
+   * Usage body: one compact table holding Jev (TypeSafe/OpenRouter) and Clef side by side, so both
+   * backends are read at a glance. Data is the same ledger `/jev-eye status` uses; nothing is estimated
+   * except the dollar figure for a provider that does not report its own cost.
    */
-  const providerRows = (period: string, paint: (c: string, v: string) => string): string[] => {
-    const totals = readUsage(period)?.providers ?? {};
-    const usd = (value: number) => `$${value.toFixed(6)}`;
-    return Object.entries(totals).map(([id, t]) => {
-      const name = providerLabel(id);
-      return `${paint("dim", name.padEnd(30))}${String(t.requests).padStart(6)} req | ${t.inputTokens.toLocaleString("en-US").padStart(9)} in | ${usd(t.cost)}`;
-    });
-  };
-
-  /** Usage body: same numbers as status, but with the per-provider split and the Clef neuron budget. */
   const buildUsage = (ctx: any, theme?: any): string[] => {
     const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
     const n = (value: number) => value.toLocaleString("en-US");
-    const usd = (value: number) => `$${value.toFixed(6)}`;
-    const month = today().slice(0, 7);
-    const days = readJsonFile(OWN_USAGE_PATH)?.days;
+    const usd = (value: number) => (value >= 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(6)}`);
     const auth = resolveJevAuth();
+    const days = readJsonFile(OWN_USAGE_PATH)?.days;
+
+    // Column widths are fixed so the header and every row line up byte-for-byte.
+    const W = { label: 9, req: 6, tok: 11, cost: 10 };
+    const cell = (text: string, width: number, alignRight = true) => {
+      const s = text.length > width ? `${text.slice(0, width - 1)}…` : text;
+      return alignRight ? s.padStart(width) : s.padEnd(width);
+    };
+    const header = (label: string) =>
+      paint("dim", cell(label, W.label, false) + cell("req", W.req) + cell("in tok", W.tok) + cell("cost", W.cost));
+    const row = (label: string, t: ProviderTotals, extra = "", color = "text") =>
+      paint(color, cell(label, W.label, false)) +
+      paint("dim", cell(String(t.requests), W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost)) +
+      extra;
+
     const lines: string[] = [];
 
-    lines.push(paint("accent", "Totals (both ledgers)"));
-    for (const [label, period] of [["Today", today()], ["Month", month], ["All time", ""]] as const) {
-      const totals = readUsage(period);
+    // 1. The two backends, side by side. This is the answer to "how much Jev vs Clef?" in two rows.
+    lines.push(paint("accent", "Backends · this month"));
+    const monthTotals = readUsage(today().slice(0, 7));
+    const { clef, jev } = backendTotals(monthTotals?.providers);
+    lines.push(header(""));
+    lines.push(row("Jev", jev, `  ${paint("muted", auth && auth.provider.id !== "cloudflare" ? auth.provider.label : "TypeSafe / OpenRouter")}`));
+    lines.push(
+      row("Clef", clef, `  ${paint("muted", auth?.provider.id === "cloudflare" ? auth.model : "Cloudflare")} · ${clef.neurons >= 1 ? `${n(Math.round(clef.neurons))} neurons` : "no neurons"}`)
+    );
+    // Entries written before provider attribution existed cannot be split. Showing only the attributed
+    // rows would make the table look complete while it covered a fraction of the period.
+    const attributed = clef.requests + jev.requests;
+    const unattributed = Math.max(0, (monthTotals?.requests ?? 0) - attributed);
+    if (unattributed > 0) {
+      const share = (total: number, known: number) => Math.max(0, total - known);
       lines.push(
-        totals
-          ? `${paint("dim", label.padEnd(10))}${String(totals.requests).padStart(5)} req (${totals.ok} ok / ${totals.failed} failed) | ${n(totals.inputTokens)} in / ${n(totals.outputTokens)} out | ${usd(totals.cost)}`
-          : `${paint("dim", label.padEnd(10))}no requests`
+        row(
+          "Earlier",
+          {
+            requests: unattributed,
+            ok: 0,
+            failed: 0,
+            inputTokens: share(monthTotals!.inputTokens, clef.inputTokens + jev.inputTokens),
+            outputTokens: 0,
+            cost: share(monthTotals!.cost, clef.cost + jev.cost),
+            neurons: share(monthTotals!.neurons ?? 0, clef.neurons + jev.neurons),
+          },
+          `  ${paint("muted", `before the split (${Math.round((unattributed / monthTotals!.requests) * 100)}% of the month)`)}`
+        )
+      );
+    }
+    if (unattributed > 0 && attributed === 0) {
+      lines.push(paint("muted", "the split is recorded from the next request on; the totals below are exact"));
+    }
+    lines.push("");
+
+    // 2. One-line totals, so the panel still answers when the split is empty.
+    lines.push(paint("accent", "Totals · both ledgers"));
+    for (const [label, period] of [["Today", today()], ["Month", today().slice(0, 7)], ["All time", ""]] as const) {
+      const t = readUsage(period);
+      lines.push(
+        t
+          ? paint("dim", cell(label, W.label, false)) +
+              paint("dim", cell(`${t.requests}`, W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost)) +
+              paint("muted", `  ${t.ok} ok / ${t.failed} fail · out ${n(t.outputTokens)}`)
+          : paint("dim", cell(label, W.label, false)) + paint("muted", "no requests")
       );
     }
     lines.push("");
 
-    lines.push(paint("accent", "Cloudflare Clef · free tier"));
+    // 3. The Clef free budget is the one number that changes behaviour (the gate stops working if it is exhausted).
     const budget = clefBudget(neuronsSpentOn(days, today()));
-    const usingClef = auth?.provider.id === "cloudflare";
-    lines.push(
-      usingClef
-        ? `${paint("dim", "Model        ")}${auth.model} · $${clefUsdPerMTok(auth.model).toFixed(3)}/M in, output not billed`
-        : `${paint("dim", "Model        ")}not in use (gate key is ${auth ? auth.provider.label : "unset"})`
-    );
-    lines.push(
-      `${paint("dim", "Neurons today")} ${n(Math.round(budget.used))} / ${n(budget.free)} free · ${n(Math.round(budget.remaining))} left${budget.overageUsd > 0 ? ` · overage ${usd(budget.overageUsd)}` : ""}`
-    );
-    const barWidth = 24;
+    const barWidth = 20;
     const filled = Math.min(barWidth, Math.round((budget.used / budget.free) * barWidth));
-    lines.push(`                ${paint(budget.used >= budget.free ? "warning" : "success", "█".repeat(filled))}${paint("dim", "░".repeat(barWidth - filled))} resets 00:00 UTC`);
-    lines.push(`${paint("dim", "Calls today  ")}${String(days?.[today()]?.requests ?? 0).padStart(5)} requests · avg ${budget.used > 0 && days?.[today()]?.requests ? Math.round(budget.used / days[today()].requests).toLocaleString("en-US") : 0} neurons each`);
-    lines.push("");
-
-    lines.push(paint("accent", "By provider (this month)"));
-    const rows = providerRows(month, paint);
-    lines.push(...(rows.length > 0 ? rows : [paint("muted", "no per-provider data yet; recorded from the next request on")]));
-    lines.push("");
-
-    lines.push(paint("accent", "This session"));
+    const exhausted = budget.used >= budget.free;
     lines.push(
-      `${paint("dim", "Interception ")}${state.stats.destructiveBlocked} dangerous | ${state.stats.secretsBlocked} secrets | ${state.stats.slopBlocked} Jev slop | ${state.stats.reviewTurns} reviewed turns`
+      `${paint("accent", "Clef free tier")} ${paint(exhausted ? "warning" : "success", "█".repeat(filled))}${paint("dim", "░".repeat(barWidth - filled))} ${n(Math.round(budget.used))}/${n(budget.free)} neurons today${budget.overageUsd > 0 ? paint("warning", ` · over ${usd(budget.overageUsd)}`) : " · free"}`
     );
     lines.push(
-      `${paint("dim", "Jev budget   ")}${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} gate requests · ${Math.min(state.stats.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} routing calls used`
+      paint("dim", `  resets 00:00 UTC · ${n(Math.round(budget.remaining))} left · `) +
+        paint("muted", auth?.provider.id === "cloudflare" ? `${auth.model} · $${clefUsdPerMTok(auth.model).toFixed(3)}/M in` : "Clef not the active gate key")
     );
-    const contextTokens = ctx?.getContextUsage?.()?.tokens;
-    if (typeof contextTokens === "number") lines.push(`${paint("dim", "Model context")} ${n(contextTokens)} tokens`);
+    lines.push("");
+
+    // 4. Session counters, one line each, no prose.
+    const s = state.stats;
+    lines.push(
+      paint("accent", "Session ") +
+        paint("dim", `gate ${Math.min(s.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} · routing ${Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} · reviewed ${s.reviewTurns}`)
+    );
+    lines.push(
+      paint("accent", "Blocked ") +
+        paint("dim", `${s.destructiveBlocked} dangerous · ${s.secretsBlocked} secret · ${s.slopBlocked} slop`) +
+        (typeof ctx?.getContextUsage?.()?.tokens === "number" ? paint("dim", ` · context ${n(ctx.getContextUsage().tokens)} tok`) : "")
+    );
     return lines;
   };
 

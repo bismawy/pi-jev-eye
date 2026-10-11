@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, neuronsSpentOn, normalizeTotals, sumDays, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, neuronsSpentOn, normalizeTotals, sumDays, wipeTarget } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -157,6 +157,37 @@ test("only today's neurons count against the free daily allowance", () => {
   const days = { "2026-10-11": { neurons: 120 }, "2026-10-10": { neurons: 9999 } };
   assert.equal(neuronsSpentOn(days, "2026-10-11"), 120);
   assert.equal(neuronsSpentOn(days, "2026-10-09"), 0);
+});
+
+// The panel shows Jev and Clef side by side, so the split must be exact — and a partial entry must
+// not poison the sum with NaN.
+test("the backend split keeps Clef apart from every other Jev provider", () => {
+  const { clef, jev } = backendTotals({
+    cloudflare: { requests: 4, inputTokens: 1332, cost: 0.0000506, neurons: 2427 },
+    typesafe: { requests: 2, inputTokens: 900, cost: 0.0000378 },
+    openrouter: { requests: 1, inputTokens: 10, cost: 0.000001 },
+  });
+  assert.equal(clef.requests, 4);
+  assert.equal(clef.neurons, 2427);
+  assert.equal(jev.requests, 3, "TypeSafe and OpenRouter both count as Jev");
+  assert.equal(jev.inputTokens, 910);
+  assert.equal(jev.neurons, 0, "only Cloudflare is metered in neurons");
+});
+
+test("a partial provider entry contributes zeros, never NaN", () => {
+  const { clef } = backendTotals({ cloudflare: { requests: 1 } });
+  assert.equal(clef.requests, 1);
+  assert.equal(clef.inputTokens, 0);
+  assert.equal(clef.cost, 0);
+  assert.equal(clef.neurons, 0);
+});
+
+test("an empty or missing split reads as two zeroed backends", () => {
+  for (const input of [undefined, {}]) {
+    const { clef, jev } = backendTotals(input);
+    assert.equal(clef.requests + jev.requests, 0);
+    assert.equal(clef.cost + jev.cost, 0, "no invented spend");
+  }
 });
 
 // --- Clef pricing: clef-flash bills 6x less than clef, and the free tier is 10,000 neurons/day ---

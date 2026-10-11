@@ -18,7 +18,7 @@ pi-jev-eye is an ultra-lean, zero-dependency supervisor for [pi](https://github.
 - **Done-Check Verification:** Warns when the agent claims done after editing files without running verification suites (`npm test`, `cargo test`, `pytest`).
 - **Targeted Jev Semantic Gate:** Evaluates diffs ≥ 10 lines via TypeSafe Jev (`has_slop`) to reject placeholder stubs and unfulfilled TODOs.
 - **Three Decision Backends:** TypeSafe Jev, OpenRouter, or **Cloudflare Workers AI (Clef / `clef-flash`)** — same gated pipeline, chosen once at `/jev-eye login`. Clef runs inside Cloudflare's free daily allowance of 10,000 neurons, so the gate costs nothing for most sessions.
-- **Jev + Clef Usage Panel (`/jev-eye usage`):** Totals across both ledgers (today / month / all time), a per-provider split so Jev and Clef spend never blend, and the Cloudflare free-neuron budget with its reset time and overage cost.
+- **Jev + Clef Usage Panel (`/jev-eye usage`):** One compact table shows Jev and Clef side by side (requests, input tokens, cost for the month), three period totals, and the Cloudflare free-neuron budget with its reset time and overage cost. Periods that predate the split are reported as an explicit `Earlier` row rather than silently dropping out of the table.
 - **Reviewed Turns (`jev` / `@jev`):** Calibrated review contract with machine facts, Jev scoring tables, and single-flight prompt alignment (`answers_request`).
 - **Per-Turn Model Routing:** Routes light chores (git commit, push, status) to a fast model and complex engineering tasks to a heavy model with independent reasoning controls.
 - **Fail-Open Reliability:** Network timeouts or offline provider APIs gracefully degrade so coding sessions never stall or freeze.

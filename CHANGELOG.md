@@ -3,12 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **Compact `/jev-eye usage` panel** that reports **Jev and Clef side by side** in one table: requests, input tokens and cost per backend for the month, three one-line period totals (today / month / all time), and the Clef free-neuron budget with a fill bar and reset time. 22 lines became 18.
+- `backendTotals` in `extensions/layer1.ts`: one pass splits a period's provider map into Clef (Cloudflare) and every other Jev provider. It normalizes each entry first, so a partially written record contributes zeros instead of poisoning the sum with `NaN`.
+- An **`Earlier`** row appears only when some of the period predates provider attribution, showing exactly how many requests could not be split. Without it the table would look complete while covering a fraction of the month — an error would be invisible.
 - **`Usage` entry in the `/jev-eye` menu.** The menu lists `Usage · Jev/Clef spend, per-provider split & free-neuron budget` next to `Status`, opening the same panel as `/jev-eye usage`.
 - **Cloudflare Workers AI (Clef) as a third Jev provider.** `/jev-eye login` now offers `Cloudflare Workers AI (Clef)` alongside TypeSafe and OpenRouter. Clef speaks the same System One request shape (`noul` / `choice` / `score`), so the write gate, the reviewed-turn `answers_request` dimension, and per-turn routing all work against it unchanged.
 - A Clef credential is an account id plus a Workers AI token: the account id is asked for first (or read from `$CLOUDFLARE_ACCOUNT_ID`), then verified against the real `…/accounts/{id}/ai/run/@cf/cloudflare/clef-flash` route before anything is saved. The model is chosen at login (`clef-flash` — cheapest, the default — or `clef`).
 - `clefBody` / `clefError` in `extensions/layer1.ts`: the Workers AI route wraps the answer in `{ result, success, errors }`, and unwrapping it is now a tested pure function instead of an inline assumption.
 - `cfRunUrl` / `isCloudflareAccountId`: the account id is validated (32 hex chars) before it reaches a URL, and the account-less base stays safe to commit.
-- **`/jev-eye usage` panel.** Separates real spend from the free tier: totals for today / month / all time across both ledgers, a per-provider breakdown, and the Cloudflare Clef block — model in use, neurons spent today against the 10,000/day free allowance, a fill bar, and the overage cost at `$0.011/1,000` neurons once the allowance is used up.
+- **`/jev-eye usage` panel.** Separates real spend from the free tier: totals for today / month / all time across both ledgers, a side-by-side Jev vs Clef table, and the Cloudflare Clef block — model in use, neurons spent today against the 10,000/day free allowance, a fill bar, and the overage cost at `$0.011/1,000` neurons once the allowance is used up.
 - `clefUsdPerMTok`, `clefNeuronsPerMTok`, `clefNeuronsFor`, `clefBudget`, `neuronsSpentOn` in `extensions/layer1.ts`: the real per-model rates (`clef` 21,818 neurons/M, `clef-flash` 3,455, `clef-omni` 13,636) instead of one flat rate. An unknown model id is charged as the cheaper model, never as free.
 - The ledger now records `providers` (a per-provider counter map) and `neurons` as optional fields, so one panel can split Jev from Clef without a second file.
 

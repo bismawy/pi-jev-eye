@@ -231,6 +231,26 @@ export function sumDays(days: any, period: string, mapper: (raw: any) => DayTota
   return found ? totals : undefined;
 }
 
+/** Clef is one provider id on disk under two model names; the panel labels it as one backend. */
+export const CLEF_PROVIDER_ID = "cloudflare";
+
+/**
+ * Split a period's per-provider map into the two backends the panel shows side by side: Clef
+ * (Cloudflare) and every other Jev provider (TypeSafe, OpenRouter, legacy). One pass, no second read.
+ */
+export function backendTotals(
+  providers: Record<string, ProviderTotals> | undefined,
+): { clef: ProviderTotals; jev: ProviderTotals } {
+  let clef = { ...EMPTY_PROVIDER_TOTALS };
+  let jev = { ...EMPTY_PROVIDER_TOTALS };
+  for (const [id, raw] of Object.entries(providers ?? {})) {
+    const totals = normalizeProviderTotals(raw);
+    const target = id === CLEF_PROVIDER_ID ? clef : jev;
+    for (const key of PROVIDER_COUNTERS) target[key] += totals[key];
+  }
+  return { clef, jev };
+}
+
 /**
  * Neurons already billed on a date. The free allowance is per calendar day, so only today's count
  * against it — a month total would show a budget that has already reset.
