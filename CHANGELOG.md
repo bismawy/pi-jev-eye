@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Read-only `/jev-eye usage` footer.** The panel reused the status frame, so it advertised `[Alt+Shift+j] Mode` and `[Ctrl+Shift+g] Grant folder` and acted on those keys, though a spend view has nothing to toggle. It now shows `[Enter] Done  [Esc] Cancel` and ignores the toggle keys.
+
 ### Added
 - **Compact `/jev-eye usage` panel** that reports **Jev and Clef side by side** in one table: requests, input tokens and cost per backend for the month, three one-line period totals (today / month / all time), and the Clef free-neuron budget with a fill bar and reset time. 22 lines became 18.
 - `backendTotals` in `extensions/layer1.ts`: one pass splits a period's provider map into Clef (Cloudflare) and every other Jev provider. It normalizes each entry first, so a partially written record contributes zeros instead of poisoning the sum with `NaN`.

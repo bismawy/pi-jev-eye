@@ -458,6 +458,8 @@ class StatusPanel {
   private readonly done: (value?: void) => void;
   private readonly title: string;
   private readonly desc: string;
+  /** Read-only screens (usage) must not advertise, or act on, the status toggles. */
+  private readonly controls: boolean;
 
   constructor(
     theme: any,
@@ -465,7 +467,8 @@ class StatusPanel {
     actions: { rebuild: () => string[]; cycleMode: () => void; cycleGate: () => void },
     done: (value?: void) => void,
     title: string = STATUS_TITLE,
-    desc: string = STATUS_DESC
+    desc: string = STATUS_DESC,
+    controls = true
   ) {
     this.theme = theme;
     this.lines = lines;
@@ -473,6 +476,7 @@ class StatusPanel {
     this.done = done;
     this.title = title;
     this.desc = desc;
+    this.controls = controls;
   }
 
   /** A toggle changes state, so the body is rebuilt in place; the caller re-renders after input. */
@@ -487,11 +491,11 @@ class StatusPanel {
       return;
     }
     if (matchesKey(data, TOGGLE_KEY) || matchesKey(data, LEGACY_TOGGLE_KEY)) {
-      this.apply(this.actions.cycleMode);
+      if (this.controls) this.apply(this.actions.cycleMode);
       return;
     }
     if (matchesKey(data, GATE_KEY)) {
-      this.apply(this.actions.cycleGate);
+      if (this.controls) this.apply(this.actions.cycleGate);
     }
   }
 
@@ -508,7 +512,7 @@ class StatusPanel {
       "",
       ...this.lines,
       "",
-      t.fg("dim", statusFooter(state.enabled, state.reviewMode)),
+      t.fg("dim", this.controls ? statusFooter(state.enabled, state.reviewMode) : PANEL_FOOTER),
       border(),
     ];
     return lines.map((line) => truncateToWidth(line, width, ""));
@@ -1044,6 +1048,9 @@ const eyeMode = (enabled: boolean, reviewMode: boolean): "ON" | "REVIEW" | "OFF"
 const statusFooter = (enabled: boolean, reviewMode: boolean) =>
   `[Enter] Done  [Esc] Cancel  [${keycap(TOGGLE_KEY)}] Mode (${eyeMode(enabled, reviewMode)})  [${keycap(GATE_KEY)}] Grant folder`;
 
+// Read-only screens (usage) advertise no key that would not act on them.
+const PANEL_FOOTER = "[Enter] Done  [Esc] Cancel";
+
 function cycleEyeState(ctx?: any): "ON" | "REVIEW" | "OFF" {
   if (!state.enabled) {
     state.enabled = true;
@@ -1516,7 +1523,8 @@ export default function (pi: ExtensionAPI) {
         { rebuild: () => buildUsage(ctx, theme), cycleMode: () => cycleEyeState(ctx), cycleGate: () => writeConsent(nextConsent(readConsent(), ctx.cwd)) },
         done,
         USAGE_TITLE,
-        USAGE_DESC
+        USAGE_DESC,
+        false // read-only: no Mode / Grant-folder toggles on the usage screen
       );
       return {
         render: (width: number) => panel.render(width),
