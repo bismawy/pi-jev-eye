@@ -640,7 +640,7 @@ class RoutingPicker {
     if (matchesKey(data, Key.space) || data === " ") return this.assign("light");
     // ctrl+h is the documented heavy key; ctrl+q is kept as an alias for terminals that eat it.
     if (matchesKey(data, "ctrl+h") || matchesKey(data, "ctrl+q")) return this.assign("heavy");
-    if (matchesKey(data, "ctrl+r")) {
+    if (matchesKey(data, KEY_SETS.routingToggle)) {
       this.pending = { ...this.pending, enabled: !this.pending.enabled };
       return;
     }
@@ -1373,10 +1373,25 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
 }
 
 // ON -> REVIEW -> OFF -> ON
-const TOGGLE_KEY = "alt+shift+j";
-const LEGACY_TOGGLE_KEY = "ctrl+shift+e";
+/**
+ * Keycaps are fixed: `matchesKey` must compare against a literal, and the `[Key] Mode` column in the
+ * footer is measured from the strings themselves. One line per value so a writer can grep it.
+ */
+const KEY_SETS = {
+  /** Cycle ON → REVIEW → OFF. */
+  toggle: "ctrl+shift+s",
+  /** Legacy alias, still registered so an existing muscle memory keeps working. */
+  toggleLegacy: "ctrl+shift+e",
+  /** Cycle the Jev gate value: all folders / this folder / disabled. */
+  gate: "ctrl+shift+g",
+  /** Cycle the model router on/off inside the routing screen. */
+  routingToggle: "ctrl+r",
+} as const;
+
+const TOGGLE_KEY = KEY_SETS.toggle;
+const LEGACY_TOGGLE_KEY = KEY_SETS.toggleLegacy;
 // Gate scope cycle, announced in the same footer.
-const GATE_KEY = "ctrl+shift+g";
+const GATE_KEY = KEY_SETS.gate;
 
 // `/jev-eye status` panel chrome: title, one-line description, footer.
 const STATUS_TITLE = "Jev Eye · Status";
@@ -1388,14 +1403,15 @@ const keycap = (key: string) =>
     .map((part) => (part.length > 1 ? part[0].toUpperCase() + part.slice(1) : part))
     .join("+");
 
+
 const eyeMode = (enabled: boolean, reviewMode: boolean): "ON" | "REVIEW" | "OFF" =>
   !enabled ? "OFF" : reviewMode ? "REVIEW" : "ON";
 
 const statusFooter = (enabled: boolean, reviewMode: boolean) =>
-  `[Enter] Done  [Esc] Cancel  [${keycap(TOGGLE_KEY)}] Mode (${eyeMode(enabled, reviewMode)})  [${keycap(GATE_KEY)}] Grant folder`;
+  `[Enter] Done  [Esc] Cancel  [←] Back  [${keycap(TOGGLE_KEY)}] Supervisor  [${keycap(GATE_KEY)}] Grant folder`;
 
 // Read-only screens (usage) advertise no key that would not act on them.
-const PANEL_FOOTER = "[Enter] Done  [Esc] Cancel";
+const PANEL_FOOTER = "[Enter] Done  [Esc] Cancel  [←] Back";
 
 function cycleEyeState(ctx?: any): "ON" | "REVIEW" | "OFF" {
   if (!state.enabled) {
@@ -1578,7 +1594,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerShortcut(LEGACY_TOGGLE_KEY, {
-    description: "Cycle pi-jev-eye mode (alias for Alt+Shift+J)",
+    description: `Cycle pi-jev-eye mode (alias for ${keycap(TOGGLE_KEY)})`,
     handler: async (ctx: any) => {
       const mode = cycleEyeState(ctx);
       const desc = mode === "OFF" ? "supervisor disabled" : mode === "REVIEW" ? "all turns reviewed" : "prompt trigger";
@@ -1906,10 +1922,13 @@ export default function (pi: ExtensionAPI) {
     const auth = resolveJevAuth();
     const consent = readConsent();
     const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
-    const label = (text: string) => paint("dim", text.padEnd(11));
+    const label = (text: string) => paint("dim", text.padEnd(14));
     // A zero count is the healthy value, so only a non-zero one draws the eye.
     const count = (value: number) => paint(value > 0 ? "warning" : "text", String(value));
-    const bits = (parts: (string | false | undefined)[]) => parts.filter(Boolean).join(paint("dim", " · "));
+    const dot = paint("dim", " · ");
+    // Every row is `status · detail`, so one reading of the left column answers "is it on?".
+    const row = (status: string, detail: (string | false | undefined)[], accent?: string) =>
+      paint(accent ?? "muted", status) + paint("dim", " | ") + detail.filter(Boolean).join(dot);
 
     const routing = readRouting();
     const models: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
@@ -1921,25 +1940,25 @@ export default function (pi: ExtensionAPI) {
 
     const lines = [
       label("Supervisor") +
-        bits([
-          paint(state.enabled ? "success" : "warning", state.enabled ? "ENABLED" : "DISABLED"),
-          `review ${state.reviewMode ? "always" : "prompt trigger"}`,
-          `scope ${consent.mode === "disabled" ? paint("warning", scope) : scope}`,
-        ]),
+        row(state.enabled ? "ENABLED" : "DISABLED", [state.reviewMode ? "Review all turns" : "Review prompt trigger"], state.enabled ? "success" : "warning"),
+      label("Scope folders") + row(consent.mode === "disabled" ? "OFF" : "ON", [scope], consent.mode === "disabled" ? "warning" : "success"),
       label("Gate") +
         (auth
-          ? bits([paint("success", "READY"), `${auth.provider.short} · ${auth.model}`, `key from ${auth.source}`])
-          : `${paint("warning", "OFFLINE")} — no key, run \`/jev-eye login\``),
-      label("Rules") + bits([`block at p≥${JEV_BLOCK_THRESHOLD} on diffs ≥${JEV_MIN_DIFF_LINES} lines`, `gate ${gate}/${JEV_MAX_REQUESTS}`, `routing ${classified}/${JEV_MAX_ROUTING_CALLS}`]),
+          ? row("READY", [`${auth.provider.short} · ${auth.model}`, `Key from ${auth.source}`], "success")
+          : `${paint("warning", "OFFLINE")} | no key, run \`/jev-eye login\``),
+      label("Rules") + row("ACTIVE", [`Block at p≥${JEV_BLOCK_THRESHOLD} on diffs ≥${JEV_MIN_DIFF_LINES} lines`, `gate ${gate}/${JEV_MAX_REQUESTS}`, `routing ${classified}/${JEV_MAX_ROUTING_CALLS}`], "success"),
       label("Routing") +
-        bits([
-          paint(routing.enabled ? "success" : "muted", routing.enabled ? "ON" : "off"),
-          `light ${modelLabelFor(models, routing.light) || "unset"}`,
-          `heavy ${modelLabelFor(models, routing.heavy) || "unset"}`,
-          `${s.lightTurns} light / ${s.heavyTurns} heavy turns`,
-        ]),
+        row(
+          routing.enabled ? "ON" : "OFF",
+          [
+            `light ${modelLabelFor(models, routing.light) || "unset"}`,
+            `heavy ${modelLabelFor(models, routing.heavy) || "unset"}`,
+            `${s.lightTurns} light / ${s.heavyTurns} heavy turns`,
+          ],
+          routing.enabled ? "success" : "muted",
+        ),
       label("Blocked") +
-        bits([
+        row("STATS", [
           `${count(s.destructiveBlocked)} dangerous`,
           `${count(s.secretsBlocked)} secrets`,
           `${count(s.slopBlocked)} slop`,
@@ -1950,7 +1969,7 @@ export default function (pi: ExtensionAPI) {
     ];
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
-    if (typeof contextTokens === "number") lines.push(label("Context") + paint("muted", `${contextTokens.toLocaleString("en-US")} tokens`));
+    if (typeof contextTokens === "number") lines.push(label("Context") + row("USED", [`${contextTokens.toLocaleString("en-US")} tokens`]));
     return lines;
   };
 

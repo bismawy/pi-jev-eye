@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+- **`/jev-eye status` rows are a table, not sentences.** Every row now reads `Label · status | detail` — `Supervisor ENABLED | Review prompt trigger`, `Scope folders ON | All Folders`, `Gate READY | TypeSafe · jev-latest`, `Rules ACTIVE | …`, `Routing OFF | …`, `Blocked STATS | …`, `Context USED | …` — with the status word coloured by state, so one pass down the left column answers "is it on?".
+- **Mode toggle moved to `Ctrl+Shift+s`** (`Alt+Shift+J` is gone; `Ctrl+Shift+e` stays as the alias). Its hint lives in `KEY_SETS` now, along with the gate key and the routing toggle, so the footer, the notifications and the alias description cannot drift apart.
+- `/jev-eye status` footer advertises `[←] Back` next to `[Ctrl+Shift+s] Supervisor`, and the read-only usage footer does the same.
+
 ### Added
 - **`/jev-eye` screens now use the Arnative rounded-box template**, and the template itself is the default in the `arnative-pi` skill: title with a description underneath, chosen row in `accentSoft`, `·` dividers in `dim`, keybind legend in brackets (`[Enter] Choose`), and **`[←] Back`** inside extension menus to reopen the previous one.
 - **Thinking-adaptive box border.** Every `/jev-eye` screen derives its border from the session's thinking level via `thinkingColorSlot` (`thinkingOff`…`thinkingMax`), and prefers `accentSoft` where the theme defines it. `thinking*` exists in every theme, so a built-in theme no longer loses the frame.
