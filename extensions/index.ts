@@ -260,22 +260,24 @@ function keySources(): { usable: string[]; cfTokenWithoutAccount: boolean } {
  * The login menu's options, paired with the provider each one stands for. The pairing is built once and
  * carried through the flow: re-deriving it from labels would re-read the store and could map a choice
  * onto the wrong provider if the file changed in between.
+ *
+ * `paint` colourises the status suffix. Pi's selector wraps the whole row in its own colour, which
+ * overrides an embedded SGR for the surrounding text but not one that resets before it — so the green
+ * survives, and the menu is plain text when no theme is on hand (RPC, headless).
  */
-const loginOptions = (): { label: string; provider: JevProvider }[] => {
+const loginOptions = (paint: (color: string, value: string) => string): { label: string; provider: JevProvider }[] => {
   const { store } = readAuthStore();
-  return JEV_PROVIDERS.map((provider) => ({
-    label: `${provider.label} ${storedCredential(store, provider.id) ? "✓ stored" : "• not configured"}`,
-    provider,
-  }));
+  return JEV_PROVIDERS.map((provider) => {
+    const stored = Boolean(storedCredential(store, provider.id));
+    const status = stored ? paint("success", "✓ stored") : paint("dim", "• not configured");
+    return { label: `${provider.label} ${status}`, provider };
+  });
 };
 
-/** Where each key comes from, shown as tips above the menu: `select` has no room for a side panel. */
-const providerTips = (): string =>
-  ["Key sources:", ...JEV_PROVIDERS.map((p) => `  ${p.label} — ${p.keyHint}`)].join("\n");
+/** Where each key comes from. Shown under the menu, not in it: the row must stay scannable. */
+const providerTip = (provider: JevProvider): string => `Tips: key from ${provider.keyHint}`;
 
 // --- Cloudflare Workers AI envelope: the REST route wraps the System One answer in { result, success } ---
-// `clefBody` / `clefError` live in ./layer1.ts (pure, covered by `npm test`); the offline gate must not
-// depend on an inline copy that a later change can drift from.
 type ClefAnswer = { model?: string; answers?: Record<string, any>; usage?: { input_tokens?: number; output_tokens?: number } };
 
 const workersAiBody = (json: any): ClefAnswer | undefined => clefBody(json) as ClefAnswer | undefined;
@@ -658,12 +660,27 @@ const loginFlow = async (ctx: any): Promise<void> => {
     if (!proceed) return;
   }
 
-  const options = loginOptions();
-  ctx.ui.notify(`[pi-jev-eye] ${providerTips()}`, "info");
-  const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", options.map((o) => o.label));
+  const paint = (color: string, value: string) => {
+    try {
+      return ctx.ui.theme?.fg ? ctx.ui.theme.fg(color, value) : value;
+    } catch {
+      return value; // a theme without that token must never break the menu
+    }
+  };
+  const options = loginOptions(paint);
+  // Pi's selector has a `description` slot that its interactive mode never forwards, so the tip is passed
+  // as an extra, non-selectable row: visible where a tip belongs, and harmless where it is ignored.
+  const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", [
+    ...options.map((o) => o.label),
+    "",
+    paint("dim", "Tips: each row shows whether a key is already stored"),
+    paint("dim", "Enter a row to see where its key comes from"),
+  ]);
   if (!choice) return;
 
-  const provider = options.find((o) => o.label === choice)?.provider ?? JEV_PROVIDERS[0];
+  const provider = options.find((o) => o.label === choice)?.provider;
+  if (!provider) return; // a tip row was chosen, not a provider
+  ctx.ui.notify(`[pi-jev-eye] ${providerTip(provider)}`, "info");
 
   // Clef cannot be reached without an account id, so collect it before the secret.
   let accountId: string | undefined;
