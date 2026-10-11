@@ -7,12 +7,30 @@ import {
   SECRET_PATTERNS,
   USD_PER_MTOK,
   VERIFICATION_COMMAND_PATTERNS,
+  addProviderTotals,
+  backendTotals,
+  cfRunUrl,
+  clefBody,
+  clefBudget,
+  clefError,
+  clefNeuronsFor,
+  clefUsdPerMTok,
+  CLEF_PROVIDER_ID,
+  isCloudflareAccountId,
   legacyTotals,
   mergeTotals,
+  migrateAuthStore,
+  neuronsSpentOn,
   normalizeTotals,
+  putCredential,
+  removeCredentials,
+  storedProviderIds,
   sumDays,
   wipeTarget,
+  type AuthStore,
   type DayTotals,
+  type ProviderTotals,
+  type StoredCredential,
 } from "./layer1.ts";
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -65,18 +83,23 @@ const state: EyeState = {
 
 // --- Layer 3: Jev accounts (pi-typesafe is optional; /jev-eye login owns its own key) ---
 interface JevProvider {
-  id: "typesafe" | "openrouter";
+  id: "typesafe" | "openrouter" | "cloudflare";
   label: string;
+  /** Short name for one-line status rows and tables, where the login-menu label would not fit. */
+  short: string;
   url: string;
   model: string;
   keyEnv: string;
   keyHint: string;
+  accountEnv?: string; // Cloudflare only: the account is chosen separately from the token
+  models?: string[]; // Cloudflare only: the model is chosen per provider
 }
 
 const JEV_PROVIDERS: JevProvider[] = [
   {
     id: "typesafe",
     label: "TypeSafe account",
+    short: "TypeSafe",
     url: "https://api.typesafe.ai/v1/systemone",
     model: "jev-latest",
     keyEnv: "TYPESAFE_API_KEY",
@@ -85,10 +108,23 @@ const JEV_PROVIDERS: JevProvider[] = [
   {
     id: "openrouter",
     label: "OpenRouter account",
+    short: "OpenRouter",
     url: "https://openrouter.ai/api/alpha/decisions", // OpenRouter's System One route (same request/response shape)
     model: "typesafe/jev-1.13",
     keyEnv: "OPENROUTER_API_KEY",
     keyHint: "openrouter.ai/settings/keys",
+  },
+  {
+    id: "cloudflare",
+    label: "Cloudflare Workers AI (Clef)",
+    short: "Clef",
+    // The real route needs an account id, so it is built by cfRunUrl at request time; this stays the account-less display form.
+    url: "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/cloudflare/clef-flash",
+    model: "clef-flash", // cheaper than `clef` for the per-write gate; both are free inside the daily neuron allowance
+    keyEnv: "CLOUDFLARE_API_TOKEN",
+    keyHint: "dash.cloudflare.com > Account API tokens (Workers AI: Read)",
+    accountEnv: "CLOUDFLARE_ACCOUNT_ID",
+    models: ["clef-flash", "clef"],
   },
 ];
 
@@ -119,45 +155,206 @@ function readJsonFile(path: string, requirePrivate = false): any | undefined {
   }
 }
 
+/** A stored provider id as a readable name; an id this build no longer ships stays as it was stored. */
+const providerLabelOf = (id: string): string => providerById(id)?.short ?? id;
+
+// --- Credential store (v2: one entry per provider, so several backends stay logged in) ---
+// The pure shapes and folds live in ./layer1.ts (covered by `npm test`); this is the file I/O around them.
+const AUTH_BACKUP_PATH = `${AUTH_PATH}.v1.bak`;
+
+/** Read the store, migrating a v1 file in place once (keeping a `.v1.bak` copy for rollback). */
+function readAuthStore(): { store: AuthStore; migrated: boolean } {
+  const raw = readJsonFile(AUTH_PATH, true);
+  if (!raw) return { store: { version: 2, providers: {} }, migrated: false };
+  const { store, migratedFromV1 } = migrateAuthStore(raw);
+  if (migratedFromV1) {
+    try {
+      writeFileSync(AUTH_BACKUP_PATH, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
+      writeAuthStore(store);
+    } catch {
+      // A read-only home must not stop the gate: the migrated store is still returned in memory.
+    }
+  }
+  return { store, migrated: migratedFromV1 };
+}
+
+function writeAuthStore(store: AuthStore): void {
+  mkdirSync(EYE_DIR, { recursive: true });
+  writeFileSync(AUTH_PATH, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+}
+
+/** One provider's credential in the store, or undefined when that backend is not logged in. */
+const storedCredential = (store: AuthStore, id: string): StoredCredential | undefined => store.providers[id];
+
 interface JevAuth {
   provider: JevProvider;
   key: string;
   source: string; // where the key came from; shown in status, never the key itself
+  model: string; // Cloudflare allows a per-account model choice; every other provider keeps its fixed one
+  accountId?: string; // Cloudflare only: the account the run route targets
 }
+
+/** One provider's rate for input tokens. Cloudflare's depends on the model; the others are single-rate. */
+const usdPerMTokFor = (auth: JevAuth): number =>
+  auth.provider.id === "cloudflare" ? clefUsdPerMTok(auth.model) : USD_PER_MTOK;
+
+/** The provider id stored in the ledger, so the usage panel can name what it was spent on. */
+const providerIdOf = (auth: JevAuth): string => auth.provider.id;
+
+/** The per-request route: only Cloudflare needs an id that the provider entry cannot carry. */
+const authUrl = (auth: JevAuth): string =>
+  auth.provider.id === "cloudflare" ? cfRunUrl(auth.accountId ?? "", auth.model) : auth.provider.url;
 
 function resolveJevAuth(): JevAuth | undefined {
   // Environment first: an explicit export (headless run, CI, shared machine) must win over a stored key,
   // the same precedence pi-typesafe uses.
   for (const provider of JEV_PROVIDERS) {
     const fromEnv = process.env[provider.keyEnv]?.trim();
-    if (fromEnv) return { provider, key: fromEnv, source: `$${provider.keyEnv}` };
+    if (!fromEnv) continue;
+    const accountId = provider.accountEnv ? process.env[provider.accountEnv]?.trim() : undefined;
+    if (provider.accountEnv && !accountId) continue; // a Clef token without its account id cannot build a route
+    return { provider, key: fromEnv, source: `$${provider.keyEnv}`, model: provider.model, accountId };
   }
 
-  const stored = readJsonFile(AUTH_PATH, true);
-  const storedKey = typeof stored?.apiKey === "string" ? stored.apiKey.trim() : "";
-  if (storedKey) {
-    return { provider: providerById(String(stored.provider)) ?? JEV_PROVIDERS[0], key: storedKey, source: "/jev-eye login" };
+  const stored = readAuthStore().store;
+  // The store holds one credential per provider. Prefer the order in JEV_PROVIDERS so TypeSafe keeps
+  // winning when several are logged in, exactly as the environment loop above does.
+  for (const provider of JEV_PROVIDERS) {
+    const credential = storedCredential(stored, provider.id);
+    if (!credential) continue;
+    const model = provider.models?.includes(String(credential.model)) ? String(credential.model) : provider.model;
+    // A Cloudflare entry without an account id is unusable; treat it as "not logged in" for that provider.
+    if (provider.accountEnv && !credential.accountId) continue;
+    return { provider, key: credential.apiKey, source: "/jev-eye login", model, accountId: credential.accountId };
   }
 
   // Back-compat: keep working for anyone who already logged in with pi-typesafe installed.
   const legacy = readJsonFile(LEGACY_AUTH_PATH, true);
   const legacyKey = typeof legacy?.apiKey === "string" ? legacy.apiKey.trim() : "";
-  if (legacyKey) return { provider: JEV_PROVIDERS[0], key: legacyKey, source: "pi-typesafe login" };
+  if (legacyKey) return { provider: JEV_PROVIDERS[0], key: legacyKey, source: "pi-typesafe login", model: JEV_PROVIDERS[0].model };
 
   return undefined;
 }
 
+/** What `/jev-eye status` has to explain when a Cloudflare credential is incomplete. */
+const envAccountId = (provider: JevProvider): string | undefined =>
+  provider.accountEnv ? process.env[provider.accountEnv]?.trim() || undefined : undefined;
+
 const isPlausibleKey = (key: string): boolean =>
   key.length >= 16 && key.length <= 512 && !/\s/.test(key) && /^[\x21-\x7e]+$/.test(key);
 
+/** Where a key can come from right now, and what to say when a Cloudflare token has no account id. */
+function keySources(): { usable: string[]; cfTokenWithoutAccount: boolean } {
+  const usable: string[] = [];
+  let cfTokenWithoutAccount = false;
+  for (const provider of JEV_PROVIDERS) {
+    const key = process.env[provider.keyEnv]?.trim();
+    if (!key) continue;
+    if (provider.accountEnv && !envAccountId(provider)) cfTokenWithoutAccount = true;
+    else usable.push(`$${provider.keyEnv}`);
+  }
+  return { usable, cfTokenWithoutAccount };
+}
+
+/**
+ * The login menu, as a real component rather than `ctx.ui.select`.
+ *
+ * `select` renders one fixed string per row, so it can show state but cannot react to the highlighted
+ * row — the tip was stuck as static filler. This picker re-renders on every move and shows the key
+ * source for whatever is under the cursor, which is the whole point of the tip.
+ */
+class LoginPicker {
+  private readonly options: { label: string; status: "stored" | "unset"; provider: JevProvider }[];
+  private readonly theme: any;
+  private readonly done: (value: JevProvider | null) => void;
+  private index = 0;
+
+  constructor(theme: any, store: AuthStore, done: (value: JevProvider | null) => void) {
+    this.theme = theme;
+    this.done = done;
+    this.options = JEV_PROVIDERS.map((provider) => ({
+      label: provider.label,
+      status: storedCredential(store, provider.id) ? "stored" : "unset",
+      provider,
+    }));
+  }
+
+  /** Exposed so the caller can drive it from tests and from the headless fallback. */
+  get providers(): JevProvider[] {
+    return this.options.map((o) => o.provider);
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.up)) {
+      this.index = (this.index - 1 + this.options.length) % this.options.length;
+      return;
+    }
+    if (matchesKey(data, Key.down)) {
+      this.index = (this.index + 1) % this.options.length;
+      return;
+    }
+    if (matchesKey(data, Key.enter)) {
+      this.done(this.options[this.index]?.provider ?? null);
+      return;
+    }
+    if (matchesKey(data, Key.escape)) this.done(null);
+  }
+
+  render(width: number): string[] {
+    const t = this.theme;
+    const border = () => t.fg("accent", "─".repeat(Math.max(1, width)));
+    const lines = [
+      border(),
+      t.fg("accent", t.bold("Jev Eye · Login")),
+      t.fg("muted", "Pick the backend for the Jev gate. A stored key is reused until replaced."),
+      "",
+    ];
+    for (const [i, option] of this.options.entries()) {
+      const cursor = i === this.index;
+      const mark = option.status === "stored" ? t.fg("success", "✓ stored") : t.fg("dim", "• not configured");
+      lines.push(`${cursor ? t.fg("accent", "→ ") : "  "}${t.fg(cursor ? "accent" : "text", option.label)}  ${mark}`);
+    }
+    // The live tip: whatever is highlighted, not a static caption.
+    const current = this.options[this.index];
+    lines.push("");
+    if (current) {
+      lines.push(t.fg("dim", `Tips: key from ${current.provider.keyHint}`));
+      const hint = current.provider.accountEnv ?? `$${current.provider.keyEnv}`;
+      lines.push(t.fg("dim", `Or export ${hint}${current.provider.accountEnv ? ` + $${current.provider.keyEnv}` : ""}`));
+    }
+    lines.push("");
+    lines.push(t.fg("dim", "[↑↓] move  [Enter] choose  [Esc] cancel"));
+    lines.push(border());
+    return lines.map((line) => truncateToWidth(line, width, ""));
+  }
+
+  invalidate(): void {}
+}
+
+/**
+ * The login menu's options as plain strings, for the headless path where `custom` UI does not exist.
+ * The tip is appended as an extra, non-selectable row for the highlighted provider only.
+ */
+const loginOptionLabels = (store: AuthStore): string[] =>
+  JEV_PROVIDERS.map((provider) => `${provider.label} ${storedCredential(store, provider.id) ? "✓ stored" : "• not configured"}`);
+
+/** One line naming where a provider's key comes from, used wherever that cannot be rendered in place. */
+const providerTip = (provider: JevProvider): string => `Tips: key from ${provider.keyHint}`;
+
+// --- Cloudflare Workers AI envelope: the REST route wraps the System One answer in { result, success } ---
+type ClefAnswer = { model?: string; answers?: Record<string, any>; usage?: { input_tokens?: number; output_tokens?: number } };
+
+const workersAiBody = (json: any): ClefAnswer | undefined => clefBody(json) as ClefAnswer | undefined;
+const workersAiError = clefError;
+
 /** One tiny request: proves the key AND that the route works, before anything is saved. */
-async function probeJev(provider: JevProvider, key: string): Promise<{ ok: boolean; detail: string }> {
+async function probeJev(provider: JevProvider, key: string, url = provider.url, model = provider.model): Promise<{ ok: boolean; detail: string }> {
   try {
-    const res = await fetch(provider.url, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: provider.model,
+        model,
         state: { probe: "connectivity check from pi-jev-eye login" },
         questions: {
           reachable: {
@@ -171,12 +368,17 @@ async function probeJev(provider: JevProvider, key: string): Promise<{ ok: boole
     if (res.status === 401 || res.status === 403) {
       return { ok: false, detail: `the provider rejected the key (HTTP ${res.status})` };
     }
-    if (!res.ok) return { ok: false, detail: `HTTP ${res.status} from ${provider.url}` };
+    if (res.status === 404) {
+      return { ok: false, detail: `HTTP 404 from ${url} — check the Cloudflare account id` };
+    }
+    if (!res.ok) return { ok: false, detail: `HTTP ${res.status} from ${url}` };
     const json: any = await res.json();
-    if (typeof json?.answers?.reachable?.noul !== "number") return { ok: false, detail: "unexpected answer shape" };
-    return { ok: true, detail: `answer received from ${json?.model ?? provider.model}` };
+    const body = workersAiBody(json);
+    if (!body) return { ok: false, detail: `Cloudflare rejected the request: ${workersAiError(json)}` };
+    if (typeof body?.answers?.reachable?.noul !== "number") return { ok: false, detail: "unexpected answer shape" };
+    return { ok: true, detail: `answer received from ${body?.model ?? model}` };
   } catch (error) {
-    return { ok: false, detail: `could not reach ${provider.url} (${(error as Error)?.message ?? "network error"})` };
+    return { ok: false, detail: `could not reach ${url} (${(error as Error)?.message ?? "network error"})` };
   }
 }
 
@@ -373,17 +575,27 @@ class StatusPanel {
     cycleGate: () => void;
   };
   private readonly done: (value?: void) => void;
+  private readonly title: string;
+  private readonly desc: string;
+  /** Read-only screens (usage) must not advertise, or act on, the status toggles. */
+  private readonly controls: boolean;
 
   constructor(
     theme: any,
     lines: string[],
     actions: { rebuild: () => string[]; cycleMode: () => void; cycleGate: () => void },
-    done: (value?: void) => void
+    done: (value?: void) => void,
+    title: string = STATUS_TITLE,
+    desc: string = STATUS_DESC,
+    controls = true
   ) {
     this.theme = theme;
     this.lines = lines;
     this.actions = actions;
     this.done = done;
+    this.title = title;
+    this.desc = desc;
+    this.controls = controls;
   }
 
   /** A toggle changes state, so the body is rebuilt in place; the caller re-renders after input. */
@@ -398,11 +610,11 @@ class StatusPanel {
       return;
     }
     if (matchesKey(data, TOGGLE_KEY) || matchesKey(data, LEGACY_TOGGLE_KEY)) {
-      this.apply(this.actions.cycleMode);
+      if (this.controls) this.apply(this.actions.cycleMode);
       return;
     }
     if (matchesKey(data, GATE_KEY)) {
-      this.apply(this.actions.cycleGate);
+      if (this.controls) this.apply(this.actions.cycleGate);
     }
   }
 
@@ -414,12 +626,12 @@ class StatusPanel {
       border(),
       // Same nesting Pi's own headers use (fg outside bold) — tmux capture-pane did not show the
       // colour, the raw render bytes do.
-      t.fg("accent", t.bold(STATUS_TITLE)),
-      t.fg("muted", STATUS_DESC),
+      t.fg("accent", t.bold(this.title)),
+      t.fg("muted", this.desc),
       "",
       ...this.lines,
       "",
-      t.fg("dim", statusFooter(state.enabled, state.reviewMode)),
+      t.fg("dim", this.controls ? statusFooter(state.enabled, state.reviewMode) : PANEL_FOOTER),
       border(),
     ];
     return lines.map((line) => truncateToWidth(line, width, ""));
@@ -474,12 +686,76 @@ async function promptForSecret(ctx: any, provider: JevProvider): Promise<string 
   return ctx.ui.input(`${title} (visible while typing)`, hint);
 }
 
-const loginFlow = async (ctx: any): Promise<void> => {
-  const labels = JEV_PROVIDERS.map((p) => `${p.label}  ·  key from ${p.keyHint}`);
-  const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", labels);
-  if (!choice) return;
+/** Cloudflare needs the account id next to the token; it is not a secret, so it is typed in the clear. */
+async function promptForAccountId(ctx: any, provider: JevProvider): Promise<string | undefined> {
+  const hint = provider.accountEnv
+    ? `${provider.accountEnv} is not set. Paste the 32-char account id from dash.cloudflare.com (Workers AI > Use REST API). Enter confirms, Esc cancels.`
+    : "Paste the account id. Enter confirms, Esc cancels.";
+  const entered = await ctx.ui.input("Cloudflare account ID", hint);
+  if (entered === undefined) return undefined;
+  const accountId = String(entered).trim();
+  if (!isCloudflareAccountId(accountId)) {
+    ctx.ui.notify("[pi-jev-eye] A Cloudflare account id is 32 hexadecimal characters. Nothing was saved.", "error");
+    return undefined;
+  }
+  return accountId;
+}
 
-  const provider = JEV_PROVIDERS[labels.indexOf(choice)] ?? JEV_PROVIDERS[0];
+/** Clef has two models; the choice is per credential, so it is asked while the credential is set up. */
+async function promptForModel(ctx: any, provider: JevProvider): Promise<string | undefined> {
+  const models = provider.models ?? [provider.model];
+  const labels = models.map((m) =>
+    m === "clef-flash" ? "clef-flash  ·  cheapest, best for the per-write gate" : "clef  ·  strongest, costs about 6x more"
+  );
+  const choice = await ctx.ui.select("pi-jev-eye · which Clef model?", labels);
+  return choice ? models[labels.indexOf(choice)] : undefined;
+}
+
+const loginFlow = async (ctx: any): Promise<void> => {
+  // A key already exported in the environment is described, never overwritten by a stored one.
+  const sources = keySources();
+  if (sources.usable.length > 0 || sources.cfTokenWithoutAccount) {
+    const parts = [`Keys already active from the environment: ${sources.usable.join(", ") || "none"}.`];
+    if (sources.cfTokenWithoutAccount) {
+      parts.push(`$CLOUDFLARE_API_TOKEN is set but $CLOUDFLARE_ACCOUNT_ID is not, so Clef stays unavailable.`);
+    }
+    parts.push("An exported key always takes precedence over the one stored here. Continue anyway?");
+    const proceed = await ctx.ui.confirm("pi-jev-eye · keys already in the environment", parts.join(" "));
+    if (!proceed) return;
+  }
+
+  // Pi's selector renders one fixed string per row, so it cannot show a tip that follows the cursor.
+  // The custom picker can; the headless path keeps the same choices as plain rows.
+  const { store } = readAuthStore();
+  let provider: JevProvider | null;
+  if (typeof ctx.ui.custom === "function") {
+    provider = await ctx.ui.custom<JevProvider | null>((tui: any, theme: any, _kb: any, done: (value: JevProvider | null) => void) => {
+      const picker = new LoginPicker(theme, store, done);
+      return {
+        render: (width: number) => picker.render(width),
+        invalidate: () => picker.invalidate(),
+        handleInput: (data: string) => {
+          picker.handleInput(data);
+          tui.requestRender();
+        },
+      };
+    });
+  } else {
+    const labels = loginOptionLabels(store);
+    const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", labels);
+    provider = choice ? JEV_PROVIDERS[labels.indexOf(choice)] ?? null : null;
+  }
+  if (!provider) return;
+  ctx.ui.notify(`[pi-jev-eye] ${providerTip(provider)}`, "info");
+
+  // Clef cannot be reached without an account id, so collect it before the secret.
+  let accountId: string | undefined;
+  if (provider.accountEnv) {
+    const envId = envAccountId(provider);
+    accountId = envId ?? (await promptForAccountId(ctx, provider));
+    if (!accountId) return;
+  }
+
   const entered = await promptForSecret(ctx, provider);
   if (entered === undefined) return;
 
@@ -489,42 +765,91 @@ const loginFlow = async (ctx: any): Promise<void> => {
     return;
   }
 
+  const model = provider.models ? await promptForModel(ctx, provider) : provider.model;
+  if (!model) return;
+
+  // Final check on the exact route the gate will use, not on a generic credential probe.
+  const url = provider.accountEnv ? cfRunUrl(accountId ?? "", model) : provider.url;
   ctx.ui.notify(`[pi-jev-eye] Checking the key against ${provider.label}…`, "info");
-  const probe = await probeJev(provider, key);
+  const probe = await probeJev(provider, key, url, model);
   if (!probe.ok) {
     ctx.ui.notify(`[pi-jev-eye] Login failed: ${probe.detail}. Nothing was saved.`, "error");
     return;
   }
 
-  mkdirSync(EYE_DIR, { recursive: true });
-  writeFileSync(AUTH_PATH, `${JSON.stringify({ version: 1, provider: provider.id, apiKey: key }, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  // Additive: another backend's stored key stays usable. The probe above must pass before this line.
+  // Re-read the store here: the picker above may have run a while ago, and it never writes.
+  const { store: current, migrated } = readAuthStore();
+  const others = storedProviderIds(current).filter((id) => id !== provider.id);
+  writeAuthStore(putCredential(current, provider.id, { apiKey: key, model, ...(accountId ? { accountId } : {}) }));
   const shadows = process.env[provider.keyEnv]?.trim() ? ` Note: $${provider.keyEnv} is set and takes precedence over this stored key.` : "";
+  const keptNote = others.length > 0 ? ` ${others.map(providerLabelOf).join(", ")} stayed logged in.` : "";
+  const migrationNote = migrated ? ` Migrated the old single-key store (backup: ${AUTH_BACKUP_PATH}).` : "";
   ctx.ui.notify(
-    `[pi-jev-eye] Logged in via ${provider.label}: ${probe.detail}. Stored in ${AUTH_PATH} (0600).${shadows}`,
+    `[pi-jev-eye] Logged in via ${provider.label} (${model}): ${probe.detail}. Stored in ${AUTH_PATH} (0600).${keptNote}${shadows}${migrationNote}`,
     "info"
   );
 };
 
+/**
+ * `/jev-eye logout`: pick which backend to remove, or all of them.
+ * The store holds one credential per provider, so a picker is possible; environment-supplied keys are
+ * reported instead, because a process cannot unset a variable that belongs to its caller.
+ */
 const logoutFlow = async (ctx: any): Promise<void> => {
-  const stored = readJsonFile(AUTH_PATH, true);
+  const { store } = readAuthStore();
+  const storedIds = storedProviderIds(store);
   const fromEnv = JEV_PROVIDERS.filter((p) => process.env[p.keyEnv]?.trim()).map((p) => `$${p.keyEnv}`);
-  const kept = fromEnv.length ? ` ${fromEnv.join(", ")} stays and keeps working.` : "";
+  const envNote = fromEnv.length ? ` ${fromEnv.join(", ")} comes from the environment and cannot be removed here.` : "";
 
-  if (!stored?.apiKey) {
-    ctx.ui.notify(`[pi-jev-eye] No key from /jev-eye login to remove.${kept}`, "warning");
+  if (storedIds.length === 0) {
+    ctx.ui.notify(`[pi-jev-eye] Nothing stored by /jev-eye login to remove.${envNote}`, "warning");
     return;
   }
 
-  const confirmed = await ctx.ui.confirm("Log out of pi-jev-eye?", `Delete ${AUTH_PATH}?${kept}`);
-  if (!confirmed) return;
+  // "Jev" is every non-Clef provider (TypeSafe / OpenRouter); Clef is Cloudflare.
+  const jevIds = storedIds.filter((id) => id !== CLEF_PROVIDER_ID);
+  const clefIds = storedIds.filter((id) => id === CLEF_PROVIDER_ID);
+  const names = (ids: string[]) => ids.map(providerLabelOf).join(", ");
 
+  const choices: { label: string; ids: string[] }[] = [];
+  if (jevIds.length > 0) choices.push({ label: `Jev (${names(jevIds)})`, ids: jevIds });
+  if (clefIds.length > 0) choices.push({ label: `Clef (${names(clefIds)})`, ids: clefIds });
+  choices.push({ label: `All (${names(storedIds)})`, ids: storedIds });
+
+  // One backend logged in: no picker worth showing, just confirm that one.
+  if (storedIds.length === 1) {
+    const only = storedIds[0];
+    const confirmed = await ctx.ui.confirm(`Log out of ${providerLabelOf(only)}?`, `Remove the stored key for ${providerLabelOf(only)} from ${AUTH_PATH}?${envNote}`);
+    if (!confirmed) return;
+    await removeStoredCredentials(ctx, [only], envNote);
+    return;
+  }
+
+  const choice = await ctx.ui.select("pi-jev-eye · log out which key?", choices.map((c) => c.label));
+  if (!choice) return;
+  const target = choices.find((c) => c.label === choice) ?? choices[choices.length - 1];
+  const confirmed = await ctx.ui.confirm(`Log out of ${target.label}?`, `Remove ${target.ids.map(providerLabelOf).join(", ")} from ${AUTH_PATH}?${envNote}`);
+  if (!confirmed) return;
+  await removeStoredCredentials(ctx, target.ids, envNote);
+};
+
+/** Delete the given providers from the store; an emptied store removes the file so status reads OFFLINE. */
+const removeStoredCredentials = async (ctx: any, ids: string[], envNote: string): Promise<void> => {
   try {
-    unlinkSync(AUTH_PATH);
-    ctx.ui.notify("[pi-jev-eye] Logged out; the stored key was deleted.", "info");
+    const { store } = readAuthStore();
+    const next = removeCredentials(store, ids);
+    const removed = ids.map(providerLabelOf).join(", ");
+    if (storedProviderIds(next).length === 0) {
+      unlinkSync(AUTH_PATH);
+      ctx.ui.notify(`[pi-jev-eye] Logged out of ${removed}; the store is now empty.${envNote}`, "info");
+      return;
+    }
+    writeAuthStore(next);
+    const left = storedProviderIds(next).map(providerLabelOf).join(", ");
+    ctx.ui.notify(`[pi-jev-eye] Logged out of ${removed}. Still logged in: ${left}.${envNote}`, "info");
   } catch (error) {
-    ctx.ui.notify(`[pi-jev-eye] Could not delete ${AUTH_PATH}: ${(error as Error).message}`, "error");
+    ctx.ui.notify(`[pi-jev-eye] Could not update ${AUTH_PATH}: ${(error as Error).message}`, "error");
   }
 };
 
@@ -543,10 +868,7 @@ function readUsage(period: string): DayTotals | undefined {
   );
 }
 
-const readOwnUsage = (): DayTotals | undefined => readUsage(today());
-const readMonthUsage = (): DayTotals | undefined => readUsage(today().slice(0, 7));
-
-function recordOwnUsage(patch: Partial<DayTotals>): void {
+function recordOwnUsage(patch: Partial<DayTotals>, providerId?: string): void {
   try {
     const file = readJsonFile(OWN_USAGE_PATH) ?? { version: 1, days: {} };
     const days = file.days && typeof file.days === "object" ? file.days : {};
@@ -559,7 +881,12 @@ function recordOwnUsage(patch: Partial<DayTotals>): void {
         : stored;
     const current: DayTotals = { ...EMPTY_TOTALS, ...seeded };
     for (const [key, value] of Object.entries(patch)) {
+      if (key === "providers") continue;
       (current as any)[key] = (Number((current as any)[key]) || 0) + (Number(value) || 0);
+    }
+    // The same patch is folded into the provider's own bucket, so Jev and Clef never share a total.
+    if (providerId) {
+      current.providers = addProviderTotals(current.providers, providerId, patch as Partial<ProviderTotals>);
     }
     days[today()] = current;
     for (const day of Object.keys(days).sort().slice(0, -31)) delete days[day];
@@ -570,9 +897,8 @@ function recordOwnUsage(patch: Partial<DayTotals>): void {
   }
 }
 
-// Account balance: only OpenRouter exposes one; TypeSafe has no balance route (every /v1/* guess 404s).
-let balanceCache: { provider: string; at: number; text: string } | undefined;
-
+// Account balance: OpenRouter exposes one directly, Cloudflare has no remaining-neuron route, TypeSafe has none at all.
+// Only `/jev-eye usage` reads it; `/jev-eye status` stays offline and instant.
 async function fetchBalanceText(auth: JevAuth): Promise<string> {
   const usd = (value: number) => `$${value.toFixed(4)}`;
   const get = (path: string) =>
@@ -581,7 +907,7 @@ async function fetchBalanceText(auth: JevAuth): Promise<string> {
       signal: AbortSignal.timeout(4000),
     });
 
-  if (auth.provider.id !== "openrouter") return "not exposed by api.typesafe.ai (spend above is ledger-based)";
+  if (auth.provider.id !== "openrouter") return "no balance route for this provider";
 
   try {
     const keyRes = await get("key");
@@ -608,17 +934,6 @@ async function fetchBalanceText(auth: JevAuth): Promise<string> {
   } catch (error) {
     return `unavailable (${(error as Error)?.message ?? "network error"})`;
   }
-}
-
-async function balanceText(auth: JevAuth | undefined): Promise<string> {
-  if (!auth) return "no account — run `/jev-eye login`";
-  const now = Date.now();
-  if (balanceCache && balanceCache.provider === auth.provider.id && now - balanceCache.at < 300_000) {
-    return balanceCache.text;
-  }
-  const text = await fetchBalanceText(auth);
-  balanceCache = { provider: auth.provider.id, at: now, text };
-  return text;
 }
 
 // --- Explicit review request: the operator writes `jev` (or @jev, /jev-review) to open one reviewed turn ---
@@ -687,11 +1002,11 @@ const isLightByPattern = (prompt: string): boolean => LIGHT_TASK_PATTERNS.some((
 async function classifyWeight(prompt: string, auth: JevAuth): Promise<"light" | "heavy" | "unclear" | null> {
   try {
     state.stats.jevRoutingCalls++;
-    const res = await fetch(auth.provider.url, {
+    const res = await fetch(authUrl(auth), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth.key}` },
       body: JSON.stringify({
-        model: auth.provider.model,
+        model: auth.model,
         state: { request: { text: prompt.slice(0, 600) } },
         questions: {
           weight: {
@@ -709,8 +1024,8 @@ async function classifyWeight(prompt: string, auth: JevAuth): Promise<"light" | 
       signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
     });
     if (!res.ok) return null;
-    const json: any = await res.json();
-    const choice = json?.answers?.weight?.choice;
+    const body = workersAiBody(await res.json());
+    const choice = body?.answers?.weight?.choice;
     return choice === "light" || choice === "heavy" || choice === "unclear" ? choice : null;
   } catch {
     return null; // Fail-open: keep the current model
@@ -814,7 +1129,7 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
     }
 
     const payload = {
-      model: auth.provider.model,
+      model: auth.model,
       state: {
         code: codeSnippet.slice(0, JEV_MAX_STATE_CHARS),
         facts: codeFacts(codeSnippet),
@@ -824,7 +1139,7 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
     };
 
     state.stats.jevRequests++;
-    const res = await fetch(auth.provider.url, {
+    const res = await fetch(authUrl(auth), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -835,26 +1150,37 @@ async function askJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | 
     });
 
     if (!res.ok) {
-      recordOwnUsage({ requests: 1, failed: 1 });
+      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
       return null;
     }
-    const json: any = await res.json();
-    const inputTokens = Number(json?.usage?.input_tokens) || 0;
-    const reportedCost = Number(json?.usage?.cost); // OpenRouter reports real cost; TypeSafe does not
-    recordOwnUsage({
-      requests: 1,
-      ok: 1,
-      inputTokens,
-      outputTokens: Number(json?.usage?.output_tokens) || 0,
-      cost: Number.isFinite(reportedCost) ? reportedCost : (inputTokens * USD_PER_MTOK) / 1e6,
-    });
+    const body = workersAiBody(await res.json());
+    if (!body) {
+      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
+      return null;
+    }
+    const inputTokens = Number(body.usage?.input_tokens) || 0;
+    // Cloudflare reports a model-specific price and meters neurons; the others fall back to the flat rate.
+    const isClef = auth.provider.id === "cloudflare";
+    const reportedCost = Number((body.usage as any)?.cost) || (isClef ? (inputTokens * clefUsdPerMTok(auth.model)) / 1e6 : NaN);
+    recordOwnUsage(
+      {
+        requests: 1,
+        ok: 1,
+        inputTokens,
+        outputTokens: Number(body.usage?.output_tokens) || 0,
+        cost: Number.isFinite(reportedCost) ? reportedCost : (inputTokens * USD_PER_MTOK) / 1e6,
+        // Only Cloudflare bills in neurons; storing 0 for the rest keeps the panel's math uniform.
+        neurons: isClef ? clefNeuronsFor(auth.model, inputTokens) : 0,
+      },
+      providerIdOf(auth)
+    );
     return {
-      has_slop: json?.answers?.has_slop?.noul ?? null,
-      has_unfinished_todo: json?.answers?.has_unfinished_todo?.noul ?? null,
-      answers_request: json?.answers?.answers_request?.noul ?? null,
+      has_slop: body.answers?.has_slop?.noul ?? null,
+      has_unfinished_todo: body.answers?.has_unfinished_todo?.noul ?? null,
+      answers_request: body.answers?.answers_request?.noul ?? null,
     };
   } catch {
-    recordOwnUsage({ requests: 1, failed: 1 });
+    recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
     return null; // Fail-open when Jev times out or is offline
   }
 }
@@ -867,7 +1193,7 @@ const GATE_KEY = "ctrl+shift+g";
 
 // `/jev-eye status` panel chrome: title, one-line description, footer.
 const STATUS_TITLE = "Jev Eye · Status";
-const STATUS_DESC = "Supervisor, Jev gate, model routing, interception and usage for this Pi session.";
+const STATUS_DESC = "Supervisor, gate, routing and interception for this Pi session.";
 // Keycap hint only: `ctrl+shift+e` -> `Ctrl+Shift+e`.
 const keycap = (key: string) =>
   key
@@ -880,6 +1206,9 @@ const eyeMode = (enabled: boolean, reviewMode: boolean): "ON" | "REVIEW" | "OFF"
 
 const statusFooter = (enabled: boolean, reviewMode: boolean) =>
   `[Enter] Done  [Esc] Cancel  [${keycap(TOGGLE_KEY)}] Mode (${eyeMode(enabled, reviewMode)})  [${keycap(GATE_KEY)}] Grant folder`;
+
+// Read-only screens (usage) advertise no key that would not act on them.
+const PANEL_FOOTER = "[Enter] Done  [Esc] Cancel";
 
 function cycleEyeState(ctx?: any): "ON" | "REVIEW" | "OFF" {
   if (!state.enabled) {
@@ -899,11 +1228,12 @@ function cycleEyeState(ctx?: any): "ON" | "REVIEW" | "OFF" {
 // Live state + keybindings render in the panel footer, not in Pi's status bar.
 const EYE_SUBCOMMANDS = [
   { value: "status", label: "status", description: "Show supervisor status, account, usage, and interception stats" },
+  { value: "usage", label: "usage", description: "Show Jev/Clef spend: per-provider totals and the Cloudflare free-neuron budget" },
   { value: "toggle", label: "toggle", description: "Cycle mode: ON -> REVIEW -> OFF" },
   { value: "on", label: "on", description: "Set mode to ON (supervisor active, prompt trigger)" },
   { value: "review", label: "review", description: "Set mode to REVIEW (all turns reviewed)" },
   { value: "off", label: "off", description: "Set mode to OFF (supervisor disabled)" },
-  { value: "login", label: "login", description: "Store a Jev key: TypeSafe account or OpenRouter account" },
+  { value: "login", label: "login", description: "Store a Jev key: TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef)" },
   { value: "logout", label: "logout", description: "Delete the key stored by /jev-eye login" },
   { value: "routing", label: "routing", description: "Routing models menu, or direct: routing light | routing heavy | routing on | routing off" },
 ];
@@ -1221,74 +1551,231 @@ export default function (pi: ExtensionAPI) {
   });
 
   // --- `/jev-eye` command ---
+  /** A stored Cloudflare key without an account id is invisible everywhere else: say why, in status. */
+  const cloudflareHint = (paint: (color: string, text: string) => string): string[] => {
+    const stored = readJsonFile(AUTH_PATH, true);
+    if (stored?.provider !== "cloudflare" || typeof stored?.accountId === "string") return [];
+    return [
+      `${paint("warning", "Clef hint: ")}a Cloudflare key is stored without an account id, so it is ignored. Run \`/jev-eye login\` again, or export $CLOUDFLARE_ACCOUNT_ID.`,
+    ];
+  };
+
+  // `/jev-eye usage` panel chrome.
+  const USAGE_TITLE = "Jev Eye · Usage";
+  const USAGE_DESC = "Jev and Clef spend, tokens and the free-neuron budget.";
+
+  /** The provider balance line for the panel. Only OpenRouter exposes a real one; the Clef block above
+   *  already reports its own neuron budget, and TypeSafe has no balance route at all. */
+  const usageBalance = async (auth: JevAuth | undefined): Promise<string | undefined> => {
+    if (auth?.provider.id !== "openrouter") return undefined;
+    try {
+      return await fetchBalanceText(auth);
+    } catch {
+      return "unavailable";
+    }
+  };
+
+  /**
+   * Usage body: one compact table holding Jev (TypeSafe/OpenRouter) and Clef side by side, so both
+   * backends are read at a glance. Data is the same ledger `/jev-eye status` uses; nothing is estimated
+   * except the dollar figure for a provider that does not report its own cost.
+   */
+  const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
+    const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
+    const n = (value: number) => value.toLocaleString("en-US");
+    const usd = (value: number) => (value >= 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(6)}`);
+    const auth = resolveJevAuth();
+    const days = readJsonFile(OWN_USAGE_PATH)?.days;
+
+    // Column widths are fixed so the header and every row line up byte-for-byte.
+    const W = { label: 9, req: 6, tok: 11, cost: 10 };
+    const cell = (text: string, width: number, alignRight = true) => {
+      const s = text.length > width ? `${text.slice(0, width - 1)}…` : text;
+      return alignRight ? s.padStart(width) : s.padEnd(width);
+    };
+    const header = (label: string) =>
+      paint("dim", cell(label, W.label, false) + cell("req", W.req) + cell("in tok", W.tok) + cell("cost", W.cost));
+    const row = (label: string, t: ProviderTotals, extra = "", color = "text") =>
+      paint(color, cell(label, W.label, false)) +
+      paint("dim", cell(String(t.requests), W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost)) +
+      extra;
+
+    const lines: string[] = [];
+
+    // 1. The two backends, side by side. This is the answer to "how much Jev vs Clef?" in two rows.
+    lines.push(paint("accent", "Backends · this month"));
+    const monthTotals = readUsage(today().slice(0, 7));
+    const { clef, jev } = backendTotals(monthTotals?.providers);
+    lines.push(header(""));
+    lines.push(row("Jev", jev, `  ${paint("muted", auth && auth.provider.id !== "cloudflare" ? auth.provider.label : "TypeSafe / OpenRouter")}`));
+    lines.push(
+      row("Clef", clef, `  ${paint("muted", auth?.provider.id === "cloudflare" ? auth.model : "Cloudflare")} · ${clef.neurons >= 1 ? `${n(Math.round(clef.neurons))} neurons` : "no neurons"}`)
+    );
+    // Entries written before provider attribution existed cannot be split. Showing only the attributed
+    // rows would make the table look complete while it covered a fraction of the period.
+    const attributed = clef.requests + jev.requests;
+    const unattributed = Math.max(0, (monthTotals?.requests ?? 0) - attributed);
+    if (unattributed > 0) {
+      const share = (total: number, known: number) => Math.max(0, total - known);
+      lines.push(
+        row(
+          "Earlier",
+          {
+            requests: unattributed,
+            ok: 0,
+            failed: 0,
+            inputTokens: share(monthTotals!.inputTokens, clef.inputTokens + jev.inputTokens),
+            outputTokens: 0,
+            cost: share(monthTotals!.cost, clef.cost + jev.cost),
+            neurons: share(monthTotals!.neurons ?? 0, clef.neurons + jev.neurons),
+          },
+          `  ${paint("muted", `before the split · no provider data (${Math.round((unattributed / monthTotals!.requests) * 100)}%)`)}`
+        )
+      );
+    }
+    if (unattributed > 0 && attributed === 0) {
+      lines.push(paint("muted", "the split is recorded from the next request on; the totals below are exact"));
+    }
+    lines.push("");
+
+    // 2. One-line totals, so the panel still answers when the split is empty.
+    lines.push(paint("accent", "Totals · both ledgers"));
+    for (const [label, period] of [["Today", today()], ["Month", today().slice(0, 7)], ["All time", ""]] as const) {
+      const t = readUsage(period);
+      lines.push(
+        t
+          ? paint("dim", cell(label, W.label, false)) +
+              paint("dim", cell(`${t.requests}`, W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost)) +
+              paint("muted", `  ${t.ok} ok / ${t.failed} fail · out ${n(t.outputTokens)}`)
+          : paint("dim", cell(label, W.label, false)) + paint("muted", "no requests")
+      );
+    }
+    lines.push("");
+
+    // 3. The Clef free budget is the one number that changes behaviour (the gate stops working if it is exhausted).
+    const budget = clefBudget(neuronsSpentOn(days, today()));
+    const barWidth = 20;
+    const filled = Math.min(barWidth, Math.round((budget.used / budget.free) * barWidth));
+    const exhausted = budget.used >= budget.free;
+    lines.push(
+      `${paint("accent", "Clef free tier")} ${paint(exhausted ? "warning" : "success", "█".repeat(filled))}${paint("dim", "░".repeat(barWidth - filled))} ${n(Math.round(budget.used))}/${n(budget.free)} neurons today${budget.overageUsd > 0 ? paint("warning", ` · over ${usd(budget.overageUsd)}`) : " · free"}`
+    );
+    lines.push(
+      paint("dim", `  resets 00:00 UTC · ${n(Math.round(budget.remaining))} left · `) +
+        paint("muted", auth?.provider.id === "cloudflare" ? `${auth.model} · $${clefUsdPerMTok(auth.model).toFixed(3)}/M in` : "Clef not the active gate key")
+    );
+    lines.push("");
+
+    // 4. Session counters, one line each, no prose.
+    const s = state.stats;
+    lines.push(
+      paint("accent", "Session ") +
+        paint("dim", `gate ${Math.min(s.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} · routing ${Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} · reviewed ${s.reviewTurns}`)
+    );
+    lines.push(
+      paint("accent", "Blocked ") +
+        paint("dim", `${s.destructiveBlocked} dangerous · ${s.secretsBlocked} secret · ${s.slopBlocked} slop`) +
+        (typeof ctx?.getContextUsage?.()?.tokens === "number" ? paint("dim", ` · context ${n(ctx.getContextUsage().tokens)} tok`) : "")
+    );
+    if (balance) lines.push(paint("accent", "Balance ") + paint("dim", balance));
+    return lines;
+  };
+
+  /** `/jev-eye usage`: the same framed panel as status, with the spend breakdown. */
+  const showUsage = async (ctx: any): Promise<void> => {
+    const balance = await usageBalance(resolveJevAuth());
+    if (typeof ctx.ui.custom !== "function") {
+      ctx.ui.notify([USAGE_TITLE, USAGE_DESC, "", ...buildUsage(ctx, undefined, balance)].join("\n"), "info");
+      return;
+    }
+    await ctx.ui.custom<void>((tui: any, theme: any, _kb: any, done: (value?: void) => void) => {
+      const panel = new StatusPanel(
+        theme,
+        buildUsage(ctx, theme, balance),
+        { rebuild: () => buildUsage(ctx, theme, balance), cycleMode: () => cycleEyeState(ctx), cycleGate: () => writeConsent(nextConsent(readConsent(), ctx.cwd)) },
+        done,
+        USAGE_TITLE,
+        USAGE_DESC,
+        false // read-only: no Mode / Grant-folder toggles on the usage screen
+      );
+      return {
+        render: (width: number) => panel.render(width),
+        invalidate: () => panel.invalidate(),
+        handleInput: (data: string) => {
+          panel.handleInput(data);
+          tui.requestRender();
+        },
+      };
+    });
+  };
+
   /** Status body only: plain text in headless mode, colourised when the panel hands over a theme.
-   *  Synchronous on purpose — the balance is fetched once by {@link showStatus} and passed in, so the
-   *  panel never has a pending state to render. */
-  const buildStatus = (ctx: any, balance: string, theme?: any): string[] => {
+   *  Spend lives in `/jev-eye usage`; this screen answers "what is active right now" in five lines. */
+  const buildStatus = (ctx: any, theme?: any): string[] => {
     const auth = resolveJevAuth();
     const consent = readConsent();
-    const n = (value: number) => value.toLocaleString("en-US");
-    const usd = (value: number) => `$${value.toFixed(6)}`;
     const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
+    const label = (text: string) => paint("dim", text.padEnd(11));
     // A zero count is the healthy value, so only a non-zero one draws the eye.
     const count = (value: number) => paint(value > 0 ? "warning" : "text", String(value));
-    const window = (label: string, period: string, totals: DayTotals | undefined) =>
-      totals
-        ? `${paint("dim", label.padEnd(8))}${period} | ${totals.requests} requests (${totals.ok} ok / ${totals.failed} failed) | ${n(totals.inputTokens)} in / ${n(totals.outputTokens)} out | ${usd(totals.cost)}`
-        : `${paint("dim", label.padEnd(8))}${period} | no requests`;
+    const bits = (parts: (string | false | undefined)[]) => parts.filter(Boolean).join(paint("dim", " · "));
 
     const routing = readRouting();
     const models: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
     const thisFolderOn = consentAllows(ctx.cwd, consent);
-    // One line, one state: this folder, all folders, or off. The folder list never renders.
-    const scopeValue =
-      consent.mode === "folder" ? "This folder" : consent.mode === "all" ? "All folders" : "Disabled";
-    const scopeState =
-      consent.mode === "folder"
-        ? ` (${paint(thisFolderOn ? "success" : "muted", thisFolderOn ? "ON" : "off")})`
-        : "";
-    const classified = Math.min(state.stats.jevRoutingCalls, JEV_MAX_ROUTING_CALLS);
+    const scope = consent.mode === "folder" ? `This folder (${thisFolderOn ? "ON" : "off"})` : consent.mode === "all" ? "All folders" : "Disabled";
+    const s = state.stats;
+    const gate = Math.min(s.jevRequests, JEV_MAX_REQUESTS);
+    const classified = Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS);
+
     const lines = [
-      `${paint("dim", "Supervisor: ")}${paint(state.enabled ? "success" : "warning", state.enabled ? "ENABLED" : "DISABLED")} | ${paint("dim", "Review Mode: ")}${paint(state.reviewMode ? "warning" : "muted", state.reviewMode ? "ALWAYS ON" : "prompt trigger")}`,
-      `${paint("dim", "Routing: ")}${paint(routing.enabled ? "success" : "muted", routing.enabled ? "ON" : "off")} | ${paint("dim", "Light: ")}${modelLabelFor(models, routing.light) || "unset"} | ${paint("dim", "Heavy: ")}${modelLabelFor(models, routing.heavy) || "unset"} | ${state.stats.lightTurns} light / ${state.stats.heavyTurns} heavy turns | ${classified}/${JEV_MAX_ROUTING_CALLS} classified`,
-      `${paint("dim", "Jev Gate: ")}${
-        auth
-          ? `${paint("success", "READY")} | ${auth.provider.label} (key from ${auth.source})`
-          : `${paint("warning", "OFFLINE (no key)")} — run \`/jev-eye login\``
-      }`,
-      `${paint("dim", "Gate Scope: ")}${paint(consent.mode === "disabled" ? "warning" : "text", scopeValue)}${scopeState}`,
-      // Named prefix + a plain-word gloss, so the numbers below stop being a riddle.
-      `${paint("dim", "Gate Rules: ")}block when Jev's chance of slop or an unfinished TODO is p≥${JEV_BLOCK_THRESHOLD} | checked only on diffs ≥${JEV_MIN_DIFF_LINES} lines | ${Math.min(state.stats.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} Jev requests used this session`,
-      "",
-      paint("accent", "Usage"),
-      window("Today", today(), readOwnUsage()),
-      window("Month", today().slice(0, 7), readMonthUsage()),
-      `${paint("dim", "Balance ")}${paint("muted", balance)}`,
-      "",
-      paint("accent", "Interception (this session)"),
-      `${paint("dim", "Blocked: ")}${count(state.stats.destructiveBlocked)} dangerous | ${paint("dim", "Secrets: ")}${count(state.stats.secretsBlocked)} | ${paint("dim", "Jev slop: ")}${count(state.stats.slopBlocked)} | ${paint("dim", "Unverified-done warnings: ")}${count(state.stats.verificationReminders)} | ${paint("dim", "Reviewed turns: ")}${count(state.stats.reviewTurns)}`,
+      label("Supervisor") +
+        bits([
+          paint(state.enabled ? "success" : "warning", state.enabled ? "ENABLED" : "DISABLED"),
+          `review ${state.reviewMode ? "always" : "prompt trigger"}`,
+          `scope ${consent.mode === "disabled" ? paint("warning", scope) : scope}`,
+        ]),
+      label("Gate") +
+        (auth
+          ? bits([paint("success", "READY"), `${auth.provider.short} · ${auth.model}`, `key from ${auth.source}`])
+          : `${paint("warning", "OFFLINE")} — no key, run \`/jev-eye login\``),
+      label("Rules") + bits([`block at p≥${JEV_BLOCK_THRESHOLD} on diffs ≥${JEV_MIN_DIFF_LINES} lines`, `gate ${gate}/${JEV_MAX_REQUESTS}`, `routing ${classified}/${JEV_MAX_ROUTING_CALLS}`]),
+      label("Routing") +
+        bits([
+          paint(routing.enabled ? "success" : "muted", routing.enabled ? "ON" : "off"),
+          `light ${modelLabelFor(models, routing.light) || "unset"}`,
+          `heavy ${modelLabelFor(models, routing.heavy) || "unset"}`,
+          `${s.lightTurns} light / ${s.heavyTurns} heavy turns`,
+        ]),
+      label("Blocked") +
+        bits([
+          `${count(s.destructiveBlocked)} dangerous`,
+          `${count(s.secretsBlocked)} secrets`,
+          `${count(s.slopBlocked)} slop`,
+          `${count(s.verificationReminders)} unverified`,
+          `${s.reviewTurns} reviewed turns`,
+        ]),
+      ...cloudflareHint(paint),
     ];
 
     const contextTokens = ctx?.getContextUsage?.()?.tokens;
-    if (typeof contextTokens === "number") lines.push(`${paint("dim", "Model context: ")}${n(contextTokens)} tokens`);
+    if (typeof contextTokens === "number") lines.push(label("Context") + paint("muted", `${contextTokens.toLocaleString("en-US")} tokens`));
     return lines;
   };
 
   /** `/jev-eye status`: the framed panel, falling back to the same body as plain text without a TUI. */
   const showStatus = async (ctx: any): Promise<void> => {
-    const balance = await balanceText(resolveJevAuth());
-
     if (typeof ctx.ui.custom !== "function") {
-      ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx, balance), "", statusFooter(state.enabled, state.reviewMode)].join("\n"), "info");
+      ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx), "", statusFooter(state.enabled, state.reviewMode)].join("\n"), "info");
       return;
     }
 
     await ctx.ui.custom<void>((tui: any, theme: any, _kb: any, done: (value?: void) => void) => {
       const panel = new StatusPanel(
         theme,
-        buildStatus(ctx, balance, theme),
+        buildStatus(ctx, theme),
         {
-          rebuild: () => buildStatus(ctx, balance, theme),
+          rebuild: () => buildStatus(ctx, theme),
           cycleMode: () => {
             cycleEyeState(ctx);
           },
@@ -1367,9 +1854,10 @@ export default function (pi: ExtensionAPI) {
       : "off · configure light & heavy targets";
 
     const options = [
-      `Login    ·  ${auth ? `switch key (current: ${auth.provider.label})` : "TypeSafe or OpenRouter API key"}`,
+      `Login    ·  ${auth ? `switch key (current: ${auth.provider.label})` : "TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef) key"}`,
       `Logout   ·  ${auth ? `remove key from ${auth.source}` : "no active key stored"}`,
-      `Status   ·  supervisor, gate scope, usage & metrics`,
+      `Status   ·  supervisor, gate scope & metrics`,
+      `Usage    ·  Jev/Clef spend, per-provider split & free-neuron budget`,
       `Routing  ·  ${routingDesc}`,
     ];
 
@@ -1392,6 +1880,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (choice === options[3]) {
+      await showUsage(ctx);
+      return;
+    }
+
+    if (choice === options[4]) {
       await openRoutingMenu(ctx);
       return;
     }
@@ -1470,9 +1963,14 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    if (sub === "usage") {
+      await showUsage(ctx);
+      return;
+    }
+
     if (sub !== "status") {
       ctx.ui.notify(
-        `[pi-jev-eye] Unknown argument "${sub}". Use: status | on | review | off | toggle | login | logout | routing [on|off], or no argument for the menu (cycle mode is ${TOGGLE_KEY}).`,
+        `[pi-jev-eye] Unknown argument "${sub}". Use: status | usage | on | review | off | toggle | login | logout | routing [on|off], or no argument for the menu (cycle mode is ${TOGGLE_KEY}).`,
         "warning"
       );
       return;

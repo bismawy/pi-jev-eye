@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, legacyTotals, mergeTotals, normalizeTotals, sumDays, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, sumDays, wipeTarget } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -77,4 +77,190 @@ test("sumDays counts only the requested day or month", () => {
   assert.equal(sumDays(days, "2026-09-20", normalizeTotals).requests, 12);
   assert.equal(sumDays(days, "2026-07", normalizeTotals), undefined);
   assert.equal(sumDays(undefined, "2026-09", normalizeTotals), undefined);
+});
+
+// --- Cloudflare Workers AI route (Clef): the account id is a credential-adjacent value, the base is not. ---
+const accountId = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+test("only a 32-char hex string is accepted as an account id", () => {
+  assert.ok(isCloudflareAccountId(accountId));
+  assert.ok(isCloudflareAccountId(accountId.toUpperCase()));
+  assert.equal(isCloudflareAccountId("a1b2c3"), false);
+  assert.equal(isCloudflareAccountId("a1b2c3d4e5f60718293a4b5c6d7e8f9g"), false);
+  assert.equal(isCloudflareAccountId(""), false);
+});
+
+test("the Clef route carries the account id and the chosen model", () => {
+  assert.equal(cfRunUrl(accountId, "clef-flash"), `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/cloudflare/clef-flash`);
+  assert.ok(cfRunUrl(accountId, "clef").endsWith("/@cf/cloudflare/clef"));
+});
+
+// The REST route wraps the System One answer in { result, success, errors }; missing that wrapper reads
+// as "the model answered nothing" and silently fails the write gate open.
+test("a Workers AI envelope unwraps to its result", () => {
+  const body = { model: "clef", answers: { has_slop: { type: "noul", noul: 0.91 } }, usage: { input_tokens: 1200 } };
+  assert.deepEqual(clefBody({ result: body, success: true, errors: [] }), body);
+});
+
+test("a raw (non-enveloped) answer still reads", () => {
+  const body = { model: "jev-1.13.0", answers: { has_slop: { type: "noul", noul: 0.1 } } };
+  assert.deepEqual(clefBody(body), body);
+});
+
+test("success:false is a failure even when a result is present", () => {
+  assert.equal(clefBody({ result: { answers: {} }, success: false, errors: [{ message: "invalid account id" }] }), undefined);
+  assert.equal(clefBody(undefined), undefined);
+  assert.equal(clefBody("nope"), undefined);
+});
+
+test("the Cloudflare error list becomes one readable line", () => {
+  assert.equal(clefError({ errors: [{ message: "invalid api token" }, { message: "retry later" }] }), "invalid api token; retry later");
+  assert.equal(clefError({ success: false }), "no result");
+});
+
+// --- Per-provider rollup: what lets one panel separate Jev from Clef ---
+test("an entry written before provider attribution folds without inventing providers", () => {
+  const old = normalizeTotals({ requests: 3, inputTokens: 100, cost: 0.0000042 });
+  assert.equal(old.providers, undefined);
+  assert.equal(old.neurons, undefined);
+  assert.equal(old.requests, 3);
+});
+
+test("a provider's counters are kept per provider, never summed into one bucket", () => {
+  const days = {
+    "2026-10-11": {
+      requests: 4,
+      inputTokens: 900,
+      cost: 0.0001,
+      neurons: 3.5,
+      providers: { cloudflare: { requests: 2, inputTokens: 500, neurons: 1.7 }, typesafe: { requests: 2, inputTokens: 400 } },
+    },
+  };
+  const month = sumDays(days, "2026-10", normalizeTotals);
+  assert.equal(month.requests, 4);
+  assert.equal(month.providers.cloudflare.requests, 2);
+  assert.equal(month.providers.typesafe.requests, 2);
+  assert.equal(month.providers.cloudflare.inputTokens, 500);
+  assert.equal(month.providers.typesafe.inputTokens, 400);
+  assert.equal(month.providers.typesafe.neurons, 0);
+});
+
+test("folding two ledgers adds matching providers instead of replacing them", () => {
+  const own = sumDays({ "2026-10-11": { requests: 1, providers: { cloudflare: { requests: 1, inputTokens: 10 } } } }, "2026-10", normalizeTotals);
+  const legacy = sumDays({ "2026-10-11": { requestsStarted: 1, inputTokens: 5 } }, "2026-10", legacyTotals);
+  const merged = mergeTotals(own, legacy);
+  assert.equal(merged.providers.cloudflare.requests, 1);
+  assert.equal(merged.requests, 2);
+});
+
+test("only today's neurons count against the free daily allowance", () => {
+  const days = { "2026-10-11": { neurons: 120 }, "2026-10-10": { neurons: 9999 } };
+  assert.equal(neuronsSpentOn(days, "2026-10-11"), 120);
+  assert.equal(neuronsSpentOn(days, "2026-10-09"), 0);
+});
+
+// The panel shows Jev and Clef side by side, so the split must be exact — and a partial entry must
+// not poison the sum with NaN.
+test("the backend split keeps Clef apart from every other Jev provider", () => {
+  const { clef, jev } = backendTotals({
+    cloudflare: { requests: 4, inputTokens: 1332, cost: 0.0000506, neurons: 2427 },
+    typesafe: { requests: 2, inputTokens: 900, cost: 0.0000378 },
+    openrouter: { requests: 1, inputTokens: 10, cost: 0.000001 },
+  });
+  assert.equal(clef.requests, 4);
+  assert.equal(clef.neurons, 2427);
+  assert.equal(jev.requests, 3, "TypeSafe and OpenRouter both count as Jev");
+  assert.equal(jev.inputTokens, 910);
+  assert.equal(jev.neurons, 0, "only Cloudflare is metered in neurons");
+});
+
+test("a partial provider entry contributes zeros, never NaN", () => {
+  const { clef } = backendTotals({ cloudflare: { requests: 1 } });
+  assert.equal(clef.requests, 1);
+  assert.equal(clef.inputTokens, 0);
+  assert.equal(clef.cost, 0);
+  assert.equal(clef.neurons, 0);
+});
+
+test("an empty or missing split reads as two zeroed backends", () => {
+  for (const input of [undefined, {}]) {
+    const { clef, jev } = backendTotals(input);
+    assert.equal(clef.requests + jev.requests, 0);
+    assert.equal(clef.cost + jev.cost, 0, "no invented spend");
+  }
+});
+
+// --- Credential store v2: several backends logged in at once, which is what a logout picker needs ---
+// The v1 file held one credential and every login overwrote it, silently discarding the others.
+test("a v1 single-credential file migrates to a providers map", () => {
+  const { store, migratedFromV1 } = migrateAuthStore({ version: 1, provider: "cloudflare", model: "clef-flash", accountId: "a".repeat(32), apiKey: "cf-key-123456" });
+  assert.equal(migratedFromV1, true);
+  assert.equal(store.version, 2);
+  assert.deepEqual(Object.keys(store.providers), ["cloudflare"]);
+  assert.equal(store.providers.cloudflare.model, "clef-flash");
+  assert.equal(store.providers.cloudflare.apiKey, "cf-key-123456");
+});
+
+test("a v1 file with no usable key migrates to an empty store, not a broken one", () => {
+  for (const input of [{ version: 1 }, { version: 1, provider: "cloudflare" }, null, "nonsense"]) {
+    const { store, migratedFromV1 } = migrateAuthStore(input);
+    assert.equal(migratedFromV1, false);
+    assert.deepEqual(storedProviderIds(store), []);
+  }
+});
+
+test("a v2 store is read as-is and a half-written entry is dropped", () => {
+  const { store, migratedFromV1 } = migrateAuthStore({ version: 2, providers: { typesafe: { apiKey: "ts-123" }, cloudflare: { model: "clef" } } });
+  assert.equal(migratedFromV1, false);
+  assert.deepEqual(storedProviderIds(store), ["typesafe"], "an entry without a key is not a credential");
+});
+
+test("adding one provider leaves the others logged in", () => {
+  let store = migrateAuthStore({ version: 2, providers: { typesafe: { apiKey: "ts-123" } } }).store;
+  store = putCredential(store, "cloudflare", { apiKey: "cf-456", accountId: "b".repeat(32), model: "clef-flash" });
+  assert.deepEqual(storedProviderIds(store).sort(), ["cloudflare", "typesafe"]);
+  // Replacing the same provider updates in place rather than duplicating it.
+  store = putCredential(store, "cloudflare", { apiKey: "cf-new", accountId: "b".repeat(32) });
+  assert.equal(store.providers.cloudflare.apiKey, "cf-new");
+  assert.deepEqual(storedProviderIds(store).sort(), ["cloudflare", "typesafe"]);
+});
+
+test("an empty key is refused instead of replacing a good credential with nothing", () => {
+  const store = migrateAuthStore({ version: 2, providers: { typesafe: { apiKey: "ts-123" } } }).store;
+  const same = putCredential(store, "typesafe", { apiKey: "   " });
+  assert.equal(same, store, "the store is returned unchanged");
+  assert.equal(store.providers.typesafe.apiKey, "ts-123");
+});
+
+test("removing a provider keeps the rest, and unknown ids are ignored", () => {
+  const store = migrateAuthStore({ version: 2, providers: { typesafe: { apiKey: "a" }, openrouter: { apiKey: "b" }, cloudflare: { apiKey: "c" } } }).store;
+  const afterClef = removeCredentials(store, ["cloudflare"]);
+  assert.deepEqual(storedProviderIds(afterClef).sort(), ["openrouter", "typesafe"]);
+  const afterJev = removeCredentials(afterClef, ["typesafe", "openrouter"]);
+  assert.deepEqual(storedProviderIds(afterJev), [], "removing every backend empties the store");
+  assert.deepEqual(storedProviderIds(removeCredentials(store, ["nope"])).sort(), ["cloudflare", "openrouter", "typesafe"], "an unknown id changes nothing");
+});
+
+// --- Clef pricing: clef-flash bills 6x less than clef, and the free tier is 10,000 neurons/day ---
+test("the Clef price and neuron rate follow the chosen model", () => {
+  assert.equal(clefUsdPerMTok("clef"), 0.24);
+  assert.equal(clefUsdPerMTok("clef-flash"), 0.038);
+  assert.equal(clefNeuronsPerMTok("clef"), 21818);
+  assert.equal(clefNeuronsPerMTok("clef-flash"), 3455);
+  assert.equal(clefUsdPerMTok("a-model-from-the-future"), 0.038, "an unknown model is charged as the cheap one, never as free");
+  assert.equal(clefNeuronsFor("clef-flash", 1_000_000), 3455);
+  assert.equal(clefNeuronsFor("clef-flash", 0), 0);
+});
+
+test("the free-neuron budget reports what is left and what overage would cost", () => {
+  const under = clefBudget(2500);
+  assert.equal(under.used, 2500);
+  assert.equal(under.remaining, 7500);
+  assert.equal(under.overageUsd, 0);
+
+  const over = clefBudget(12_000);
+  assert.equal(over.remaining, 0);
+  assert.equal(over.overageUsd, 0.022, "2000 neurons over at $0.011/1000");
+
+  assert.equal(clefBudget(-5).used, 0, "a negative counter clamps instead of reporting extra budget");
 });
