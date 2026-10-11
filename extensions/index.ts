@@ -1534,7 +1534,7 @@ export default function (pi: ExtensionAPI) {
             cost: share(monthTotals!.cost, clef.cost + jev.cost),
             neurons: share(monthTotals!.neurons ?? 0, clef.neurons + jev.neurons),
           },
-          `  ${paint("muted", `before the split (${Math.round((unattributed / monthTotals!.requests) * 100)}% of the month)`)}`
+          `  ${paint("muted", `before the split · no provider data (${Math.round((unattributed / monthTotals!.requests) * 100)}%)`)}`
         )
       );
     }
