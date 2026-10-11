@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- **Multi-credential auth store and a logout picker.** `auth.json` is now version 2 — a `providers` map keyed by provider id — so TypeSafe, OpenRouter and Clef can stay logged in at the same time. `/jev-eye logout` offers **Jev**, **Clef**, or **All** when several are stored; with one stored it just confirms that one. A v1 single-key file is migrated on first read and the original is kept at `auth.json.v1.bak`.
+- Logging in now **adds** a credential instead of replacing the file, so switching backend no longer discards the previous key. An empty key is refused rather than overwriting a good credential.
+- Keys supplied by the environment are reported by logout (`$TYPESAFE_API_KEY comes from the environment and cannot be removed here.`) because a process cannot unset a variable belonging to its caller.
+- `migrateAuthStore`, `putCredential`, `removeCredentials`, `storedProviderIds` in `extensions/layer1.ts`: the store folds are pure and covered by `npm test`.
+
 ### Fixed
 - **Read-only `/jev-eye usage` footer.** The panel reused the status frame, so it advertised `[Alt+Shift+j] Mode` and `[Ctrl+Shift+g] Grant folder` and acted on those keys, though a spend view has nothing to toggle. It now shows `[Enter] Done  [Esc] Cancel` and ignores the toggle keys.
 

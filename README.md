@@ -31,6 +31,8 @@ pi install npm:@bismawy/pi-jev-eye
 
 Supply your Jev API key via `/jev-eye login` (TypeSafe, OpenRouter, or Cloudflare Workers AI), or export `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY`. For Cloudflare Clef, export `CLOUDFLARE_ACCOUNT_ID` **and** `CLOUDFLARE_API_TOKEN` — a token alone cannot build the account-scoped route.
 
+Credentials you store live side by side: `~/.pi/agent/pi-jev-eye/auth.json` (mode 0600) holds one entry per provider, so logging in with Clef no longer discards a stored TypeSafe key. `/jev-eye logout` then lets you pick which backend to remove. A credential that comes from the environment is reported but never deleted — a process cannot unset a variable it does not own.
+
 To test locally without installing:
 ```bash
 pi -e ./extensions/index.ts
@@ -44,7 +46,7 @@ pi -e ./extensions/index.ts
 | `ctrl+shift+g` | Keybinding | Cycle Jev folder gate: **Enable all** → **This folder** → **Disabled** |
 | `/jev-eye` | Global | Interactive menu: Login, Logout, Status, Routing (`/eye` is an alias) |
 | `/jev-eye login` | Setup | Authenticate with TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef); verified against the live route, mode 0600 |
-| `/jev-eye logout` | Setup | Remove locally stored credentials |
+| `/jev-eye logout` | Setup | Remove stored credentials — pick **Jev**, **Clef**, or **All** when several backends are logged in |
 | `/jev-eye status` | Inspect | Five-line live state: supervisor, gate key, rules, routing, block counts. Spend lives in `usage` |
 | `/jev-eye usage` | Inspect | Spend breakdown: Jev vs Clef side by side, period totals, and the Cloudflare free-neuron budget |
 | `/jev-eye routing` | Routing | Interactive TUI model router for light and heavy task slots |
