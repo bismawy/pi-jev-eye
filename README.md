@@ -156,9 +156,15 @@ Tracks detailed usage in `~/.pi/agent/pi-jev-eye/usage.json` (plus legacy migrat
 <summary><b>Development</b></summary>
 
 ```bash
-npm test    # Run Node.js native test suite (23 assertions, offline)
-npm run dev # Test extension locally in active session
+npm test         # Pure logic and frame maths (offline, no dependencies)
+npm run render-check # Renders the real screens and asserts the frame width, colour and legends
+npm run dev      # Test extension locally in active session
 ```
+
+`npm run render-check` drives `/jev-eye` through a fake TUI and asserts what a screenshot would show:
+every line exactly on the terminal width, a coloured frame, a masked key, and no advertised key lost to
+truncation. It needs the peer dependencies resolvable, so run it where pi provides them, or link a
+checkout that has them: `ln -s ../pi-arnative/node_modules node_modules`.
 
 </details>
 

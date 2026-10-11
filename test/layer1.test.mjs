@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, boxBorderPainter, boxEdge, boxRow, cfRunUrl, chosenRowPainter, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, statusRow, sumDays, thinkingColorSlot, visibleWidth, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, borderPainter, boxEdge, boxFrame, boxRow, cfRunUrl, chosenRowPainter, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, packPairs, putCredential, removeCredentials, storedProviderIds, statusRow, sumDays, thinkingColorSlot, visibleWidth, wipeTarget, wrapWords } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -290,17 +290,44 @@ test("box width ignores ANSI escapes and counts wide glyphs as two", () => {
   assert.equal(visibleWidth(row), 8, "a styled wide row still lands on the frame width");
 });
 
-test("the border uses the soft accent when the theme has it and falls back to accent", () => {
-  const withSoft = boxBorderPainter({ fg: (color, text) => `<${color}>${text}</${color}>` });
+test("the border takes the soft accent, else the session's thinking slot, else no colour", () => {
+  const withSoft = borderPainter({ fg: (color, text) => `<${color}>${text}</${color}>` });
   assert.equal(withSoft("x"), "<accentSoft>x</accentSoft>");
-  const withoutSoft = boxBorderPainter({
+  const withoutSoft = borderPainter({
     fg: (color, text) => {
       if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
       return `<${color}>${text}</${color}>`;
     },
-  });
-  assert.equal(withoutSoft("x"), "<accent>x</accent>", "a built-in theme must not throw the box away");
-  assert.equal(boxBorderPainter(null)("x"), "x", "no theme yet means no colour, not a crash");
+  }, "high");
+  assert.equal(withoutSoft("x"), "<thinkingHigh>x</thinkingHigh>", "a built-in theme follows the session's thinking level");
+  assert.equal(borderPainter(null)("x"), "x", "no theme yet means no colour, not a crash");
+});
+
+test("boxFrame wraps rows in the walls and keeps every line the requested width", () => {
+  const paint = (text) => text;
+  const framed = boxFrame(["title", "", "row"], 12, paint);
+  assert.equal(framed.length, 5, "top edge + three rows + bottom edge");
+  assert.equal(framed[0], "╭──────────╮");
+  assert.equal(framed[4], "╰──────────╯");
+  assert.equal(framed[1], "│ title    │");
+  assert.equal(framed[2], "│          │", "an empty line is still a row");
+  assert.equal(framed.every((line) => visibleWidth(line) === 12), true);
+});
+
+test("wrapWords breaks on words and on an explicit newline, never losing a row", () => {
+  assert.deepEqual(wrapWords("one two three", 7), ["one two", "three"]);
+  assert.deepEqual(wrapWords("line one\nline two", 20), ["line one", "line two"], "a newline in the hint is a break");
+  assert.deepEqual(wrapWords("", 10), [""], "an empty hint still renders one row");
+  assert.deepEqual(wrapWords("overlongword", 4), ["overlongword"], "a word wider than the row is left for the caller to clip");
+  assert.deepEqual(wrapWords("a   b", 10), ["a b"], "runs of spaces collapse instead of padding the frame");
+});
+
+test("packPairs keeps every advertised key visible by wrapping the legend", () => {
+  assert.deepEqual(packPairs(["a", "b", "c"], 20), ["a  b  c"], "a short legend stays on one row");
+  const wrapped = packPairs(["[Enter] Done", "[Esc] Cancel", "[←] Back", "[Ctrl+Shift+u] Grant folder"], 40);
+  assert.equal(wrapped.length > 1, true, "a long legend wraps instead of dropping its last key");
+  assert.equal(wrapped.join(" ").includes("[Ctrl+Shift+u] Grant folder"), true, "the last key is still advertised");
+  assert.equal(packPairs([], 40).length, 0, "no pairs means no rows");
 });
 
 test("the box border slot follows the thinking level", () => {

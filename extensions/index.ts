@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Container, CURSOR_MARKER, Input, Key, matchesKey, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
   DESTRUCTIVE_BASH_PATTERNS,
@@ -9,8 +9,8 @@ import {
   VERIFICATION_COMMAND_PATTERNS,
   addProviderTotals,
   backendTotals,
-  boxEdge,
-  boxRow,
+  borderPainter,
+  boxFrame,
   cfRunUrl,
   chosenRowPainter,
   clefBody,
@@ -25,13 +25,14 @@ import {
   migrateAuthStore,
   neuronsSpentOn,
   normalizeTotals,
+  packPairs,
   putCredential,
   removeCredentials,
-  storedProviderIds,
   statusRow,
+  storedProviderIds,
   sumDays,
-  thinkingColorSlot,
   wipeTarget,
+  wrapWords,
   type AuthStore,
   type DayTotals,
   type ProviderTotals,
@@ -263,19 +264,9 @@ function keySources(): { usable: string[]; cfTokenWithoutAccount: boolean } {
 
 /**
  * Border painter for a screen: the session's thinking level colours the box, as in `/arnative`.
- * `thinking*` exists in every theme, `accentSoft` only in arnative themes, so the soft token is probed
- * once and the box falls back to the thinking tint of the level. */
-const borderPainterFor = (theme: any, ctx?: any) => {
-  const level = thinkingColorSlot(ctx?.thinkingLevel);
-  const fg = theme?.fg?.bind(theme);
-  if (!fg) return (text: string) => text;
-  try {
-    fg("accentSoft", "");
-    return (text: string) => fg("accentSoft", text);
-  } catch {
-    return (text: string) => fg(level, text);
-  }
-};
+ * The probe order lives in `borderPainter` (layer1, covered by `npm test`), which prefers the
+ * arnative soft token before falling back to the thinking slot every theme defines. */
+const borderPainterFor = (theme: any, ctx?: any) => borderPainter(theme, ctx?.thinkingLevel);
 
 /**
  * The login menu, as a real component rather than `ctx.ui.select`.
@@ -333,18 +324,22 @@ class LoginPicker {
 
   render(width: number): string[] {
     const t = this.theme;
-    const paint = this.paint;
+    const paint = borderPainterFor(t);
     const inner = width - 4; // two walls, two spaces
-    const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
     const lines = [
       t.fg("accent", t.bold("Jev Eye · Login")),
       t.fg("muted", "Pick the backend for the Jev gate. A stored key is reused until replaced."),
       "",
     ];
+    // Same column rule as every other list: the label is padded to the widest one, so both the state
+    // markers and the reading order stay in one column instead of drifting with the label length.
+    const column = Math.max(...this.options.map((option) => visibleWidth(option.label)));
     for (const [i, option] of this.options.entries()) {
       const cursor = i === this.index;
       const mark = option.status === "stored" ? t.fg("success", "✓ stored") : t.fg("dim", "• not configured");
-      lines.push(`${cursor ? t.fg("accent", "→ ") : "  "}${cursor ? this.soft(option.label) : t.fg("text", option.label)}  ${mark}`);
+      const label = cursor ? this.soft(option.label) : t.fg("text", option.label);
+      const pad = " ".repeat(Math.max(0, column - visibleWidth(option.label)));
+      lines.push(`${cursor ? t.fg("accent", "→ ") : "  "}${label}${pad}  ${mark}`);
     }
     // The live tip: whatever is highlighted, not a static caption.
     const current = this.options[this.index];
@@ -355,9 +350,10 @@ class LoginPicker {
       lines.push(t.fg("dim", `Or export ${hint}${current.provider.accountEnv ? ` + $${current.provider.keyEnv}` : ""}`));
     }
     lines.push("");
-    lines.push(t.fg("dim", "[↑↓] Move  [Enter] Choose  [←] Back  [Esc] Cancel"));
+    // Wrapped, never truncated: every advertised key stays visible on a narrow screen.
+    for (const legend of packPairs(["[↑↓] Move", "[Enter] Choose", "[←] Back", "[Esc] Cancel"], inner)) lines.push(t.fg("dim", legend));
     // Arnative frame: round corners, one content row per line, so a short terminal clips cleanly.
-    return [boxEdge("╭", "╮", width, paint), ...lines.map(row), boxEdge("╰", "╯", width, paint)];
+    return framedRows(lines, width, paint);
   }
 
   invalidate(): void {}
@@ -375,7 +371,7 @@ class ListPicker {
   private readonly rows: { label: string; note: string }[];
   private readonly title: string;
   private readonly subtitle: string;
-  private readonly footer: string;
+  private readonly footer: string[];
   private readonly theme: any;
   private readonly paint: (text: string) => string;
   private readonly onBack: (() => void) | undefined;
@@ -401,7 +397,7 @@ class ListPicker {
     this.soft = chosenRowPainter(theme);
     this.onBack = onBack;
     // A menu inside an extension goes back to the previous menu with [←]; the root has nowhere to go.
-    this.footer = onBack ? "[↑↓] Move  [Enter] Choose  [←] Back  [Esc] Cancel" : "[↑↓] Move  [Enter] Choose  [Esc] Cancel";
+    this.footer = ["[↑↓] Move", "[Enter] Choose", ...(onBack ? ["[←] Back"] : []), "[Esc] Cancel"];
   }
 
   handleInput(data: string): void {
@@ -438,7 +434,6 @@ class ListPicker {
     const t = this.theme;
     const paint = this.paint;
     const inner = width - 4; // two walls, two spaces
-    const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
     const lines = [t.fg("accent", t.bold(this.title)), t.fg("muted", this.subtitle), ""];
     // Every label is padded to the widest one, so all `·` dividers land in one column (as in `menuLabels`).
     const column = Math.max(...this.rows.map((item) => visibleWidth(item.label)));
@@ -450,12 +445,15 @@ class ListPicker {
       lines.push(`${chosen ? t.fg("accent", "→ ") : "  "}${label}${pad}${note}`);
     }
     lines.push("");
-    lines.push(t.fg("dim", this.footer));
-    return [boxEdge("╭", "╮", width, paint), ...lines.map(row), boxEdge("╰", "╯", width, paint)];
+    for (const pair of packPairs(this.footer, inner)) lines.push(t.fg("dim", pair));
+    return framedRows(lines, width, paint);
   }
 
   invalidate(): void {}
 }
+
+/** Content column of a framed row: the frame owns the two walls, so the content gets the rest. */
+const boxInner = (width: number): number => Math.max(0, width - 4);
 
 /** Drive the same picker everywhere: TUI gets the rounded box, RPC and headless keep `ctx.ui.select`. */
 async function pickRow(
@@ -535,11 +533,28 @@ async function probeJev(provider: JevProvider, key: string, url = provider.url, 
   }
 }
 
+/**
+ * Frame whole rows into the arnative box: split on newlines first, clip each row to the inner width,
+ * then let `boxFrame` add the walls (it boxes every row itself — boxing here too would double them).
+ * A newline left inside a row would open a hole in the frame, and a value from the network or a pasted
+ * query must not be trusted. Every framed screen in this file renders through here. The clip keeps an
+ * ellipsis: a model ref cut to `deepseek-v` must not read as a whole model name.
+ */
+const framedRows = (rows: string[], width: number, paint: (text: string) => string): string[] =>
+  boxFrame(
+    rows.flatMap((content) => String(content).split("\n")).map((content) => truncateToWidth(content, boxInner(width))),
+    width,
+    paint,
+  );
+
 /** Single-line input that renders bullets instead of the typed key. */
 class SecretInput extends Input {
   render(width: number): string[] {
     const length = [...this.getValue()].length;
-    const bullets = "•".repeat(Math.min(length, Math.max(0, width - 2)));
+    // One column is held back for the caret: the marker is zero-width, and if it were the last thing
+    // over the limit `truncateToWidth` would drop it — which puts an IME candidate window in the wrong
+    // column while a long key is being pasted.
+    const bullets = "•".repeat(Math.min(length, Math.max(0, width - 1)));
     const cursor = this.focused ? `${CURSOR_MARKER}\x1b[7m \x1b[27m` : "";
     return [truncateToWidth(bullets + cursor, width, "")];
   }
@@ -668,7 +683,6 @@ class RoutingPicker {
     const t = this.theme;
     const paint = this.paint;
     const inner = width - 4; // two walls, two spaces
-    const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
     const rows = this.filtered();
     const lines: string[] = [
       t.fg("accent", t.bold("Jev Eye · Routing")),
@@ -711,19 +725,13 @@ class RoutingPicker {
     );
     lines.push("");
     const count = `${this.models.length} models`;
-    const legend = [
-      "[↑↓] Move",
-      "[Enter] Done",
-      "[Space] Light",
-      "[Ctrl+h] Heavy",
-      "[Ctrl+r] Routing",
-      "[Ctrl+t] Light Think",
-      "[Ctrl+Shift+t] Heavy Think",
-      "[←] Back",
-      "[Esc] Cancel",
-    ].join("  ");
-    lines.push(`${t.fg("accent", count)}${t.fg("dim", ` · ${legend}`)}`);
-    return [boxEdge("╭", "╮", width, paint), ...lines.map(row), boxEdge("╰", "╯", width, paint)];
+    const prefix = `${count} · `;
+    const legend = ["[↑↓] Move", "[Enter] Done", "[Space] Light", "[Ctrl+h] Heavy", "[Ctrl+r] Routing", "[Ctrl+t] Light Think", "[Ctrl+Shift+t] Heavy Think", "[←] Back", "[Esc] Cancel"];
+    // The count rides the first legend row, so the wrapping budget is what is left after that prefix.
+    const legendRows = packPairs(legend, Math.max(1, inner - visibleWidth(prefix)));
+    lines.push(`${t.fg("accent", count)}${t.fg("dim", ` · ${legendRows[0] ?? ""}`)}`);
+    for (const pair of legendRows.slice(1)) lines.push(t.fg("dim", pair));
+    return framedRows(lines, width, paint);
   }
 
   invalidate(): void {}
@@ -794,9 +802,8 @@ class StatusPanel {
     const t = this.theme;
     const paint = this.paint;
     const inner = width - 4; // two walls, two spaces
-    const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
     // Same round frame as the routing and login pickers; the controls line stays live.
-    const lines = [
+    const header = [
       // Same nesting Pi's own headers use (fg outside bold) — tmux capture-pane did not show the
       // colour, the raw render bytes do.
       t.fg("accent", t.bold(this.title)),
@@ -804,23 +811,31 @@ class StatusPanel {
       "",
       ...this.lines,
       "",
-      t.fg("dim", this.controls ? statusFooter(state.enabled, state.reviewMode) : PANEL_FOOTER),
     ];
-    return [boxEdge("╭", "╮", width, paint), ...lines.map(row), boxEdge("╰", "╯", width, paint)];
+    // The footer wraps instead of losing its last key: `[Ctrl+Shift+u] Grant folder` fell off an
+    // 80-column screen while still being registered and advertised.
+    for (const pair of packPairs(panelKeys(this.controls), inner)) {
+      header.push(t.fg("dim", pair));
+    }
+    return framedRows(header, width, paint);
   }
 
   invalidate(): void {}
 }
 
-class SecretPrompt extends Container {
-  private input = new SecretInput();
+class SecretPrompt {
+  private readonly theme: any;
+  private readonly title: string;
+  private readonly hint: string;
+  private readonly reveal: boolean;
+  private readonly input = new SecretInput();
   isFocused = false;
 
-  constructor(theme: any, title: string, hint: string, done: (value?: string) => void) {
-    super();
-    this.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
-    this.addChild(new Text(theme.fg("muted", hint), 1, 0));
-    this.addChild(this.input);
+  constructor(theme: any, title: string, hint: string, done: (value?: string) => void, reveal = false) {
+    this.theme = theme;
+    this.title = title;
+    this.hint = hint;
+    this.reveal = reveal;
     this.input.onSubmit = (value) => done(value);
     this.input.onEscape = () => done(undefined);
   }
@@ -841,36 +856,107 @@ class SecretPrompt extends Container {
     }
     this.input.handleInput(data);
   }
+
+  /** The frame owns every row: the title, the wrapped hint, the input line, and the legend. */
+  render(width: number): string[] {
+    const t = this.theme;
+    const inner = width - 4; // two walls, two spaces
+    const title = t.fg("accent", t.bold(this.title));
+    const hints = wrapWords(this.hint, inner).map((line: string) => t.fg("muted", line));
+    // One rendered input line, kept whole so the caret marker stays inside it: clipping the bullet run
+    // first is what keeps the marker from falling off the end of a long pasted key.
+    // A secret renders bullets; an account id is not a secret, so it is shown as typed.
+    const field = this.reveal
+      ? `${t.fg("accent", "  ")}${t.fg("text", truncateToWidth(this.input.getValue(), Math.max(0, inner - 2), ""))}`
+      : t.fg("accent", "  ") + (this.input.render(inner - 2)[0] ?? "");
+    const legend = packPairs(["[Enter] Verify & save", "[Esc] Cancel"], inner).map((pair: string) => t.fg("dim", pair));
+    return framedRows([title, ...hints, "", field, "", ...legend], width, borderPainterFor(t));
+  }
 }
 
-async function promptForSecret(ctx: any, provider: JevProvider): Promise<string | undefined> {
-  const title = `${provider.label} API key`;
-  const hint = `Paste the key from ${provider.keyHint}. Enter verifies and saves, Esc cancels.`;
-  if (typeof ctx.ui.custom === "function") {
-    try {
-      return await ctx.ui.custom((_tui: any, theme: any, _keys: any, done: (value?: string) => void) =>
-        new SecretPrompt(theme, title, hint, done)
-      );
-    } catch {
-      // Any custom-UI failure falls back to the plain dialog rather than losing the flow
+/**
+ * BoxedConfirm is the yes/no dialog on the same template, replacing `ctx.ui.confirm`, which Pi draws
+ * with its own chrome. Enter answers with the highlighted row and Esc cancels; the default is always
+ * the safe answer, because these questions guard a stored key and never confirm work already done.
+ */
+class BoxedConfirm {
+  private readonly theme: any;
+  private readonly title: string;
+  private readonly message: string;
+  private readonly done: (value: boolean) => void;
+  private index = 0;
+
+  constructor(theme: any, title: string, message: string, done: (value: boolean) => void) {
+    this.theme = theme;
+    this.title = title;
+    this.message = message;
+    this.done = done;
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
+      this.index = this.index === 0 ? 1 : 0;
+      return;
     }
+    if (matchesKey(data, Key.enter)) {
+      this.done(this.index === 0);
+      return;
+    }
+    if (matchesKey(data, Key.escape)) this.done(false);
   }
-  return ctx.ui.input(`${title} (visible while typing)`, hint);
+
+  render(width: number): string[] {
+    const t = this.theme;
+    const inner = width - 4; // two walls, two spaces
+    const soft = chosenRowPainter(t);
+    const title = t.fg("accent", t.bold(this.title));
+    const message = wrapWords(this.message, inner).map((line: string) => t.fg("muted", line));
+    const choices = ["Confirm", "Cancel"].map((label: string, i: number) => {
+      const chosen = i === this.index;
+      return `${chosen ? t.fg("accent", "→ ") : "  "}${chosen ? soft(label) : t.fg("text", label)}`;
+    });
+    const legend = packPairs(["[←→] Switch", "[Enter] Choose", "[Esc] Cancel"], inner).map((pair: string) => t.fg("dim", pair));
+    return framedRows([title, ...message, "", ...choices, "", ...legend], width, borderPainterFor(t));
+  }
 }
 
-/** Cloudflare needs the account id next to the token; it is not a secret, so it is typed in the clear. */
-async function promptForAccountId(ctx: any, provider: JevProvider): Promise<string | undefined> {
-  const hint = provider.accountEnv
-    ? `${provider.accountEnv} is not set. Paste the 32-char account id from dash.cloudflare.com (Workers AI > Use REST API). Enter confirms, Esc cancels.`
-    : "Paste the account id. Enter confirms, Esc cancels.";
-  const entered = await ctx.ui.input("Cloudflare account ID", hint);
-  if (entered === undefined) return undefined;
-  const accountId = String(entered).trim();
-  if (!isCloudflareAccountId(accountId)) {
-    ctx.ui.notify("[pi-jev-eye] A Cloudflare account id is 32 hexadecimal characters. Nothing was saved.", "error");
-    return undefined;
-  }
-  return accountId;
+/** The custom dialogs only exist in TUI mode: `custom` is a documented no-op in RPC, not a missing method. */
+async function customScreen<T>(ctx: any, build: (tui: any, theme: any, done: (value: T) => void) => any): Promise<T> {
+  return await ctx.ui.custom<T>((tui: any, theme: any, _kb: any, done: (value: T) => void) => {
+    const component = build(tui, theme, done);
+    return {
+      render: (width: number) => component.render(width),
+      invalidate: () => component.invalidate?.(),
+      handleInput: (data: string) => {
+        component.handleInput(data);
+        tui.requestRender();
+      },
+    };
+  });
+}
+
+/**
+ * One frame for every input dialog: the boxed component in TUI mode, the plain Pi dialog everywhere
+ * else. `ctx.mode` decides, not `typeof ctx.ui.custom === "function"` — in RPC mode `custom` exists
+ * and resolves undefined without drawing, so a method-exists test silently loses the whole dialog.
+ */
+async function promptForText(ctx: any, title: string, hint: string, reveal = false): Promise<string | undefined> {
+  if (ctx.mode !== "tui") return await ctx.ui.input(reveal ? title : `${title} (visible while typing)`, hint);
+  return await customScreen<string | undefined>(ctx, (tui: any, theme: any, done: (value: string | undefined) => void) =>
+    new SecretPrompt(theme, title, hint, done, reveal)
+  );
+}
+
+/**
+ * One frame for every yes/no dialog. `ctx.ui.confirm` is what Pi draws itself, so a boxed confirm has to
+ * own its component; headless clients keep the plain dialog.
+ */
+async function promptForConfirm(ctx: any, title: string, message: string): Promise<boolean> {
+  if (ctx.mode !== "tui") return await ctx.ui.confirm(title, message);
+  const answer = await customScreen<boolean>(ctx, (tui: any, theme: any, done: (value: boolean) => void) =>
+    new BoxedConfirm(theme, title, message, done)
+  );
+  return answer === true;
 }
 
 /** Clef has two models; the choice is per credential, so it is asked while the credential is set up. */
@@ -880,7 +966,9 @@ async function promptForModel(ctx: any, provider: JevProvider): Promise<string |
     label: m,
     note: m === "clef-flash" ? "cheapest, best for the per-write gate" : "strongest, costs about 6x more",
   }));
-  const index = await pickRow(ctx, "Jev Eye · Clef model", rows, "Per credential: the cheaper model suits the per-write gate.", { onBack: () => {} });
+  // No `onBack`: there is no previous screen inside this step, and advertising a `[←] Back` that
+  // cancelled the whole login read as "go back to the provider list" when it did not.
+  const index = await pickRow(ctx, "Jev Eye · Clef model", rows, "Per credential: the cheaper model suits the per-write gate.");
   return typeof index === "number" ? models[index] : undefined;
 }
 
@@ -894,7 +982,7 @@ const loginFlow = async (ctx: any): Promise<void | "back"> => {
       parts.push(`$CLOUDFLARE_API_TOKEN is set but $CLOUDFLARE_ACCOUNT_ID is not, so Clef stays unavailable.`);
     }
     parts.push("An exported key always takes precedence over the one stored here. Continue anyway?");
-    const proceed = await ctx.ui.confirm("pi-jev-eye · keys already in the environment", parts.join(" "));
+    const proceed = await promptForConfirm(ctx, "pi-jev-eye · keys already in the environment", parts.join(" "));
     if (!proceed) return;
   }
 
@@ -927,15 +1015,26 @@ const loginFlow = async (ctx: any): Promise<void | "back"> => {
   if (!provider) return back ? "back" : undefined;
   ctx.ui.notify(`[pi-jev-eye] ${providerTip(provider)}`, "info");
 
-  // Clef cannot be reached without an account id, so collect it before the secret.
+  // Clef cannot be reached without an account id, so collect it before the secret. An account id is
+  // not a secret: it is shown while typing, while the key stays bulleted.
   let accountId: string | undefined;
   if (provider.accountEnv) {
-    const envId = envAccountId(provider);
-    accountId = envId ?? (await promptForAccountId(ctx, provider));
-    if (!accountId) return;
+    accountId = envAccountId(provider);
+    if (!accountId) {
+      const hint = provider.accountEnv
+        ? `${provider.accountEnv} is not set. Paste the 32-char account id from dash.cloudflare.com (Workers AI > Use REST API). Enter confirms, Esc cancels.`
+        : "Paste the account id. Enter confirms, Esc cancels.";
+      const enteredId = await promptForText(ctx, "Cloudflare account ID", hint, true);
+      if (enteredId === undefined) return;
+      accountId = String(enteredId).trim();
+      if (!isCloudflareAccountId(accountId)) {
+        ctx.ui.notify("[pi-jev-eye] A Cloudflare account id is 32 hexadecimal characters. Nothing was saved.", "error");
+        return;
+      }
+    }
   }
 
-  const entered = await promptForSecret(ctx, provider);
+  const entered = await promptForText(ctx, `${provider.label} API key`, `Paste the key from ${provider.keyHint}.`);
   if (entered === undefined) return;
 
   const key = entered.trim();
@@ -999,7 +1098,7 @@ const logoutFlow = async (ctx: any): Promise<void | "back"> => {
   // One backend logged in: no picker worth showing, just confirm that one.
   if (storedIds.length === 1) {
     const only = storedIds[0];
-    const confirmed = await ctx.ui.confirm(`Log out of ${providerLabelOf(only)}?`, `Remove the stored key for ${providerLabelOf(only)} from ${AUTH_PATH}?${envNote}`);
+    const confirmed = await promptForConfirm(ctx, `Log out of ${providerLabelOf(only)}?`, `Remove the stored key for ${providerLabelOf(only)} from ${AUTH_PATH}?${envNote}`);
     if (!confirmed) return;
     await removeStoredCredentials(ctx, [only], envNote);
     return;
@@ -1015,7 +1114,7 @@ const logoutFlow = async (ctx: any): Promise<void | "back"> => {
   if (index === "back") return "back";
   if (typeof index !== "number") return;
   const target = choices[index] ?? choices[choices.length - 1];
-  const confirmed = await ctx.ui.confirm(`Log out of ${target.label}?`, `Remove ${target.ids.map(providerLabelOf).join(", ")} from ${AUTH_PATH}?${envNote}`);
+  const confirmed = await promptForConfirm(ctx, `Log out of ${target.label}?`, `Remove ${target.ids.map(providerLabelOf).join(", ")} from ${AUTH_PATH}?${envNote}`);
   if (!confirmed) return;
   await removeStoredCredentials(ctx, target.ids, envNote);
 };
@@ -1404,11 +1503,13 @@ const keycap = (key: string) =>
 const eyeMode = (enabled: boolean, reviewMode: boolean): "ON" | "REVIEW" | "OFF" =>
   !enabled ? "OFF" : reviewMode ? "REVIEW" : "ON";
 
-const statusFooter = (enabled: boolean, reviewMode: boolean) =>
-  `[Enter] Done  [Esc] Cancel  [←] Back  [${keycap(TOGGLE_KEY)}] Supervisor  [${keycap(GATE_KEY)}] Grant folder`;
-
-// Read-only screens (usage) advertise no key that would not act on them.
-const PANEL_FOOTER = "[Enter] Done  [Esc] Cancel  [←] Back";
+/**
+ * The framed screens' keybind legend, in one place so a new screen cannot invent its own wording or
+ * advertise a key it does not act on. A read-only screen (usage) carries no toggles. The footer wraps
+ * inside the frame, so no key is dropped on a narrow terminal.
+ */
+const panelKeys = (controls: boolean): string[] =>
+  ["[Enter] Done", "[Esc] Cancel", "[←] Back", ...(controls ? [`[${keycap(TOGGLE_KEY)}] Supervisor`, `[${keycap(GATE_KEY)}] Grant folder`] : [])];
 
 function cycleEyeState(ctx?: any): "ON" | "REVIEW" | "OFF" {
   if (!state.enabled) {
@@ -1962,7 +2063,7 @@ export default function (pi: ExtensionAPI) {
   /** `/jev-eye status`: the framed panel, falling back to the same body as plain text without a TUI. */
   const showStatus = async (ctx: any): Promise<void | "back"> => {
     if (ctx.mode !== "tui") {
-      ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx), "", statusFooter(state.enabled, state.reviewMode)].join("\n"), "info");
+      ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx), "", panelKeys(true).join("  ")].join("\n"), "info");
       return;
     }
 

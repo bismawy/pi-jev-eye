@@ -393,37 +393,44 @@ export function statusRow(
 // colour is a parameter because arnative themes have a soft token while built-in themes only have accent.
 export type BoxTheme = { fg(color: string, text: string): string };
 
-/** The arnative themes' `accentSoft`; any other theme gets `accent`. Probed once, like the reference. */
-export function boxBorderPainter(theme: BoxTheme | null | undefined): (text: string) => string {
+/**
+ * The first token of `tokens` the theme actually defines, or undefined when it defines none. Every
+ * `theme.fg` throws on an unknown token (`Unknown theme color: tint`), so a token has to be probed
+ * before it is used — `accentSoft` and `tint` exist only in arnative themes, and the live theme
+ * picker makes the built-in ones reachable.
+ */
+function firstToken(fg: (color: string, text: string) => string, tokens: string[]): string | undefined {
+  return tokens.find((token) => {
+    try {
+      fg(token, "");
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** A painter for one probed token; identity when the theme defines none of them. */
+const tokenPainter = (theme: BoxTheme | null | undefined, tokens: string[]): ((text: string) => string) => {
   const fg = theme?.fg?.bind(theme);
-  if (!fg) return (text) => text;
-  try {
-    fg("accentSoft", "");
-    return (text) => fg("accentSoft", text);
-  } catch {
-    return (text) => fg("accent", text);
-  }
+  const token = fg ? firstToken(fg, tokens) : undefined;
+  return token && fg ? (text) => fg(token, text) : (text) => text;
+};
+
+/**
+ * The box border: the arnative soft tint where the theme has it, otherwise the session's thinking
+ * slot. `thinking*` exists in every theme (`ThemeColor`), so a built-in theme keeps a coloured frame
+ * that still follows the reasoning effort; with no theme at all the border is uncoloured. */
+export function borderPainter(theme: BoxTheme | null | undefined, thinkingLevel?: string): (text: string) => string {
+  return tokenPainter(theme, ["accentSoft", thinkingColorSlot(thinkingLevel), "accent"]);
 }
 
 /**
  * Painter for a chosen row's body — the arnative rule: the `→` marker keeps the accent, the text moves
- * to the soft tint. `accentSoft` is arnative-only, so probe it and fall back to `thinkingText`, which
- * every theme defines (unlike `tint`). Picking rows (`accent`) is the built-in look, not this one. */
+ * to the soft tint. `accentSoft` is arnative-only, so fall back to `thinkingText` (which every theme
+ * defines, unlike `tint`) and then to `accent`. */
 export function chosenRowPainter(theme: BoxTheme | null | undefined): (text: string) => string {
-  const fg = theme?.fg?.bind(theme);
-  if (!fg) return (text) => text;
-  const accent = (text: string) => fg("accent", text);
-  try {
-    fg("accentSoft", ""); // probe once here, or the first row would throw instead of falling back
-    return (text) => fg("accentSoft", text);
-  } catch {
-    try {
-      fg("thinkingText", "");
-      return (text) => fg("thinkingText", text);
-    } catch {
-      return accent;
-    }
-  }
+  return tokenPainter(theme, ["accentSoft", "thinkingText", "accent"]);
 }
 
 /** `╭───╮` / `╰───╯`. Width holds at 1-2 because a line shorter than the frame beats a downshifted one. */
@@ -439,6 +446,58 @@ export function boxRow(content: string, width: number, paint: (text: string) => 
   // Two walls, two spaces and one content column need four; below that a blank line beats an overflowing one.
   if (width < 4) return "";
   return `${paint("│")} ${content}${" ".repeat(Math.max(0, width - visibleWidth(content) - 3))}${paint("│")}`;
+}
+
+/**
+ * Wrap already-styled rows in the rounded frame: one top edge, one row per line, one bottom edge.
+ * Rows must already be truncated to `width - 4`; this only adds the walls.
+ */
+export function boxFrame(rows: string[], width: number, paint: (text: string) => string = (text) => text): string[] {
+  return [boxEdge("╭", "╮", width, paint), ...rows.map((row) => boxRow(row, width, paint)), boxEdge("╰", "╯", width, paint)];
+}
+
+/**
+ * Word-wrap plain text to `width` columns. An explicit newline stays a break (so a caller can pass a
+ * pre-composed multi-line hint), and a word wider than the row stays whole for the caller to truncate
+ * rather than being cut here. Always returns at least one row, so a line in the frame is never lost.
+ */
+export function wrapWords(text: string, width: number): string[] {
+  const rows: string[] = [];
+  for (const paragraph of String(text).split("\n")) {
+    let row = "";
+    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+      const candidate = row ? `${row} ${word}` : word;
+      if (row && visibleWidth(candidate) > width) {
+        rows.push(row);
+        row = word;
+        continue;
+      }
+      row = candidate;
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+/**
+ * Pack footer pairs into rows that fit `width` columns, two spaces between pairs and never inside one.
+ * A legend longer than the screen wraps onto the next row instead of being truncated — a key that is
+ * advertised but invisible is a key the operator never learns.
+ */
+export function packPairs(pairs: string[], width: number): string[] {
+  const rows: string[] = [];
+  let row = "";
+  for (const pair of pairs) {
+    const candidate = row ? `${row}  ${pair}` : pair;
+    if (row && visibleWidth(candidate) > width) {
+      rows.push(row);
+      row = pair;
+      continue;
+    }
+    row = candidate;
+  }
+  if (row) rows.push(row);
+  return rows;
 }
 
 /** ANSI escape sequences (CSI, OSC, and single-character escapes) — they occupy no terminal columns. */
