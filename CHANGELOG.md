@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **The three `/jev-eye` screens are drawn inside an Arnative box** — `╭───╮ … ╰───╯` with one row per line, matching `/arnative`. The old top-and-bottom dashed rules became a real frame for `login`, `routing`, `status`, and `usage`.
+- `boxBorderPainter`, `boxEdge`, `boxRow`, `visibleWidth` in `extensions/layer1.ts`: the frame math is pure (theme `fg` handed in as an argument), so `npm test` covers it without importing `pi-tui`. Border colour probes `accentSoft` once and falls back to `accent`, which is the only token a built-in theme has.
+- A row wider than the frame is truncated before it is wrapped, so a styled wide-glyph row still lands exactly on the frame width; a component handed a 1–3 column width degrades instead of shifting the screen.
+- Every custom screen (`login` picker, `routing`, `status`, `usage`) now guards on `ctx.mode === "tui"`. In RPC mode `ctx.ui.custom` is a documented no-op that resolves `undefined` without drawing, so the old `typeof ctx.ui.custom === "function"` test passed and then silently did nothing — login was cancelled and status/usage printed a blank panel over RPC.
+
+---
+
 ## [0.1.17] - 2026-10-11
 
 ### Added

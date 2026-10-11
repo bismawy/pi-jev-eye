@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, sumDays, wipeTarget } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, boxBorderPainter, boxEdge, boxRow, cfRunUrl, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, putCredential, removeCredentials, storedProviderIds, sumDays, visibleWidth, wipeTarget } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -263,4 +263,42 @@ test("the free-neuron budget reports what is left and what overage would cost", 
   assert.equal(over.overageUsd, 0.022, "2000 neurons over at $0.011/1000");
 
   assert.equal(clefBudget(-5).used, 0, "a negative counter clamps instead of reporting extra budget");
+});
+
+test("the box chrome frames every line to the requested width", () => {
+  const plain = (text) => text;
+  assert.equal(boxEdge("╭", "╮", 10, plain), "╭────────╮");
+  assert.equal(boxRow("abc", 10, plain), "│ abc    │", "content then padding then the right wall");
+  assert.equal(visibleWidth(boxRow("abc", 10, plain)), 10);
+  assert.equal(visibleWidth(boxEdge("╭", "╮", 10, plain)), 10);
+});
+
+test("the box survives widths where the frame does not fit", () => {
+  // Pi can hand a component width 3; a frame that is longer than the width shifts the whole screen.
+  for (const width of [1, 2, 3, 4, 8]) {
+    assert.equal(visibleWidth(boxEdge("╭", "╮", width, (t) => t)) <= Math.max(width, 2), true, `edge at width ${width}`);
+    const row = visibleWidth(boxRow("a", width, (t) => t));
+    assert.equal(row <= width, true, `row at width ${width} is ${row} wide`);
+  }
+});
+
+test("box width ignores ANSI escapes and counts wide glyphs as two", () => {
+  assert.equal(visibleWidth("\x1b[31mab\x1b[0m"), 2, "an SGR sequence occupies no columns");
+  assert.equal(visibleWidth("\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\"), 4, "an OSC 8 hyperlink occupies no columns");
+  assert.equal(visibleWidth("日本"), 4, "two full-width glyphs");
+  const row = boxRow("\x1b[31m日本\x1b[0m", 8, (t) => t);
+  assert.equal(visibleWidth(row), 8, "a styled wide row still lands on the frame width");
+});
+
+test("the border uses the soft accent when the theme has it and falls back to accent", () => {
+  const withSoft = boxBorderPainter({ fg: (color, text) => `<${color}>${text}</${color}>` });
+  assert.equal(withSoft("x"), "<accentSoft>x</accentSoft>");
+  const withoutSoft = boxBorderPainter({
+    fg: (color, text) => {
+      if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
+      return `<${color}>${text}</${color}>`;
+    },
+  });
+  assert.equal(withoutSoft("x"), "<accent>x</accent>", "a built-in theme must not throw the box away");
+  assert.equal(boxBorderPainter(null)("x"), "x", "no theme yet means no colour, not a crash");
 });

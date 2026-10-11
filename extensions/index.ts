@@ -9,6 +9,9 @@ import {
   VERIFICATION_COMMAND_PATTERNS,
   addProviderTotals,
   backendTotals,
+  boxBorderPainter,
+  boxEdge,
+  boxRow,
   cfRunUrl,
   clefBody,
   clefBudget,
@@ -302,9 +305,10 @@ class LoginPicker {
 
   render(width: number): string[] {
     const t = this.theme;
-    const border = () => t.fg("accent", "─".repeat(Math.max(1, width)));
+    const paint = boxBorderPainter(t);
+    const inner = width - 4; // two walls, two spaces
+    const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
     const lines = [
-      border(),
       t.fg("accent", t.bold("Jev Eye · Login")),
       t.fg("muted", "Pick the backend for the Jev gate. A stored key is reused until replaced."),
       "",
@@ -324,8 +328,8 @@ class LoginPicker {
     }
     lines.push("");
     lines.push(t.fg("dim", "[↑↓] move  [Enter] choose  [Esc] cancel"));
-    lines.push(border());
-    return lines.map((line) => truncateToWidth(line, width, ""));
+    // Arnative frame: round corners, one content row per line, so a short terminal clips cleanly.
+    return [boxEdge("╭", "╮", width, paint), ...lines.map(row), boxEdge("╰", "╯", width, paint)];
   }
 
   invalidate(): void {}
@@ -501,19 +505,18 @@ class RoutingPicker {
 
   render(width: number): string[] {
     const t = this.theme;
+    const paint = boxBorderPainter(t);
+    const inner = width - 4; // two walls, two spaces
+    const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
     const rows = this.filtered();
-    const lines: string[] = [];
-    // Framing follows the same rule as the vision-watcher panel: a full-width border in the theme accent.
-    const border = () => t.fg("accent", "─".repeat(Math.max(1, width)));
-
-    lines.push(border());
-    lines.push(t.fg("accent", t.bold("Jev Eye · Routing")));
-    lines.push(
-      t.fg("muted", "Route light chores to a cheap model and real review to the strongest one. ctrl+r turns routing on/off.")
-    );
-    lines.push("");
-    lines.push(`${t.fg("accent", "> ")}${this.query}${this.query ? "" : t.fg("dim", "type to filter")}`);
-    lines.push("");
+    const lines: string[] = [
+      t.fg("accent", t.bold("Jev Eye · Routing")),
+      t.fg("muted", "Route light chores to a cheap model and real review to the strongest one. ctrl+r turns routing on/off."),
+      "",
+      // The query is one line, but a stray paste must never break the frame: spread it first.
+      ...`${t.fg("accent", "> ")}${this.query}${this.query ? "" : t.fg("dim", "type to filter")}`.split("\n"),
+      "",
+    ];
 
     const start = Math.max(0, Math.min(this.index - Math.floor(RoutingPicker.WINDOW / 2), Math.max(0, rows.length - RoutingPicker.WINDOW)));
     const slice = rows.slice(start, start + RoutingPicker.WINDOW);
@@ -557,8 +560,7 @@ class RoutingPicker {
       "[Esc] Cancel",
     ].join("  ");
     lines.push(`${t.fg("accent", count)}${t.fg("dim", ` · ${legend}`)}`);
-    lines.push(border());
-    return lines;
+    return [boxEdge("╭", "╮", width, paint), ...lines.map(row), boxEdge("╰", "╯", width, paint)];
   }
 
   invalidate(): void {}
@@ -620,10 +622,11 @@ class StatusPanel {
 
   render(width: number): string[] {
     const t = this.theme;
-    // Framing follows the same rule as the routing picker: a full-width border in the theme accent.
-    const border = () => t.fg("accent", "─".repeat(Math.max(1, width)));
+    const paint = boxBorderPainter(t);
+    const inner = width - 4; // two walls, two spaces
+    const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
+    // Same round frame as the routing and login pickers; the controls line stays live.
     const lines = [
-      border(),
       // Same nesting Pi's own headers use (fg outside bold) — tmux capture-pane did not show the
       // colour, the raw render bytes do.
       t.fg("accent", t.bold(this.title)),
@@ -632,9 +635,8 @@ class StatusPanel {
       ...this.lines,
       "",
       t.fg("dim", this.controls ? statusFooter(state.enabled, state.reviewMode) : PANEL_FOOTER),
-      border(),
     ];
-    return lines.map((line) => truncateToWidth(line, width, ""));
+    return [boxEdge("╭", "╮", width, paint), ...lines.map(row), boxEdge("╰", "╯", width, paint)];
   }
 
   invalidate(): void {}
@@ -725,10 +727,11 @@ const loginFlow = async (ctx: any): Promise<void> => {
   }
 
   // Pi's selector renders one fixed string per row, so it cannot show a tip that follows the cursor.
-  // The custom picker can; the headless path keeps the same choices as plain rows.
+  // The custom picker can; RPC and headless sessions keep the same choices as plain rows, because
+  // `ctx.ui.custom` is a documented no-op there (rpc-extension-ui.md).
   const { store } = readAuthStore();
   let provider: JevProvider | null;
-  if (typeof ctx.ui.custom === "function") {
+  if (ctx.mode === "tui") {
     provider = await ctx.ui.custom<JevProvider | null>((tui: any, theme: any, _kb: any, done: (value: JevProvider | null) => void) => {
       const picker = new LoginPicker(theme, store, done);
       return {
@@ -1684,7 +1687,9 @@ export default function (pi: ExtensionAPI) {
   /** `/jev-eye usage`: the same framed panel as status, with the spend breakdown. */
   const showUsage = async (ctx: any): Promise<void> => {
     const balance = await usageBalance(resolveJevAuth());
-    if (typeof ctx.ui.custom !== "function") {
+    // `custom` is a no-op in RPC (rpc-extension-ui.md): it resolves undefined without drawing anything,
+    // so the text fallback must be chosen by mode, not by the method existing.
+    if (ctx.mode !== "tui") {
       ctx.ui.notify([USAGE_TITLE, USAGE_DESC, "", ...buildUsage(ctx, undefined, balance)].join("\n"), "info");
       return;
     }
@@ -1765,7 +1770,7 @@ export default function (pi: ExtensionAPI) {
 
   /** `/jev-eye status`: the framed panel, falling back to the same body as plain text without a TUI. */
   const showStatus = async (ctx: any): Promise<void> => {
-    if (typeof ctx.ui.custom !== "function") {
+    if (ctx.mode !== "tui") {
       ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx), "", statusFooter(state.enabled, state.reviewMode)].join("\n"), "info");
       return;
     }
@@ -1814,7 +1819,7 @@ export default function (pi: ExtensionAPI) {
 
     const current = readRouting();
 
-    if (typeof ctx.ui.custom !== "function") {
+    if (ctx.mode !== "tui") {
       // Headless fallback keeps the same semantics with two plain lists.
       const refs = ["(none)", ...available.map((m: any) => `${m.provider}/${m.id}`)];
       const light = await ctx.ui.select("Light model", refs);

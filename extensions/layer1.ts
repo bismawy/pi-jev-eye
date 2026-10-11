@@ -340,3 +340,48 @@ export const VERIFICATION_COMMAND_PATTERNS = [
   /\b(go\s+(test|vet))\b/i,
   /\bvitest\b/i,
 ];
+
+// --- Arnative box chrome (pure: hand the theme's fg function in, so `npm test` needs no pi-tui) ---
+// Same glyphs as `@bismawy/pi-arnative` lib/box.ts: round corners, one content row per item. Border
+// colour is a parameter because arnative themes have a soft token while built-in themes only have accent.
+export type BoxTheme = { fg(color: string, text: string): string };
+
+/** The arnative themes' `accentSoft`; any other theme gets `accent`. Probed once, like the reference. */
+export function boxBorderPainter(theme: BoxTheme | null | undefined): (text: string) => string {
+  const fg = theme?.fg?.bind(theme);
+  if (!fg) return (text) => text;
+  try {
+    fg("accentSoft", "");
+    return (text) => fg("accentSoft", text);
+  } catch {
+    return (text) => fg("accent", text);
+  }
+}
+
+/** `╭───╮` / `╰───╯`. Width holds at 1-2 because a line shorter than the frame beats a downshifted one. */
+export function boxEdge(left: string, right: string, width: number, paint: (text: string) => string = (text) => text): string {
+  return paint(`${left}${"─".repeat(Math.max(0, width - 2))}${right}`);
+}
+
+/**
+ * `│ text │` for one already-styled row. Visible width is computed from the already-styled string
+ * because layer1 must stay free of pi-tui imports.
+ */
+export function boxRow(content: string, width: number, paint: (text: string) => string = (text) => text): string {
+  // Two walls, two spaces and one content column need four; below that a blank line beats an overflowing one.
+  if (width < 4) return "";
+  return `${paint("│")} ${content}${" ".repeat(Math.max(0, width - visibleWidth(content) - 3))}${paint("│")}`;
+}
+
+/** ANSI escape sequences (CSI, OSC, and single-character escapes) — they occupy no terminal columns. */
+const ANSI_ESCAPE = /\x1b(?:\[[0-9;:?]*[A-Za-z]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
+
+/** Terminal columns of a styled string: strip ANSI, then count full-width glyphs as two (East Asian W/F). */
+export function visibleWidth(text: string): number {
+  let wide = 0;
+  for (const char of text.replace(ANSI_ESCAPE, "")) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code >= 0x1100 && (code <= 0x115f || code === 0x2329 || code === 0x232a || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) || (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe30 && code <= 0xfe6f) || (code >= 0xff00 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6) || (code >= 0x1f300 && code <= 0x1f64f) || (code >= 0x20000 && code <= 0x3fffd))) wide += 1;
+  }
+  return [...text.replace(ANSI_ESCAPE, "")].length + wide;
+}
