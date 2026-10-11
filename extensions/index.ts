@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Container, CURSOR_MARKER, Input, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, CURSOR_MARKER, Input, Key, matchesKey, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
   DESTRUCTIVE_BASH_PATTERNS,
@@ -434,12 +434,14 @@ class ListPicker {
     const inner = width - 4; // two walls, two spaces
     const row = (content: string) => boxRow(truncateToWidth(content, inner, ""), width, paint);
     const lines = [t.fg("accent", t.bold(this.title)), t.fg("muted", this.subtitle), ""];
+    // Every label is padded to the widest one, so all `·` dividers land in one column (as in `menuLabels`).
+    const column = Math.max(...this.rows.map((item) => visibleWidth(item.label)));
     for (const [i, item] of this.rows.entries()) {
       const chosen = i === this.index;
       const label = chosen ? this.soft(item.label) : t.fg(item.note ? "text" : "muted", item.label);
-      // Two spaces per side keeps the `·` divider in its own column, so labels and notes line up.
-      const note = item.note ? `${t.fg("dim", " · ")}${t.fg("dim", item.note)}` : "";
-      lines.push(`${chosen ? t.fg("accent", "→ ") : "  "}${label}${note}`);
+      const pad = " ".repeat(Math.max(0, column - visibleWidth(item.label)));
+      const note = item.note ? `${t.fg("dim", "  ·  ")}${t.fg("dim", item.note)}` : "";
+      lines.push(`${chosen ? t.fg("accent", "→ ") : "  "}${label}${pad}${note}`);
     }
     lines.push("");
     lines.push(t.fg("dim", this.footer));

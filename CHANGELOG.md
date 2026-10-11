@@ -9,7 +9,7 @@
 - `[Home]`/`[End]` jump to the ends of a rounded-box list.
 
 ### Changed
-- Picker rows are split into a label and a note, so the `·` divider holds its own column and labels line up down the list.
+- Picker rows are split into a label and a note, and every label is padded to the widest one, so all `·` dividers land in a single column (`Login    ·  …` / `Routing  ·  …`) instead of drifting with the label length.
 - Keybind legends follow one style everywhere: explicitly bracketed keys, action capitalized, `dim` paint.
 - **Every `/jev-eye` menu is now a rounded box.** The root `/jev-eye` menu, the logout picker, and the Clef model picker were still `ctx.ui.select`, which Pi renders itself with two full-width rules, so no frame could reach them. A shared `pickRow` helper now drives all of them: the rounded box in TUI mode, `ctx.ui.select` over RPC and headless. This is what the earlier frame change missed — the screens it converted were the custom ones, and the menus were not custom.
 - `ListPicker` in `extensions/index.ts`: one list component for every menu (title, optional subtitle, pre-styled rows, footer), so a new menu does not re-implement the frame or the key handling.
