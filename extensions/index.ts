@@ -30,7 +30,7 @@ import { JEV_MAX_ROUTING_CALLS, classifyWeight, isLightByPattern, readRouting } 
  * without a release. Only the Cloudflare models route is read, and only when a credential exists; a failed
  * or absent request leaves the shipped list in place, so an offline session still offers the known models.
  */
-async function refreshClefModels(ctx: any): Promise<void> {
+async function refreshClefModels(): Promise<void> {
   const auth = resolveJevAuth();
   if (auth?.provider.id !== "cloudflare") return;
   try {
@@ -67,11 +67,16 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify("[pi-jev-eye] Reviewed turn: report contract injected; the write gate will compare code against this request.", "info");
     }
 
+    let target: "light" | "heavy" | "unclear" | null = null;
+    // Built before any branch that can return early: a reviewed turn keeps its contract on the routing-off
+    // path, the exhausted-budget path, and the no-credential path, instead of losing it to an early return.
+    const contract = reviewed ? { message: { customType: "pi-jev-eye-review", content: REVIEW_CONTRACT, display: true } } : undefined;
+
     const routing = readRouting();
     if (!routing.enabled || !routing.light || !routing.heavy) {
-      return reviewed ? { message: { customType: "pi-jev-eye-review", content: REVIEW_CONTRACT, display: true } } : undefined;
+      return contract;
     }
-    let target: "light" | "heavy" | "unclear" | null = isLightByPattern(prompt) ? "light" : null;
+    target = isLightByPattern(prompt) ? "light" : null;
 
     if (!target) {
       if (state.stats.jevRoutingCalls >= JEV_MAX_ROUTING_CALLS) {
@@ -82,14 +87,13 @@ export default function (pi: ExtensionAPI) {
             "warning"
           );
         }
-        return;
+        return contract;
       }
       const auth = authChain(readBackends());
-      if (auth.length === 0) return;
+      if (auth.length === 0) return contract;
       target = await classifyWeight(prompt, auth);
     }
 
-    const contract = reviewed ? { message: { customType: "pi-jev-eye-review", content: REVIEW_CONTRACT, display: true } } : undefined;
     if (target !== "light" && target !== "heavy") return contract;
 
     const ref = target === "light" ? routing.light : routing.heavy;
@@ -98,7 +102,7 @@ export default function (pi: ExtensionAPI) {
 
     if (!model) {
       ctx.ui.notify(`[pi-jev-eye] Routing target ${ref} is not an available model; keeping the current one.`, "warning");
-      return;
+      return contract;
     }
 
     const current = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
@@ -200,7 +204,7 @@ export default function (pi: ExtensionAPI) {
 
   // Publish supervisor state to the status bar on every session start/reload.
   pi.on("session_start", async (_event: any, ctx: any) => {
-    await refreshClefModels(ctx);
+    await refreshClefModels();
     syncEyeStatus(ctx);
   });
 
