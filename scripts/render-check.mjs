@@ -720,6 +720,14 @@ console.log("render checks OK");
   const { mkdirSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { syncEyeStatus } = await import(new URL("../extensions/supervisor.ts", import.meta.url).href);
+  // Resolved once, and only here: the peer package is a sibling checkout when it exists, so a clone
+  // without `../pi-arnative` still runs every other check instead of dying on a missing module.
+  let footer = null;
+  try {
+    footer = await import(new URL("../../pi-arnative/extensions/footer.ts", import.meta.url).href);
+  } catch {
+    console.log("footer checks skipped: no ../pi-arnative checkout beside this repo");
+  }
   const eyeDir = join(process.env.HOME, ".pi", "agent", "pi-jev-eye");
   mkdirSync(eyeDir, { recursive: true });
   // Both credentials are stored: the point is that the cell follows the PICK, not that one key exists.
@@ -765,31 +773,33 @@ console.log("render checks OK");
   syncEyeStatus({ ui: { setStatus: (_key, value) => skipped.push(value) } });
   assert.equal(skipped[0], "Eye: ● ON (Jev)", `a keyless Clef pick is skipped for the fallback, got ${JSON.stringify(skipped[0])}`);
 
-  // The footer's parse: `(Backend)` is the suffix and the only dim run, so `Eye: ● ON` stays readable.
-  const { jevEyeStatusLine } = await import("/run/media/bisma/DATA/Pi/pi-arnative/extensions/footer.ts");
-  const dim = (text) => `\x1b[2m${text}\x1b[22m`;
-  const line = jevEyeStatusLine("Eye: ● ON (Clef Flash)", (t) => t, dim, (t) => t, undefined);
-  // The glyph is U+F21B (`fa-user_secret`): pinned by codepoint, because a swapped-in Nerd glyph that
-  // renders blank on another platform is exactly the bug the ponytail cell had (`\\uf51` -> `\\uef04`).
-  assert.equal(strip(line).codePointAt(0), 0xf21b, `the cell leads with U+F21B, got U+${strip(line).codePointAt(0).toString(16).toUpperCase()}`);
-  // One space between the glyph and the label: the two spaces the wider previous glyph needed read as a
-  // gap once `\uf21b` took its place. Asserted on the exact string, so a stray pad fails here.
-  assert.equal(strip(line), "\uf21b" + " Eye: ● ON (Clef Flash)", "the footer keeps the value verbatim once painted");
-  assert.equal(strip(line).includes("\uf21b" + "  "), false, "the icon is followed by one space, not two");
-  assert.deepEqual([...line.matchAll(/\x1b\[2m(.*?)\x1b\[22m/g)].map((m) => m[1]), ["(Clef Flash)"], "only the backend suffix is dim");
-  assert.equal(jevEyeStatusLine("Eye: ● ON", (t) => t, dim, (t) => t, undefined).includes("("), false, "a value with no backend gains no guessed parenthesis");
+  if (footer) {
+    // The footer's parse: `(Backend)` is the suffix and the only dim run, so `Eye: ● ON` stays readable.
+    const { jevEyeStatusLine } = footer;
+    const dim = (text) => `\x1b[2m${text}\x1b[22m`;
+    const line = jevEyeStatusLine("Eye: ● ON (Clef Flash)", (t) => t, dim, (t) => t, undefined);
+    // The glyph is U+F21B (`fa-user_secret`): pinned by codepoint, because a swapped-in Nerd glyph that
+    // renders blank on another platform is exactly the bug the ponytail cell had (`\\uf51` -> `\\uef04`).
+    assert.equal(strip(line).codePointAt(0), 0xf21b, `the cell leads with U+F21B, got U+${strip(line).codePointAt(0).toString(16).toUpperCase()}`);
+    // One space between the glyph and the label: the two spaces the wider previous glyph needed read as a
+    // gap once `\uf21b` took its place. Asserted on the exact string, so a stray pad fails here.
+    assert.equal(strip(line), "\uf21b" + " Eye: ● ON (Clef Flash)", "the footer keeps the value verbatim once painted");
+    assert.equal(strip(line).includes("\uf21b" + "  "), false, "the icon is followed by one space, not two");
+    assert.deepEqual([...line.matchAll(/\x1b\[2m(.*?)\x1b\[22m/g)].map((m) => m[1]), ["(Clef Flash)"], "only the backend suffix is dim");
+    assert.equal(jevEyeStatusLine("Eye: ● ON", (t) => t, dim, (t) => t, undefined).includes("("), false, "a value with no backend gains no guessed parenthesis");
 
-  writeFileSync(join(eyeDir, "backends.json"), JSON.stringify({ version: 1, primary: "", fallback: "" }), { mode: 0o600 });
+    writeFileSync(join(eyeDir, "backends.json"), JSON.stringify({ version: 1, primary: "", fallback: "" }), { mode: 0o600 });
 
-  // The router rule: the footer recognises the cell by the LABEL its value carries, because the value
-  // contains no `jev-eye` anywhere. `value.includes("jev-eye")` was the old test and it went false — the
-  // cell fell through to the generic path and lost its icon and its dim suffix.
-  const { isJevEyeStatus } = await import("/run/media/bisma/DATA/Pi/pi-arnative/extensions/footer.ts");
-  assert.equal(isJevEyeStatus("Eye: ● ON (Clef Flash)"), true, "the published value is recognised as its own cell");
-  assert.equal(isJevEyeStatus("Eye: ○ OFF (Jev)"), true, "every mode's value is, REVIEW included");
-  assert.equal(isJevEyeStatus("Jev: ● ON"), false, "the previous format is not claimed as this cell");
-  assert.equal(isJevEyeStatus("MCP: 2 servers enabled"), false, "and neither is another extension's status");
-  assert.equal("Eye: ● ON (Clef Flash)".includes("jev-eye"), false, "the value carries no internal key name, which is what broke the old matcher");
+    // The router rule: the footer recognises the cell by the LABEL its value carries, because the value
+    // contains no `jev-eye` anywhere. `value.includes("jev-eye")` was the old test and it went false — the
+    // cell fell through to the generic path and lost its icon and its dim suffix.
+    const { isJevEyeStatus } = footer;
+    assert.equal(isJevEyeStatus("Eye: ● ON (Clef Flash)"), true, "the published value is recognised as its own cell");
+    assert.equal(isJevEyeStatus("Eye: ○ OFF (Jev)"), true, "every mode's value is, REVIEW included");
+    assert.equal(isJevEyeStatus("Jev: ● ON"), false, "the previous format is not claimed as this cell");
+    assert.equal(isJevEyeStatus("MCP: 2 servers enabled"), false, "and neither is another extension's status");
+    assert.equal("Eye: ● ON (Clef Flash)".includes("jev-eye"), false, "the value carries no internal key name, which is what broke the old matcher");
+  }
 }
 
 // Saving in `/jev-eye models` must republish the footer cell, not only write the file. The operator saw

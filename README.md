@@ -21,10 +21,9 @@ pi-jev-eye is an ultra-lean, zero-dependency supervisor for [pi](https://github.
 - **Instant Regex Gate:** 0 ms, 0 token barrier blocking wipes (`rm -rf /`, `DROP DATABASE`), protected branch force-pushes, and hardcoded secrets (`sk-...`, `ghp_...`, SSH keys).
 - **Done-Check Verification:** Warns when the agent claims done after editing files without running verification suites (`npm test`, `cargo test`, `pytest`).
 - **Targeted Jev Semantic Gate:** Evaluates diffs ≥ 10 lines via TypeSafe Jev (`has_slop`) to reject placeholder stubs and unfulfilled TODOs.
-- **Three Decision Backends:** TypeSafe Jev, OpenRouter, or **Cloudflare Workers AI (Clef / `clef-flash`)** — same gated pipeline, chosen once at `/jev-eye accounts`. Clef runs inside Cloudflare's free daily allowance of 10,000 neurons, so the gate costs nothing for most sessions.
+- **Three Decision Backends:** TypeSafe Jev, OpenRouter, or **Cloudflare Workers AI (Clef / `clef-flash`)** — same gated pipeline, with the active one chosen in `/jev-eye models`. Clef runs inside Cloudflare's free daily allowance of 10,000 neurons, so the gate costs nothing for most sessions.
 - **Jev + Clef Usage Panel (`/jev-eye usage`):** One compact table shows Jev and Clef side by side (requests, input tokens, cost for the month), three period totals, and the Cloudflare free-neuron budget with its reset time and overage cost. Periods that predate the split are reported as an explicit `Earlier` row rather than silently dropping out of the table.
 - **Reviewed Turns (`jev` / `@jev` / `/eye`):** Calibrated review contract with machine facts, Jev scoring tables, and single-flight prompt alignment (`answers_request`). The flat `/eye <task>` form opens it without a prose token; so does writing `/eye` inside a sentence, because the marker is read from the prompt text and not only from the command.
-- **Per-Turn Model Routing:** Routes light chores (git commit, push, status) to a fast model and complex engineering tasks to a heavy model with independent reasoning controls.
 - **Fail-Open Reliability:** Network timeouts or offline provider APIs gracefully degrade so coding sessions never stall or freeze.
 - **Account Management in Place:** One Accounts screen lists every backend with its stored state — `[Enter]` stores a key, `[Ctrl+d]` removes one after a second confirming press, so switching backends never requires a separate logout menu.
 - **Rounded Arnative Screens:** Every `/jev-eye` screen — menu, accounts, models, status, usage, routing, the key prompt, and the confirm dialog — draws inside one rounded frame with a soft-accent border derived from the live theme, a bold soft-accent chosen row, a padded `·` column, and a footer that advertises only the keys it handles.
@@ -52,7 +51,7 @@ pi -e ./extensions/index.ts
 | --- | --- | --- |
 | `ctrl+alt+e` | Keybinding | Cycle supervisor mode: **ON** → **REVIEW** → **OFF** |
 | `ctrl+alt+u` | Keybinding | Cycle Jev folder gate: **Enable all** → **This folder** → **Disabled** |
-| `/jev-eye` | Global | Interactive menu: Accounts, Status, Usage, Routing |
+| `/jev-eye` | Global | Interactive menu: Accounts, Models, Status, Usage, Routing |
 | `/jev-eye accounts` | Setup | The Accounts screen: authenticate with TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef) against the live route (mode 0600), and remove the highlighted stored key with `[Ctrl+d]` (press twice) |
 | `/jev-eye models` | Setup | The Models screen: `[Space]` makes the highlighted backend the **active** one, `[Ctrl+f]` its **fallback**, saved to `backends.json` |
 | `/jev-eye status` | Inspect | Live state: supervisor, active backend and its fallback, gate scope, rules, routing, block counts. Spend lives in `usage` |
@@ -161,7 +160,7 @@ Tracks detailed usage in `~/.pi/agent/pi-jev-eye/usage.json` (plus legacy migrat
 - Cloudflare is billed in **neurons**, not dollars only: the panel shows today's neuron count against the 10,000/day free allowance (reset 00:00 UTC) and the overage at `$0.011/1,000` neurons. The rate is per model — `clef` 21,818 neurons/M input, `clef-flash` 3,455, `clef-omni` 13,636 — and output tokens are not billed.
 
 - **Daily & Monthly Telemetry:** Request counts (success/fail), token counters (input/output), and estimated dollar cost.
-- **Provider Balance:** Live credit lookup for OpenRouter accounts (`/api/v1/key`, cached 5m).
+- **Provider Balance:** Live credit lookup for OpenRouter accounts (`/api/v1/key`).
 - **Interception Stats:** Cumulative counts of Layer 1 regex blocks, Layer 2 done-check reminders, Layer 3 slop rejections, and reviewed turns.
 
 </details>
