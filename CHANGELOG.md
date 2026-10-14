@@ -1,6 +1,20 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.1] - 2026-10-14
+
+### Fixed
+- **A reviewed turn no longer loses its injected contract when routing returns early.** `before_agent_start` built the report contract after the routing branches, so three paths — the routing budget running out, no usable credential, and no available target model — returned `undefined` from a turn the operator had marked for review. The contract is now built once, before those branches.
+- **`[←]` from a sub-screen keeps the cursor on the row it came from.** The root menu rebuilds its picker on every loop pass and `ListPicker` always started at row 0, so backing out of Routing (or any other screen) landed on Accounts. `pickRow` takes an initial row, the menu remembers the last one, and the picker clamps it to the row count.
+
+### Removed
+- `usdPerMTokFor` in `extensions/core.ts` and the `AccountsPicker.providers` getter, both with no callers.
+- The `onBack` option on `ListPicker`/`pickRow`: the only caller never passed it, so the menu's footer advertised a back key its handler could not act on. `pickRow` also stopped returning a `"back"` value it swallowed itself.
+- The unused `ctx` parameter on `refreshClefModels`, and two orphaned comment blocks in `gate.ts` and `flows.ts` that described code in other files.
+
+### Changed
+- `npm run render-check` resolves the pi-arnative footer through a relative URL and checks the export, instead of importing an absolute path from one machine. A clone without that checkout, or with one on a branch that predates the helpers, skips those assertions with a notice instead of crashing the whole command.
+- `test/contract.test.mjs` reads the review contract's line threshold from `JEV_MIN_DIFF_LINES` instead of pinning the literal `10`, so changing the constant fails the check instead of leaving the contract and the gate disagreeing.
+- `README.md`: the active backend is chosen in `/jev-eye models` rather than at login, `Models` is listed in the `/jev-eye` menu row, and a duplicated routing bullet and an unimplemented balance `"cached 5m"` claim are gone.
 
 ## [0.2.0] - 2026-10-14
 
