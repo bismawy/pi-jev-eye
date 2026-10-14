@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, backendTotals, borderPainter, boxEdge, boxFrame, boxRow, cfRunUrl, chosenRowPainter, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, packPairs, putCredential, removeCredentials, storedProviderIds, statusRow, sumDays, thinkingColorSlot, visibleWidth, wipeTarget, wrapWords } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, assignBackend, backendFooterName, backendTotals, borderPainter, boxEdge, boxFrame, boxRow, cfRunUrl, chosenRowPainter, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefRowLabel, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, packPairs, putCredential, removeCredentials, storedProviderIds, statusRow, sumDays, thinkingColorSlot, validBackendRef, visibleWidth, wipeTarget, wrapWords } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -360,6 +360,46 @@ test("a chosen row's body takes the soft tint, never the accent", () => {
   assert.equal(chosenRowPainter(null)("Login"), "Login", "no theme yet means no colour, not a crash");
 });
 
+// The regression that made the menu look wrong on Pi 1.2.0: arnative's `colors` lost its custom keys, so
+// `fg("accentSoft")` throws and the old probe chain landed on `thinkingText` — a grey. The soft tier must
+// be DERIVED from the official token instead (L 0.82, chroma x 0.18, hue kept), which is byte-for-byte
+// what the theme generator declares in `vars.accentSoft`/`vars.secondarySoft`.
+test("a Pi 1.2.0 theme without accentSoft still gets the arnative soft tint, not a grey", () => {
+  /** The real Theme surface pi 1.2.0 exposes: `fg` rejects the custom keys, `style`+`colors` are the way in. */
+  const pi12 = (accentOklch, borderAccentOklch) => ({
+    colors: { accent: accentOklch, borderAccent: borderAccentOklch, thinkingText: { kind: "oklch", l: 0.72, c: 0.012, h: 232 } },
+    style: (text, { fg }) => `<${fg.kind}:${fg.l}:${fg.c.toFixed(5)}:${fg.h}>${text}</>`, // prettier-ignore
+    fg: (color, text) => {
+      if (color === "accentSoft" || color === "tint") throw new Error(`Unknown theme color: ${color}`);
+      return `<${color}>${text}</${color}>`;
+    },
+    bold: (text) => `<b>${text}</b>`,
+  });
+
+  // arnative.json: vars.accent oklch(78% 0.13 218), vars.accentSoft oklch(82% 0.0234 218).
+  const theme = pi12({ kind: "oklch", l: 0.78, c: 0.13, h: 218 }, { kind: "oklch", l: 0.82, c: 0.078, h: 218 });
+
+  assert.equal(
+    chosenRowPainter(theme)("Login"),
+    "<oklch:0.82:0.02340:218><b>Login</b></>",
+    "the chosen label is the derived soft accent AND bold, not a grey thinkingText"
+  );
+  assert.equal(
+    borderPainter(theme, "low")("x"),
+    "<oklch:0.82:0.01404:218>x</>",
+    "the border softens borderAccent, matching arnative's own frames, not thinkingLow"
+  );
+
+  // Pi <=1.1.0 still declares the token: the declared value wins so nothing changes for those themes.
+  const legacy = { ...theme, fg: (color, text) => `<${color}>${text}</${color}>` };
+  assert.equal(chosenRowPainter(legacy)("Login"), "<accentSoft><b>Login</b></accentSoft>", "a declared accentSoft is still preferred");
+  assert.equal(borderPainter(legacy, "low")("x"), "<accentSoft>x</accentSoft>", "and so is it for the border");
+
+  // A theme that exposes no resolved colours must not lose the frame: thinking* is the last resort.
+  const opaque = { fg: (color, text) => { if (color === "accentSoft") throw new Error("nope"); return `<${color}>${text}</${color}>`; } };
+  assert.equal(borderPainter(opaque, "high")("x"), "<thinkingHigh>x</thinkingHigh>", "no derivable colour falls back to the thinking slot");
+});
+
 test("a status row keeps its divider in one column and its status on its own token", () => {
   const p = (token, text) => `<${token}>${text}</${token}>`;
   const plain = (token, text) => (token === "dim" ? text : `${token}:${text}`);
@@ -380,4 +420,62 @@ test("a status row keeps its divider in one column and its status on its own tok
   assert.equal(statusRow("Supervisor", "ENABLED", [], p, "success").includes("<dim>·</dim>"), true, "divider is dim");
   // A label wider than the column must widen the column instead of eating the divider.
   assert.equal(statusRow("A very long label", "ON", [], plain, "success"), "A very long label· success:ON");
+});
+
+// The Models screen's store folds: one slot holds one model, and the active backend is never its own
+// fallback — an order that answered twice from one model would make the fallback look like it worked.
+test("assignBackend keeps one model per slot and never the same ref in both", () => {
+  const empty = { primary: "", fallback: "" };
+  assert.deepEqual(assignBackend(empty, "primary", "typesafe:jev-latest"), { primary: "typesafe:jev-latest", fallback: "" });
+  // Assigning the same key again clears the slot: the row is the only place that shows the state, and a
+  // key that did nothing visible is worse than a key that undoes what the operator asked for.
+  assert.deepEqual(assignBackend({ primary: "typesafe:jev-latest", fallback: "" }, "primary", "typesafe:jev-latest"), empty);
+
+  // A ref moved from one slot to the other leaves the old slot empty instead of duplicating it.
+  assert.deepEqual(assignBackend({ primary: "typesafe:jev-latest", fallback: "" }, "fallback", "typesafe:jev-latest"), {
+    primary: "",
+    fallback: "typesafe:jev-latest",
+  });
+  assert.deepEqual(assignBackend({ primary: "", fallback: "typesafe:jev-latest" }, "primary", "typesafe:jev-latest"), {
+    primary: "typesafe:jev-latest",
+    fallback: "",
+  });
+
+  // Two different refs stay put, in either direction.
+  const both = { primary: "typesafe:jev-latest", fallback: "cloudflare:clef-flash" };
+  assert.deepEqual(assignBackend(both, "fallback", "cloudflare:clef"), { primary: "typesafe:jev-latest", fallback: "cloudflare:clef" });
+  assert.deepEqual(assignBackend(both, "primary", "openrouter:typesafe/jev-1.13"), { primary: "openrouter:typesafe/jev-1.13", fallback: "cloudflare:clef-flash" });
+  // Moving a secondary ref onto the slot it already occupies clears it, so both keys read as toggles.
+  assert.deepEqual(assignBackend(both, "fallback", "cloudflare:clef-flash"), { primary: "typesafe:jev-latest", fallback: "" });
+});
+
+// A stored ref the catalog no longer lists reads as unset: a stale file must not point the gate at a
+// route this build cannot build, and `(auto)` is a real answer the screen can show.
+test("a backend ref is kept only while the catalog lists it", () => {
+  const refs = ["typesafe:jev-latest", "cloudflare:clef-flash"];
+  assert.equal(validBackendRef("typesafe:jev-latest", refs), "typesafe:jev-latest");
+  assert.equal(validBackendRef("cloudflare:clef-omni", refs), "", "a model removed upstream does not survive a restart");
+  assert.equal(validBackendRef(undefined, refs), "");
+  assert.equal(validBackendRef(7, refs), "");
+});
+
+// The name inside the status cell's parentheses: `Eye: ● ON (Clef Flash)` / `Eye: ● ON (Jev)`. TypeSafe
+// and OpenRouter collapse to one word, because the footer answers "which decision backend", not "which
+// vendor" — the Models screen is where the provider is named.
+test("the status cell names the backend as a plain suffix", () => {
+  assert.equal(backendFooterName("cloudflare", "clef-flash"), "Clef Flash");
+  assert.equal(backendFooterName("cloudflare", "clef"), "Clef", "the untiered Clef model draws no tier word");
+  assert.equal(backendFooterName("cloudflare", "clef-omni"), "Clef Omni", "a model added upstream needs no new case");
+  assert.equal(backendFooterName("typesafe", "jev-latest"), "Jev", "TypeSafe is Jev in the cell");
+  assert.equal(backendFooterName("openrouter", "typesafe/jev-1.13"), "Jev", "and so is OpenRouter: same backend, one name");
+  assert.equal(backendFooterName("cloudflare"), "Clef", "a missing model still names the backend");
+  assert.equal(backendFooterName("something-else", "x"), "something-else", "an unknown provider keeps its stored id");
+});
+
+// The row label and the display name agree on the tier, because the footer reads the name the row draws.
+test("a Clef model is labelled clef plus its tier", () => {
+  assert.equal(clefRowLabel("clef"), "clef");
+  assert.equal(clefRowLabel("clef-flash"), "clef (flash)");
+  assert.equal(clefRowLabel("clef-omni"), "clef (omni)");
+  assert.equal(clefRowLabel("something"), "something", "a name outside the family is left alone");
 });

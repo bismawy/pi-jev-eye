@@ -58,15 +58,25 @@ export const SECRET_PATTERNS = [
 // --- Cloudflare Workers AI pricing (Clef). Pure lookups: the panel needs the real rate, not a guess. ---
 // Verified against developers.cloudflare.com/workers-ai/platform/pricing (last updated 2026-10-09).
 // Cloudflare bills no output tokens for the Clef models, only input tokens.
-export const CLEF_USD_PER_MTOK: Record<string, number> = { clef: 0.24, "clef-flash": 0.038, "clef-omni": 0.15 };
+const CLEF_USD_PER_MTOK: Record<string, number> = { clef: 0.24, "clef-flash": 0.038, "clef-omni": 0.15 };
 /** What the free tier is actually spent in: neurons billed per million input tokens. */
-export const CLEF_NEURONS_PER_MTOK: Record<string, number> = { clef: 21818, "clef-flash": 3455, "clef-omni": 13636 };
+const CLEF_NEURONS_PER_MTOK: Record<string, number> = { clef: 21818, "clef-flash": 3455, "clef-omni": 13636 };
 /** The allowance is per account, not per model, and resets at 00:00 UTC. */
-export const CLEF_FREE_NEURONS_PER_DAY = 10000;
+const CLEF_FREE_NEURONS_PER_DAY = 10000;
 /** Beyond the free allowance Cloudflare charges $0.011 per 1,000 neurons on the Workers Paid plan. */
-export const CLEF_USD_PER_KN = 0.011;
+const CLEF_USD_PER_KN = 0.011;
 /** A credential with no model recorded falls back to the cheaper one. */
-export const DEFAULT_CLEF_MODEL = "clef-flash";
+const DEFAULT_CLEF_MODEL = "clef-flash";
+
+/**
+ * How a Clef model names itself in a row. Cloudflare writes each model as `clef-<tier>`, so `clef` is the
+ * family and the tier is a modifier: `clef` reads as `clef`, `clef-flash` as `clef (flash)`, and a
+ * `clef-omni` published later reads `clef (omni)` without a new case here.
+ */
+export function clefRowLabel(model: string): string {
+  const tier = model.startsWith("clef-") ? model.slice("clef-".length) : "";
+  return tier ? `clef (${tier})` : model;
+}
 
 /** Rate lookup that never throws on an unknown model id: it charges the cheaper model's price. */
 export function clefUsdPerMTok(model: string): number {
@@ -139,7 +149,7 @@ const DAY_COUNTERS = ["requests", "ok", "failed", "inputTokens", "outputTokens",
 const PROVIDER_COUNTERS = [...DAY_COUNTERS, "neurons"] as const;
 
 export const EMPTY_TOTALS: DayTotals = { requests: 0, ok: 0, failed: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
-export const EMPTY_PROVIDER_TOTALS: ProviderTotals = {
+const EMPTY_PROVIDER_TOTALS: ProviderTotals = {
   requests: 0,
   ok: 0,
   failed: 0,
@@ -150,14 +160,14 @@ export const EMPTY_PROVIDER_TOTALS: ProviderTotals = {
 };
 export const USD_PER_MTOK = 0.042; // mirrors pi-typesafe's default input-token rate
 
-export function normalizeProviderTotals(raw: any): ProviderTotals {
+function normalizeProviderTotals(raw: any): ProviderTotals {
   const totals = { ...EMPTY_PROVIDER_TOTALS };
   for (const key of PROVIDER_COUNTERS) totals[key] = Number(raw?.[key]) || 0;
   return totals;
 }
 
 /** The per-provider map of one period, or undefined when the entry predates provider attribution. */
-export function normalizeProviders(raw: any): Record<string, ProviderTotals> | undefined {
+function normalizeProviders(raw: any): Record<string, ProviderTotals> | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const providers: Record<string, ProviderTotals> = {};
   for (const [id, value] of Object.entries(raw)) providers[id] = normalizeProviderTotals(value);
@@ -287,7 +297,7 @@ export interface AuthStore {
 }
 
 /** Keep only entries that carry a usable key, so a half-written store cannot resolve to an empty key. */
-export function normalizeCredential(raw: any): StoredCredential | undefined {
+function normalizeCredential(raw: any): StoredCredential | undefined {
   const apiKey = typeof raw?.apiKey === "string" ? raw.apiKey.trim() : "";
   if (!apiKey) return undefined;
   const credential: StoredCredential = { apiKey };
@@ -333,6 +343,53 @@ export function removeCredentials(store: AuthStore, ids: string[]): AuthStore {
 /** Provider ids that hold a credential, in store order (callers map them to labels). */
 export const storedProviderIds = (store: AuthStore): string[] => Object.keys(store.providers);
 
+/**
+ * The session's chosen backends, written by `/jev-eye models`.
+ *
+ * A ref is `providerId:model` taken from the catalog (./core.ts), never a free-form string, so a stale or
+ * hand-edited file cannot point the gate at a backend this build does not ship. The active backend answers
+ * every Jev/Clef call; the fallback takes over when the active one cannot answer at all.
+ */
+export interface Backends {
+  primary: string;
+  fallback: string;
+}
+
+/**
+ * The backend name inside the status cell's parentheses, so the footer line reads
+ * `Eye: ● ON (Clef Flash)` for a Clef model and `Eye: ● ON (Jev)` for TypeSafe or OpenRouter.
+ *
+ * TypeSafe and OpenRouter both answer `Jev`: they are the same decision backend to the operator, and the
+ * footer has one cell to say which one is judging writes — the Models screen is where the provider is
+ * named. Clef keeps its tier spaced (`Clef Flash`, `Clef Omni`) rather than nested (`clef (flash)`),
+ * because the cell is one flat line where a second parenthesis would read as another level.
+ *
+ * The caller (`syncEyeStatus`) owns the state word; this returns only the suffix, and the footer dims it.
+ */
+export const backendFooterName = (providerId: string, model = ""): string => {
+  if (providerId === "cloudflare") {
+    const tier = model.startsWith("clef-") ? model.slice("clef-".length) : "";
+    return tier ? `Clef ${tier[0].toUpperCase()}${tier.slice(1)}` : "Clef";
+  }
+  if (providerId === "typesafe" || providerId === "openrouter") return "Jev";
+  return providerId;
+};
+
+/** Keep a stored ref only when the catalog lists it; anything else reads as unset. */
+export const validBackendRef = (value: unknown, refs: string[]): string =>
+  typeof value === "string" && refs.includes(value) ? value : "";
+
+/**
+ * One slot assignment. The same ref cannot be both the active backend and its fallback, so assigning a
+ * ref to one slot clears it from the other instead of leaving an order that answers twice from one model.
+ */
+export function assignBackend(current: Backends, slot: keyof Backends, ref: string): Backends {
+  const next: Backends = { ...current, [slot]: current[slot] === ref ? "" : ref };
+  const other: keyof Backends = slot === "primary" ? "fallback" : "primary";
+  if (next[other] === ref || next[other] === next[slot]) next[other] = "";
+  return next;
+}
+
 export const VERIFICATION_COMMAND_PATTERNS = [
   /\b(npm|pnpm|bun|yarn)\s+(test|run\s+(test|typecheck|lint|build|check))\b/i,
   /\b(cargo\s+(test|check))\b/i,
@@ -364,7 +421,7 @@ export function thinkingColorSlot(level: string | undefined): string {
 
 // --- Status-panel rows (pure: the caller paints, this only lays the columns out) ---
 /** Painter for one status row: a theme token plus its text. Handed in, so the layout stays pure. */
-export type StatusPainter = (token: string, text: string) => string;
+type StatusPainter = (token: string, text: string) => string;
 
 /**
  * One `/jev-eye status` row: `Label · STATUS | detail · detail`.
@@ -390,13 +447,40 @@ export function statusRow(
 
 // --- Arnative box chrome (pure: hand the theme's fg function in, so `npm test` needs no pi-tui) ---
 // Same glyphs as `@bismawy/pi-arnative` lib/box.ts: round corners, one content row per item. Border
-// colour is a parameter because arnative themes have a soft token while built-in themes only have accent.
-export type BoxTheme = { fg(color: string, text: string): string };
+// colour is a parameter because arnative themes have a soft tint while built-in themes only have accent.
+type BoxTheme = {
+  fg(color: string, text: string): string;
+  /** pi 1.2.0's `Theme.style`; lets a colour be painted that is not one of the fixed tokens. */
+  style?(text: string, options: { fg: unknown }): string;
+  bold?(text: string): string;
+  /** Resolved token values, so a soft tier can be derived from the official token it maps to. */
+  colors?: Record<string, { kind?: string; c?: number; h?: number }>;
+};
+
+/**
+ * The arnative soft tier, derived.
+ *
+ * Pi <=1.1.0 let a theme declare extra keys in `colors`, so `fg("accentSoft")` worked and the token
+ * could be read back. 1.2.0 validates `colors` with `additionalProperties: false` and rejects the whole
+ * theme if it carries one, so arnative's own keys moved to `vars` and `fg("accentSoft")` now throws
+ * `Unknown theme color: accentSoft`. Falling back to another official token would silently change the
+ * colour — the menu would go grey while `/arnative` stayed tinted — so the soft tier is computed from
+ * the resolved token instead, using the theme generator's exact recipe (L 0.82, chroma x 0.18, hue
+ * kept). That is the very value arnative declares in `vars.*Soft`, so the two agree by construction.
+ */
+const SOFT_L = 0.82;
+const SOFT_CHROMA_SCALE = 0.18;
+const softenColor = (color: { c?: number; h?: number }): { kind: "oklch"; l: number; c: number; h: number } => ({
+  kind: "oklch",
+  l: SOFT_L,
+  c: (color.c ?? 0) * SOFT_CHROMA_SCALE,
+  h: color.h ?? 0,
+});
 
 /**
  * The first token of `tokens` the theme actually defines, or undefined when it defines none. Every
  * `theme.fg` throws on an unknown token (`Unknown theme color: tint`), so a token has to be probed
- * before it is used — `accentSoft` and `tint` exist only in arnative themes, and the live theme
+ * before it is used — the custom ones exist only in themes that still declare them, and the live theme
  * picker makes the built-in ones reachable.
  */
 function firstToken(fg: (color: string, text: string) => string, tokens: string[]): string | undefined {
@@ -410,27 +494,56 @@ function firstToken(fg: (color: string, text: string) => string, tokens: string[
   });
 }
 
-/** A painter for one probed token; identity when the theme defines none of them. */
-const tokenPainter = (theme: BoxTheme | null | undefined, tokens: string[]): ((text: string) => string) => {
+/** A painter for one probed token; undefined when the theme defines none of them. */
+const tokenPainter = (theme: BoxTheme | null | undefined, tokens: string[]): ((text: string) => string) | undefined => {
   const fg = theme?.fg?.bind(theme);
   const token = fg ? firstToken(fg, tokens) : undefined;
-  return token && fg ? (text) => fg(token, text) : (text) => text;
+  return token && fg ? (text) => fg(token, text) : undefined;
 };
 
 /**
- * The box border: the arnative soft tint where the theme has it, otherwise the session's thinking
- * slot. `thinking*` exists in every theme (`ThemeColor`), so a built-in theme keeps a coloured frame
- * that still follows the reasoning effort; with no theme at all the border is uncoloured. */
+ * The soft tier of one official token, derived; undefined when the theme cannot expose it (no resolved
+ * `colors`, no `style`, or a token that is not an oklch value).
+ */
+const softTierPainter = (theme: BoxTheme | null | undefined, baseToken: string): ((text: string) => string) | undefined => {
+  const base = theme?.colors?.[baseToken];
+  const style = theme?.style?.bind(theme);
+  if (base?.kind !== "oklch" || !style) return undefined;
+  return (text) => style(text, { fg: softenColor(base) });
+};
+
+/**
+ * Resolve a soft tier: the declared token when the theme still has one, else the derivation, else the
+ * given official fallbacks, else identity. `direct` first keeps pi <=1.1.0 rendering unchanged.
+ */
+const softPainter = (
+  theme: BoxTheme | null | undefined,
+  direct: string[],
+  baseToken: string,
+  fallbacks: string[],
+): ((text: string) => string) =>
+  tokenPainter(theme, direct) ?? softTierPainter(theme, baseToken) ?? tokenPainter(theme, fallbacks) ?? ((text) => text);
+
+/**
+ * The box border: the arnative soft accent where the theme has it, otherwise the theme's
+ * `borderAccent` softened — the token arnative's own screens draw their frame from — and only then the
+ * session's thinking slot. `thinking*` exists in every theme (`ThemeColor`), so a built-in theme still
+ * keeps a coloured frame that follows the reasoning effort; with no theme at all it is uncoloured.
+ */
 export function borderPainter(theme: BoxTheme | null | undefined, thinkingLevel?: string): (text: string) => string {
-  return tokenPainter(theme, ["accentSoft", thinkingColorSlot(thinkingLevel), "accent"]);
+  return softPainter(theme, ["accentSoft"], "borderAccent", [thinkingColorSlot(thinkingLevel), "accent"]);
 }
 
 /**
  * Painter for a chosen row's body — the arnative rule: the `→` marker keeps the accent, the text moves
- * to the soft tint. `accentSoft` is arnative-only, so fall back to `thinkingText` (which every theme
- * defines, unlike `tint`) and then to `accent`. */
+ * to the soft tint, bold (pi-arnative's `soft(bold(s))`). The soft accent derives from the accent token
+ * when the theme no longer declares `accentSoft`, so the selected label stays tinted instead of turning
+ * grey; `thinkingText` and `accent` are the last resorts for a theme that exposes neither.
+ */
 export function chosenRowPainter(theme: BoxTheme | null | undefined): (text: string) => string {
-  return tokenPainter(theme, ["accentSoft", "thinkingText", "accent"]);
+  const paint = softPainter(theme, ["accentSoft"], "accent", ["thinkingText", "accent"]);
+  const bold = theme?.bold?.bind(theme) ?? ((text: string) => text);
+  return (text) => paint(bold(text));
 }
 
 /** `╭───╮` / `╰───╯`. Width holds at 1-2 because a line shorter than the frame beats a downshifted one. */
