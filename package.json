@@ -23,7 +23,8 @@
   "license": "MIT",
   "scripts": {
     "dev": "pi -e ./extensions/index.ts",
-    "test": "node --test"
+    "test": "node --test",
+    "render-check": "node --experimental-strip-types scripts/render-check.mjs"
   },
   "publishConfig": {
     "access": "public"
