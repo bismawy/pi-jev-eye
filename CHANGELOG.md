@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-14
+
 ### Added
 - **The contract's statements are corrected, and pinned by a check.** Four statements in `REVIEW_CONTRACT` did not hold up and one language rule was stated by example: the closing line promised that code edits "will be evaluated against this turn's request text" while the gate skips any write under 10 lines (`JEV_MIN_DIFF_LINES`) and any folder the operator never granted; an absent premise (`src/eye.ts` in the session that reviewed this) had no stated handling; the language rule carried three worked examples (ID/EN/ZH) instead of one general instruction, so a reader writing another language had only inference; and the scale header was described by those same translations. All four now read as rules — the language rule names the operator's language and keeps no examples, the scale header names the axis, its range and its direction in that language, an absent premise is itself a machine fact, and the closing line states the gate's real scope. `test/contract.test.mjs` pins each one and asserts the old promise and the language examples are gone, proved negative by restoring the previous wording (the check fails). The unused `import { join }` in `review.ts` is gone too.
 - `npm test` covers `review.ts`'s trigger and its contract text; the contract grew from 1753 to 1981 characters (~550 tokens) in exchange for statements that are true.
