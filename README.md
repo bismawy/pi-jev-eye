@@ -23,7 +23,7 @@ pi-jev-eye is an ultra-lean, zero-dependency supervisor for [pi](https://github.
 - **Targeted Jev Semantic Gate:** Evaluates diffs ≥ 10 lines via TypeSafe Jev (`has_slop`) to reject placeholder stubs and unfulfilled TODOs.
 - **Three Decision Backends:** TypeSafe Jev, OpenRouter, or **Cloudflare Workers AI (Clef / `clef-flash`)** — same gated pipeline, chosen once at `/jev-eye accounts`. Clef runs inside Cloudflare's free daily allowance of 10,000 neurons, so the gate costs nothing for most sessions.
 - **Jev + Clef Usage Panel (`/jev-eye usage`):** One compact table shows Jev and Clef side by side (requests, input tokens, cost for the month), three period totals, and the Cloudflare free-neuron budget with its reset time and overage cost. Periods that predate the split are reported as an explicit `Earlier` row rather than silently dropping out of the table.
-- **Reviewed Turns (`jev` / `@jev`):** Calibrated review contract with machine facts, Jev scoring tables, and single-flight prompt alignment (`answers_request`).
+- **Reviewed Turns (`jev` / `@jev` / `/eye`):** Calibrated review contract with machine facts, Jev scoring tables, and single-flight prompt alignment (`answers_request`). The flat `/eye <task>` form opens it without a prose token; so does writing `/eye` inside a sentence, because the marker is read from the prompt text and not only from the command.
 - **Per-Turn Model Routing:** Routes light chores (git commit, push, status) to a fast model and complex engineering tasks to a heavy model with independent reasoning controls.
 - **Fail-Open Reliability:** Network timeouts or offline provider APIs gracefully degrade so coding sessions never stall or freeze.
 - **Account Management in Place:** One Accounts screen lists every backend with its stored state — `[Enter]` stores a key, `[Ctrl+d]` removes one after a second confirming press, so switching backends never requires a separate logout menu.
@@ -59,6 +59,8 @@ pi -e ./extensions/index.ts
 | `/jev-eye usage` | Inspect | Spend breakdown: Jev vs Clef side by side, period totals, and the Cloudflare free-neuron budget |
 | `/jev-eye routing` | Routing | Interactive TUI model router for light and heavy task slots (`routing light` / `routing heavy` open it focused, `routing on` / `routing off` flip it) |
 | `jev` · `@jev` in prompt | Prompt | Trigger calibrated review format and task alignment check |
+| `/eye <task>` | Prompt | Flat trigger: opens the same reviewed contract for that turn (the `/eye` is stripped, the task is answered normally) |
+| `/eye` inside a prompt | Prompt | The same marker mid-sentence (`Hai, bantu saya /eye`) — pi only treats input as a command when the whole text starts with `/`, so the inline form reaches the review path too |
 
 ### Providers
 
@@ -98,7 +100,7 @@ Ctrl+Alt+E ──► ON ──► REVIEW ──► OFF ──┐
 
 | Mode | Footer | Regex & Done-Check | Jev Semantic Gate | Review Contract | When Review Triggers |
 | --- | --- | --- | --- | --- | --- |
-| **ON** | `Eye: ● ON (…)` | Active | Active (diffs ≥ 10 lines) | Optional | Only when prompt contains `jev` / `@jev` |
+| **ON** | `Eye: ● ON (…)` | Active | Active (diffs ≥ 10 lines) | Optional | Only when the prompt contains `jev` / `@jev` / `/eye` |
 | **REVIEW** | `Eye: ● REVIEW (…)` | Active | Active (diffs ≥ 10 lines) | Injected every turn | Every prompt automatically |
 | **OFF** | `Eye: ○ OFF (…)` | Disabled | Disabled | Disabled | Never |
 
@@ -182,19 +184,20 @@ resolvable, so run it where pi provides them, or link a checkout that has them:
 
 ### Modules
 
-`extensions/` is layered leaf-first; a file imports only the ones above it. `npm test` covers `layer1.ts`, `review.ts` (the trigger) and `providers.ts` (the failover path: `authChain` resolution and the chain walk, with a stubbed `fetch`); `npm run render-check` covers every screen and the `/eye` handler.
+`extensions/` is layered leaf-first; a file imports only the ones above it. `npm test` covers `layer1.ts`, `review.ts` (the trigger **and** the contract text, whose statements are pinned so they cannot drift from the gate they describe) and `providers.ts` (the failover path: `authChain` resolution and the chain walk, with a stubbed `fetch`); `npm run render-check` covers every screen and the `/eye` handler.
 
 | File | Owns |
 | --- | --- |
 | `layer1.ts` | Pure maths: box chrome, regex gates, ledger folds. No pi import, covered by `npm test` |
 | `pmr.ts` | Session state (a leaf: every layer touches it) |
+| `review.ts` | The reviewed-turn trigger and the injected report contract (no pi import) |
 | `core.ts` | Providers, the model catalog, on-disk paths, credential and backend stores, auth resolution and the failover chain |
 | `providers.ts` | The credential probe, and the one call path every question takes: active backend first, fallback behind it |
 | `ui.ts` | Arnative rounded-box chrome and every screen component |
 | `supervisor.ts` | `KEY_SETS`, the mode cycle, the status-bar indicator |
 | `gate.ts` | Layer 3 semantic write gate |
 | `panels.ts` | `/jev-eye status` and `usage` bodies |
-| `commands.ts` | `/jev-eye` menus and argument dispatch |
+| `commands.ts` | `/jev-eye` menus and argument dispatch, plus the flat `/eye <task>` trigger |
 | `index.ts` | Event wiring only: routing, consent, Layers 1-2, shortcuts |
 
 </details>

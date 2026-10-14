@@ -4,6 +4,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { currentCatalog, readAuthStore, readBackends, resolveJevAuth, writeBackends } from "./core.ts";
 import { loginFlow } from "./flows.ts";
 import { showStatus, showUsage } from "./panels.ts";
+import { EYE_MARKER, EYE_TRIGGER } from "./review.ts";
 import { readRouting, writeRouting } from "./routing.ts";
 import type { Routing } from "./routing.ts";
 import { TOGGLE_KEY, eyeCompletions, syncEyeStatus } from "./supervisor.ts";
@@ -237,11 +238,38 @@ const eyeHandler = async (args: string, ctx: any) => {
   await showStatus(ctx, false);
 };
 
+/**
+ * The flat trigger's command form: `/eye <task>`.
+ *
+ * A registered command runs before the prompt is built and pi discards the command text once it is
+ * handled, so the handler re-sends the operator's own words as a user message and the ordinary prompt
+ * path runs. It sends `EYE_MARKER + task` rather than the bare task: detection then stays in ONE place
+ * (the `before_agent_start` hook), which is also why this command exists at all — without it, `/eye` at
+ * the start of an input is consumed as a command and the marker never reaches the hook.
+ *
+ * `pi.sendUserMessage` is the sender because `ctx` (an `ExtensionCommandContext`) has no send method.
+ * The send is deliberately not awaited: pi holds the editor until the handler settles, so waiting for the
+ * turn would freeze input for its whole duration.
+ */
+const eyeTrigger = (pi: any) => async (args: string, ctx: any) => {
+  const task = String(args ?? "").replace(EYE_TRIGGER, " ").replace(/\s{2,}/g, " ").trim();
+  if (!task) {
+    ctx.ui.notify("[pi-jev-eye] `/eye` needs a task: run `/eye <task>` or write `/eye` inside a prompt.", "warning");
+    return;
+  }
+  ctx.ui.notify("[pi-jev-eye] Reviewed turn via `/eye`; the write gate compares the diff against this task.", "info");
+  pi.sendUserMessage(`${EYE_MARKER} ${task}`);
+};
+
 /** The one export this file owes the entry point: register `/jev-eye` against the handlers above. */
 export function installCommands(pi: any): void {
   pi.registerCommand("jev-eye", {
     description: "pi-jev-eye supervisor: menu (Accounts / Models / Status / Usage / Routing), status, usage stats",
     getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => eyeCompletions(prefix),
     handler: eyeHandler,
+  });
+  pi.registerCommand("eye", {
+    description: "pi-jev-eye reviewed turn: `/eye <task>` opens the calibrated report contract (same as typing `/eye` in a prompt)",
+    handler: eyeTrigger(pi),
   });
 }

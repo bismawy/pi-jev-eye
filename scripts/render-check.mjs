@@ -36,10 +36,12 @@ const { keybind } = await import(new URL("../extensions/supervisor.ts", import.m
 const showsKey = (text) => /^\[[^\]]*[A-Za-z][^\]]*\]$/.test(text) && /\bshift\b/i.test(text) === false;
 
 const commands = {};
+const sent = [];
 install({
   on() {},
   registerShortcut() {},
   registerCommand: (name, definition) => { commands[name] = definition; },
+  sendUserMessage: (text) => sent.push(text),
   setModel: async () => true,
   getThinkingLevel: () => "low",
   setThinkingLevel() {},
@@ -619,6 +621,45 @@ for (const width of [80, 120]) {
   await runBuiltin;
 }
 
+
+// The flat trigger: `/eye <task>` re-sends the operator text so the one detection point in
+// `before_agent_start` sees the marker. Asserted on the real handler, not on the regex alone, because
+// the command and the inline form must agree — a handler that stripped the marker would leave every
+// `/eye` turn unreviewed while the regex test stayed green.
+{
+  assert.equal(typeof commands["eye"], "object", "/eye is registered next to /jev-eye");
+
+  const eyeHarness = () => {
+    const notices = [];
+    return {
+      notices,
+      ctx: {
+        mode: "rpc",
+        cwd: "/tmp/jev-render-check",
+        ui: { theme: ansiTheme, notify: (message) => notices.push(String(message)), setStatus() {} },
+      },
+    };
+  };
+
+  sent.length = 0;
+  const task = "perbaiki parser di src/eye.ts";
+  const ok = eyeHarness();
+  await commands["eye"].handler(task, ok.ctx);
+  assert.equal(sent.length, 1, "a task is re-sent exactly once");
+  assert.equal(sent[0], `/eye ${task}`, "the marker is kept, so the one detection point still fires");
+  assert.equal(ok.notices.some((n) => n.includes("Reviewed turn")), true, "the operator is told the turn is reviewed");
+
+  // No task: the command must ask for one instead of sending an empty turn.
+  sent.length = 0;
+  const empty = eyeHarness();
+  await commands["eye"].handler("", empty.ctx);
+  assert.equal(sent.length, 0, "an empty /eye sends no turn");
+  assert.equal(empty.notices.some((n) => n.includes("needs a task")), true, "and says how to fix it");
+
+  sent.length = 0;
+  await commands["eye"].handler("   ", eyeHarness().ctx);
+  assert.equal(sent.length, 0, "whitespace counts as no task");
+}
 
 console.log("render checks OK");
 
