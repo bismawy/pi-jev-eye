@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { REVIEW_CONTRACT } from "../extensions/review.ts";
+import { JEV_MIN_DIFF_LINES } from "../extensions/gate.ts";
 
 // The contract is injected verbatim, so any wording change ships straight to the model. Nothing else in
 // this repo read it, which is exactly how a rule drifts from the code it describes: the closing line
@@ -25,8 +26,9 @@ test("an absent premise has a stated handling", () => {
 });
 
 test("the closing line matches what the write gate actually does", () => {
-  // `JEV_MIN_DIFF_LINES` in gate.ts is 10; the gate also needs folder consent and a credential.
-  has("10 or more lines");
+  // Read from gate.ts: a changed threshold must fail here instead of leaving the contract and the gate
+  // disagreeing about the scope they both state.
+  has(`${JEV_MIN_DIFF_LINES} or more lines`);
   has("in a folder you granted");
   has("is not judged");
   assert.equal(/will be evaluated against/.test(REVIEW_CONTRACT), false, "the unscoped promise is gone: it claimed every edit was judged");

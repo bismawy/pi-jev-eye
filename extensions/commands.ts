@@ -142,10 +142,13 @@ const openMenu = async (ctx: any): Promise<void> => {
 
   // The root menu has no previous screen, so it carries no [←] Back. Sub-screens that end with
   // [Esc] fall back here too, so the operator never lands in the editor with a half-open menu.
+  // Remembering the last row keeps [←] on the screen the operator came from instead of resetting to
+  // the first row, which read as "back sent me to Accounts".
+  let cursor = 0;
   while (true) {
-    const index = await pickRow(ctx, "Jev Eye · Menu", rows, "Supervisor settings and live state for this session.");
-    if (index === "back") return; // nothing behind the root
+    const index = await pickRow(ctx, "Jev Eye · Menu", rows, "Supervisor settings and live state for this session.", cursor);
     if (index === null) return;
+    cursor = index;
     let outcome: void | "back";
     if (index === 0) {
       outcome = await loginFlow(ctx);

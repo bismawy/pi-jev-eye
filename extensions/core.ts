@@ -4,7 +4,7 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { USD_PER_MTOK, cfRunUrl, clefRowLabel, clefUsdPerMTok, migrateAuthStore, validBackendRef } from "./layer1.ts";
+import { cfRunUrl, clefRowLabel, migrateAuthStore, validBackendRef } from "./layer1.ts";
 import type { AuthStore, Backends, StoredCredential } from "./layer1.ts";
 
 export interface JevProvider {
@@ -127,10 +127,6 @@ export interface JevAuth {
   model: string; // Cloudflare allows a per-account model choice; every other provider keeps its fixed one
   accountId?: string; // Cloudflare only: the account the run route targets
 }
-
-/** One provider's rate for input tokens. Cloudflare's depends on the model; the others are single-rate. */
-const usdPerMTokFor = (auth: JevAuth): number =>
-  auth.provider.id === "cloudflare" ? clefUsdPerMTok(auth.model) : USD_PER_MTOK;
 
 /** The provider id stored in the ledger, so the usage panel can name what it was spent on. */
 export const providerIdOf = (auth: JevAuth): string => auth.provider.id;

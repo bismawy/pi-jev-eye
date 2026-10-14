@@ -4,13 +4,12 @@
 import { CURSOR_MARKER, Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { JEV_PROVIDERS, storedCredential } from "./core.ts";
 import type { BackendModel, JevProvider } from "./core.ts";
-import { borderPainter, boxFrame, chosenRowPainter, packPairs, wrapWords } from "./layer1.ts";
+import { assignBackend, borderPainter, boxFrame, chosenRowPainter, packPairs, wrapWords } from "./layer1.ts";
 import type { AuthStore, Backends } from "./layer1.ts";
 import { HEAVY_THINKING_LEVELS, LIGHT_THINKING_LEVELS, SLOT_DEFAULT_THINKING } from "./pmr.ts";
 import type { ThinkingLevel } from "./pmr.ts";
 import type { Routing } from "./routing.ts";
 import { GATE_KEY, KEY_SETS, STATUS_DESC, STATUS_TITLE, TOGGLE_KEY, keybind, keycap, panelKeys } from "./supervisor.ts";
-import { assignBackend } from "./layer1.ts";
 
 /**
  * Border painter for a screen: the session's thinking level colours the box, as in `/arnative`.
@@ -62,11 +61,6 @@ export class AccountsPicker {
   /** Set when the operator pressed [←]; the caller then reopens the menu instead of leaving.
    *  Kept as a plain field: `ctx.ui.custom` resolves one value, and `null` already means "cancelled". */
   wentBack = false;
-
-  /** Exposed so the caller can drive it from tests and from the headless fallback. */
-  get providers(): JevProvider[] {
-    return this.options.map((o) => o.provider);
-  }
 
   private move(delta: number): void {
     this.index = (this.index + delta + this.options.length) % this.options.length;
@@ -181,10 +175,9 @@ class ListPicker {
   private readonly footer: string[];
   private readonly theme: any;
   private readonly paint: (text: string) => string;
-  private readonly onBack: (() => void) | undefined;
   private readonly done: (value: number | null) => void;
   private readonly soft: (text: string) => string;
-  private index = 0;
+  private index: number;
 
   constructor(
     theme: any,
@@ -193,7 +186,7 @@ class ListPicker {
     subtitle: string,
     done: (value: number | null) => void,
     paint: (text: string) => string,
-    onBack?: () => void,
+    initialIndex = 0,
   ) {
     this.theme = theme;
     this.title = title;
@@ -202,9 +195,9 @@ class ListPicker {
     this.done = done;
     this.paint = paint;
     this.soft = chosenRowPainter(theme);
-    this.onBack = onBack;
-    // A menu inside an extension goes back to the previous menu with [←]; the root has nowhere to go.
-    this.footer = ["[↑↓] Move", "[Enter] Choose", ...(onBack ? ["[←] Back"] : []), "[Esc] Cancel"];
+    // Reopening a menu after [←] must land on the row the operator left from, not on the first one.
+    this.index = Math.min(Math.max(initialIndex, 0), Math.max(0, rows.length - 1));
+    this.footer = ["[↑↓] Move", "[Enter] Choose", "[Esc] Cancel"];
   }
 
   handleInput(data: string): void {
@@ -226,12 +219,6 @@ class ListPicker {
     }
     if (matchesKey(data, Key.enter)) {
       this.done(this.index);
-      return;
-    }
-    // [←] steps back to the previous menu, [Esc] closes the screen — different exits. The root menu
-    // has nothing behind it, so [←] is ignored there rather than quietly closing the screen.
-    if (matchesKey(data, Key.left)) {
-      if (this.onBack) this.done(BACK);
       return;
     }
     if (matchesKey(data, Key.escape)) this.done(null);
@@ -262,21 +249,22 @@ class ListPicker {
 /** Content column of a framed row: the frame owns the two walls, so the content gets the rest. */
 const boxInner = (width: number): number => Math.max(0, width - 4);
 
-/** Drive the same picker everywhere: TUI gets the rounded box, RPC and headless keep `ctx.ui.select`. */
+/** Drive the same picker everywhere: TUI gets the rounded box, RPC and headless keep `ctx.ui.select`.
+ *  `initialIndex` keeps the cursor where the operator left it when a sub-screen returns with [←]. */
 export async function pickRow(
   ctx: any,
   title: string,
   rows: { label: string; note: string }[],
   subtitle: string,
-  options: { onBack?: () => void } = {},
-): Promise<number | "back" | null> {
+  initialIndex = 0,
+): Promise<number | null> {
   if (ctx.mode !== "tui") {
     const labels = rows.map((row) => (row.note ? `${row.label} · ${row.note}` : row.label));
     const choice = await ctx.ui.select(title, labels);
     return choice ? labels.indexOf(choice) : null;
   }
   const picked = await ctx.ui.custom<number | null>((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
-    const picker = new ListPicker(theme, title, rows, subtitle, done, borderPainterFor(theme, ctx), options.onBack);
+    const picker = new ListPicker(theme, title, rows, subtitle, done, borderPainterFor(theme, ctx), initialIndex);
     return {
       render: (width: number) => picker.render(width),
       invalidate: () => picker.invalidate(),
@@ -286,7 +274,7 @@ export async function pickRow(
       },
     };
   });
-  return picked === BACK ? "back" : picked;
+  return picked;
 }
 
 /**
