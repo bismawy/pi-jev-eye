@@ -177,7 +177,7 @@ class ListPicker {
   private readonly paint: (text: string) => string;
   private readonly done: (value: number | null) => void;
   private readonly soft: (text: string) => string;
-  private index = 0;
+  private index: number;
 
   constructor(
     theme: any,
@@ -186,6 +186,7 @@ class ListPicker {
     subtitle: string,
     done: (value: number | null) => void,
     paint: (text: string) => string,
+    initialIndex = 0,
   ) {
     this.theme = theme;
     this.title = title;
@@ -194,6 +195,8 @@ class ListPicker {
     this.done = done;
     this.paint = paint;
     this.soft = chosenRowPainter(theme);
+    // Reopening a menu after [←] must land on the row the operator left from, not on the first one.
+    this.index = Math.min(Math.max(initialIndex, 0), Math.max(0, rows.length - 1));
     this.footer = ["[↑↓] Move", "[Enter] Choose", "[Esc] Cancel"];
   }
 
@@ -246,12 +249,14 @@ class ListPicker {
 /** Content column of a framed row: the frame owns the two walls, so the content gets the rest. */
 const boxInner = (width: number): number => Math.max(0, width - 4);
 
-/** Drive the same picker everywhere: TUI gets the rounded box, RPC and headless keep `ctx.ui.select`. */
+/** Drive the same picker everywhere: TUI gets the rounded box, RPC and headless keep `ctx.ui.select`.
+ *  `initialIndex` keeps the cursor where the operator left it when a sub-screen returns with [←]. */
 export async function pickRow(
   ctx: any,
   title: string,
   rows: { label: string; note: string }[],
   subtitle: string,
+  initialIndex = 0,
 ): Promise<number | null> {
   if (ctx.mode !== "tui") {
     const labels = rows.map((row) => (row.note ? `${row.label} · ${row.note}` : row.label));
@@ -259,7 +264,7 @@ export async function pickRow(
     return choice ? labels.indexOf(choice) : null;
   }
   const picked = await ctx.ui.custom<number | null>((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
-    const picker = new ListPicker(theme, title, rows, subtitle, done, borderPainterFor(theme, ctx));
+    const picker = new ListPicker(theme, title, rows, subtitle, done, borderPainterFor(theme, ctx), initialIndex);
     return {
       render: (width: number) => picker.render(width),
       invalidate: () => picker.invalidate(),

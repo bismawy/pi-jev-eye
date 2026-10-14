@@ -228,6 +228,25 @@ assert.equal((await open("status direct", "status", [], 80)).includes("[←] Bac
 assert.equal((await open("usage direct", "usage", [], 80)).includes("[←] Back"), false, "usage opened by subcommand advertises no back key");
 assert.equal((await open("routing direct", "routing", [], 80)).includes("[←] Back"), false, "routing opened by subcommand advertises no back key");
 
+// Returning from a sub-screen must leave the cursor where it was. The menu picker is rebuilt on every
+// loop pass, so a picker that starts at row 0 sends [←] back to Accounts — which read as "back went
+// to the wrong screen". The arrow is checked on the reopened menu, not the row order.
+{
+  const { ctx, screens } = harness();
+  const run = commands["jev-eye"].handler("", ctx).catch(() => {});
+  await tick();
+  // Down to Routing (row 4), open it, and leave with [←].
+  for (let i = 0; i < 4; i++) screens.at(-1).wrapper.handleInput("\x1b[B");
+  screens.at(-1).wrapper.handleInput("\r");
+  await tick();
+  screens.at(-1).resolve(-2); // BACK
+  await tick();
+  const arrow = strip(screens.at(-1).wrapper.render(90).join("\n")).split("\n").find((l) => l.includes("→"));
+  assert.equal(arrow.includes("Routing"), true, `[←] from Routing leaves the cursor on Routing, got ${arrow?.trim()}`);
+  screens.at(-1).resolve(null);
+  await run;
+}
+
 // Every sub-screen opens inside the frame, and the read-only one advertises no toggle it ignores.
 const status = await open("status", "", [2], 80);
 assert.equal(status.includes("Grant folder"), true, "status keeps its last footer key at 80 columns");
@@ -721,13 +740,17 @@ console.log("render checks OK");
   const { join } = await import("node:path");
   const { syncEyeStatus } = await import(new URL("../extensions/supervisor.ts", import.meta.url).href);
   // Resolved once, and only here: the peer package is a sibling checkout when it exists, so a clone
-  // without `../pi-arnative` still runs every other check instead of dying on a missing module.
+  // without `../pi-arnative` still runs every other check instead of dying on a missing module. A
+  // checkout on a branch that predates the footer helpers is the same case — the export is checked,
+  // not only the directory, so a peer at another version skips instead of crashing this script.
   let footer = null;
   try {
-    footer = await import(new URL("../../pi-arnative/extensions/footer.ts", import.meta.url).href);
+    const peer = await import(new URL("../../pi-arnative/extensions/footer.ts", import.meta.url).href);
+    if (typeof peer.jevEyeStatusLine === "function" && typeof peer.isJevEyeStatus === "function") footer = peer;
   } catch {
-    console.log("footer checks skipped: no ../pi-arnative checkout beside this repo");
+    // fall through to the notice below
   }
+  if (!footer) console.log("footer checks skipped: no ../pi-arnative checkout with the footer helpers beside this repo");
   const eyeDir = join(process.env.HOME, ".pi", "agent", "pi-jev-eye");
   mkdirSync(eyeDir, { recursive: true });
   // Both credentials are stored: the point is that the cell follows the PICK, not that one key exists.
