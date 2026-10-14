@@ -144,7 +144,6 @@ const openMenu = async (ctx: any): Promise<void> => {
   // [Esc] fall back here too, so the operator never lands in the editor with a half-open menu.
   while (true) {
     const index = await pickRow(ctx, "Jev Eye · Menu", rows, "Supervisor settings and live state for this session.");
-    if (index === "back") return; // nothing behind the root
     if (index === null) return;
     let outcome: void | "back";
     if (index === 0) {

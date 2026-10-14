@@ -140,6 +140,3 @@ const removeStoredCredentials = async (ctx: any, ids: string[], note: string): P
     ctx.ui.notify(`[pi-jev-eye] Could not update ${AUTH_PATH}: ${(error as Error).message}`, "error");
   }
 };
-
-// Own ledger + pi-typesafe's older one, so days predating the switch are not shown as empty.
-// The counters and the math live in ./layer1.ts (pure, covered by `npm test`).

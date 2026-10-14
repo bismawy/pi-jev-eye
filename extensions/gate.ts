@@ -137,9 +137,3 @@ export async function askJev(codeSnippet: string, chain: JevAuth[]): Promise<Jev
   const outcome = await withBackends(chain, (auth) => attemptJev(codeSnippet, auth));
   return outcome?.result ?? null;
 }
-
-// ON -> REVIEW -> OFF -> ON
-/**
- * Keycaps are fixed: `matchesKey` must compare against a literal, and the `[Key] Mode` column in the
- * footer is measured from the strings themselves. One line per value so a writer can grep it.
- */
