@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0] - 2026-10-20
+
+### Added
+- `PI_JEV_EYE_MAX_REQUESTS` and `PI_JEV_EYE_MAX_ROUTING_CALLS` override the 20-call session caps; a non-positive or non-integer value keeps the default.
+- `npm run typecheck` (`tsconfig.json`, TypeScript 7 via the npx cache, no lockfile); `tsc --noEmit` reports 0 errors on `extensions/`.
+
+### Fixed
+- An answerless HTTP 200 from the Jev backend books one failed ledger row instead of an ok row plus a failed row, so a call no longer counts as two requests in `/jev-eye usage`.
+- Reaching the session cap during a failover no longer skips the one-time "budget used up" warning; the cap now holds per attempt in both the gate and routing.
+- Routing classifications now record requests, tokens and cost in `/jev-eye usage`; they were invisible before.
+- The ledger day follows the UTC clock, matching the Clef free-neuron reset at 00:00 UTC (the "Today" row rolls at 07:00 WIB).
+
+### Changed
+- `.gitleaksignore` covers the two dummy `cf-key-…` test fixtures; `gitleaks dir --redact` reports no leaks.
+- `npm test` runs 97 tests (5 new regression tests for the ledger rows, the session caps and the env overrides).
+
 ## [0.2.1] - 2026-10-14
 
 ### Fixed
