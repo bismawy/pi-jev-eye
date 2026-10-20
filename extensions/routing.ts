@@ -2,8 +2,9 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { EYE_DIR, JEV_TIMEOUT_MS, authUrl, readJsonFile } from "./core.ts";
+import { EYE_DIR, JEV_TIMEOUT_MS, authUrl, envBudget, providerIdOf, readJsonFile } from "./core.ts";
 import type { JevAuth } from "./core.ts";
+import { recordCall, recordOwnUsage } from "./ledger.ts";
 
 import { THINKING_LEVELS, SLOT_DEFAULT_THINKING, state } from "./pmr.ts";
 import type { ThinkingLevel } from "./pmr.ts";
@@ -18,7 +19,7 @@ export interface Routing {
 }
 
 const ROUTING_PATH = join(EYE_DIR, "routing.json");
-export const JEV_MAX_ROUTING_CALLS = 20; // own session budget, so routing cannot eat the write gate's quota
+export const JEV_MAX_ROUTING_CALLS = envBudget("PI_JEV_EYE_MAX_ROUTING_CALLS", 20); // own session budget, so routing cannot eat the write gate's quota
 
 export function readRouting(): Routing {
   const raw = readJsonFile(ROUTING_PATH);
@@ -51,6 +52,9 @@ export const isLightByPattern = (prompt: string): boolean => LIGHT_TASK_PATTERNS
  *  Exported so the failover path can be driven directly by `npm test`, without a network or a session. */
 export async function attemptWeight(prompt: string, auth: JevAuth): Promise<"light" | "heavy" | "unclear" | null> {
   try {
+    // The cap holds per attempt, not per chain: a failover at the last slot would otherwise overshoot it
+    // and skip the one-time warning, which fires only when the counter equals the cap.
+    if (state.stats.jevRoutingCalls >= JEV_MAX_ROUTING_CALLS) return null;
     state.stats.jevRoutingCalls++;
     const res = await fetch(authUrl(auth), {
       method: "POST",
@@ -73,11 +77,22 @@ export async function attemptWeight(prompt: string, auth: JevAuth): Promise<"lig
       }),
       signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
+      return null;
+    }
     const body = workersAiBody(await res.json());
-    const choice = body?.answers?.weight?.choice;
-    return choice === "light" || choice === "heavy" || choice === "unclear" ? choice : null;
+    if (!body) {
+      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
+      return null;
+    }
+    const choice = body.answers?.weight?.choice;
+    const answered = choice === "light" || choice === "heavy" || choice === "unclear";
+    // Routing spends the same quota as the gate, so it books the same ledger row.
+    recordCall(auth, body, answered);
+    return answered ? choice : null;
   } catch {
+    recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
     return null;
   }
 }

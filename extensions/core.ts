@@ -304,3 +304,9 @@ export function keySources(): { usable: string[]; cfTokenWithoutAccount: boolean
   }
   return { usable, cfTokenWithoutAccount };
 }
+
+// A per-session cap the user may change: a positive integer in the environment wins, anything else keeps the default.
+export function envBudget(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}

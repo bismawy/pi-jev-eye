@@ -263,7 +263,7 @@ export async function pickRow(
     const choice = await ctx.ui.select(title, labels);
     return choice ? labels.indexOf(choice) : null;
   }
-  const picked = await ctx.ui.custom<number | null>((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
+  const picked = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
     const picker = new ListPicker(theme, title, rows, subtitle, done, borderPainterFor(theme, ctx), initialIndex);
     return {
       render: (width: number) => picker.render(width),
@@ -358,7 +358,7 @@ export class RoutingPicker {
   private notice = "";
   private readonly models: any[];
   private readonly theme: any;
-  private readonly done: (value: Routing | null) => void;
+  private readonly done: (value: Routing | typeof BACK | null) => void;
   private readonly paint: (text: string) => string;
   private readonly soft: (text: string) => string;
   /** False when the screen was opened straight from `/jev-eye routing`, which has no menu behind it. */
@@ -370,7 +370,7 @@ export class RoutingPicker {
     models: any[],
     initial: Routing,
     focus: "light" | "heavy",
-    done: (value: Routing | null) => void,
+    done: (value: Routing | typeof BACK | null) => void,
     paint: (text: string) => string,
     back = true,
   ) {
@@ -570,11 +570,11 @@ export class ModelsPicker {
   private readonly models: BackendModel[];
   private readonly theme: any;
   private readonly soft: (text: string) => string;
-  private readonly done: (value: Backends | null) => void;
+  private readonly done: (value: Backends | typeof BACK | null) => void;
   /** False when the screen was opened straight from `/jev-eye models`, which has no menu behind it. */
   private readonly back: boolean;
 
-  constructor(theme: any, models: BackendModel[], initial: Backends, done: (value: Backends | null) => void, back = true) {
+  constructor(theme: any, models: BackendModel[], initial: Backends, done: (value: Backends | typeof BACK | null) => void, back = true) {
     this.theme = theme;
     this.models = models;
     this.pending = { ...initial };
@@ -694,7 +694,7 @@ export class StatusPanel {
     cycleMode: () => void;
     cycleGate: () => void;
   };
-  private readonly done: (value?: void) => void;
+  private readonly done: (value?: typeof BACK) => void;
   private readonly title: string;
   private readonly desc: string;
   /** Read-only screens (usage) must not advertise, or act on, the status toggles. */
@@ -706,7 +706,7 @@ export class StatusPanel {
     theme: any,
     lines: string[],
     actions: { rebuild: () => string[]; cycleMode: () => void; cycleGate: () => void },
-    done: (value?: void) => void,
+    done: (value?: typeof BACK) => void,
     title: string = STATUS_TITLE,
     desc: string = STATUS_DESC,
     controls = true,
@@ -886,7 +886,7 @@ class BoxedConfirm {
 
 /** The custom dialogs only exist in TUI mode: `custom` is a documented no-op in RPC, not a missing method. */
 async function customScreen<T>(ctx: any, build: (tui: any, theme: any, done: (value: T) => void) => any): Promise<T> {
-  return await ctx.ui.custom<T>((tui: any, theme: any, _kb: any, done: (value: T) => void) => {
+  return await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: T) => void) => {
     const component = build(tui, theme, done);
     return {
       render: (width: number) => component.render(width),
