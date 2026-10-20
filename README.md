@@ -40,6 +40,8 @@ Credentials you store live side by side: `~/.pi/agent/pi-jev-eye/auth.json` (mod
 
 Which backend answers is a separate choice from which keys exist: `/jev-eye models` writes `~/.pi/agent/pi-jev-eye/backends.json` (`{ "primary": "cloudflare:clef-flash", "fallback": "typesafe:jev-latest" }`). Either slot may be empty, in which case the credential precedence above applies. The fallback is called only after the active backend fails outright — a non-OK response, a rejected envelope, a timeout, or a network error — and `/jev-eye status` counts how often that happened.
 
+The per-session caps default to 20 gate requests and 20 routing classifications. Set PI_JEV_EYE_MAX_REQUESTS or PI_JEV_EYE_MAX_ROUTING_CALLS to a positive integer before starting Pi to change them; any other value keeps 20.
+
 To test locally without installing:
 ```bash
 pi -e ./extensions/index.ts

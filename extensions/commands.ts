@@ -43,7 +43,7 @@ const openRoutingMenu = async (ctx: any, focus: "light" | "heavy" = "light", bac
     return;
   }
 
-  const result = await ctx.ui.custom<Routing | null>((tui: any, theme: any, _kb: any, done: (value: Routing | null) => void) => {
+  const result = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: Routing | null) => void) => {
     const picker = new RoutingPicker(theme, available, current, focus, done, borderPainterFor(theme, ctx), back);
     return {
       render: (width: number) => picker.render(width),
@@ -94,7 +94,7 @@ const openModelsMenu = async (ctx: any, back = true): Promise<void | "back"> => 
     return;
   }
 
-  const result = await ctx.ui.custom<Backends | null>((tui: any, theme: any, _kb: any, done: (value: Backends | null) => void) => {
+  const result = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: Backends | null) => void) => {
     const picker = new ModelsPicker(theme, models, current, done, back);
     return {
       render: (width: number) => picker.render(width),

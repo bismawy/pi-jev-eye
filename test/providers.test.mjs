@@ -221,3 +221,78 @@ test("classifyWeight falls over too, and returns null when nothing answers", asy
   });
   assert.equal(attempt, null, "attemptWeight returns null for a backend that could not answer");
 });
+
+test("an answerless 200 is one failed ledger row, not ok plus failed", async () => {
+  const { rmSync, readFileSync } = await import("node:fs");
+  const { OWN_USAGE_PATH } = await import(here("core.ts"));
+  const { today } = await import(here("ledger.ts"));
+  rmSync(OWN_USAGE_PATH, { force: true });
+  const result = await withFetch(
+    () => Response.json(clefEnvelope({})),
+    () => attemptJev("const x = 1;\n".repeat(12), auth("typesafe", "jev-latest"))
+  );
+  assert.equal(result, null, "an answerless 200 is still a failure of that backend");
+  const day = JSON.parse(readFileSync(OWN_USAGE_PATH, "utf8")).days[today()];
+  assert.equal(day.requests, 1, "one HTTP call is one request in the ledger");
+  assert.equal(day.failed, 1, "and it is the failed one");
+  assert.equal(day.ok || 0, 0, "an answerless 200 is never also counted as ok");
+});
+
+test("the request cap holds per attempt, so a failover at the last slot cannot overshoot it", async () => {
+  const chain = [auth("typesafe", "jev-latest"), auth("cloudflare", "clef-flash")];
+  const { JEV_MAX_REQUESTS } = await import(here("gate.ts"));
+  const { JEV_MAX_ROUTING_CALLS } = await import(here("routing.ts"));
+  state.stats.jevRequests = JEV_MAX_REQUESTS - 1;
+  state.stats.jevRoutingCalls = JEV_MAX_ROUTING_CALLS - 1;
+  await withFetch(
+    (url) => (url.includes("typesafe.ai") ? notOk() : Response.json(clefEnvelope({ has_slop: { noul: 0.1 }, weight: { choice: "light" } }))),
+    async (calls) => {
+      assert.equal(await askJev("const x = 1;\n".repeat(12), chain), null, "the gate fallback is not called past the cap");
+      assert.equal(await classifyWeight("apa saja", chain), null, "nor the routing fallback");
+      assert.equal(calls.length, 2, "one call each: the primary at the last slot, never the fallback");
+    }
+  );
+  assert.equal(state.stats.jevRequests, JEV_MAX_REQUESTS, "the gate counter stops at the cap, so the one-time warning still fires");
+  assert.equal(state.stats.jevRoutingCalls, JEV_MAX_ROUTING_CALLS, "and so does the routing counter");
+  state.stats.jevRequests = 0;
+  state.stats.jevRoutingCalls = 0;
+});
+
+test("routing books its calls in the ledger like the gate does", async () => {
+  const { rmSync, readFileSync } = await import("node:fs");
+  const { OWN_USAGE_PATH } = await import(here("core.ts"));
+  const { today } = await import(here("ledger.ts"));
+  rmSync(OWN_USAGE_PATH, { force: true });
+  state.stats.jevRoutingCalls = 0;
+  const choice = await withFetch(
+    () => Response.json(clefEnvelope({ weight: { choice: "light" } })),
+    () => attemptWeight("apa saja", auth("cloudflare", "clef-flash"))
+  );
+  assert.equal(choice, "light", "the answered classification is returned");
+  await withFetch(() => notOk(), () => attemptWeight("apa saja", auth("cloudflare", "clef-flash")));
+  const day = JSON.parse(readFileSync(OWN_USAGE_PATH, "utf8")).days[today()];
+  assert.equal(day.requests, 2, "both routing calls are in the ledger");
+  assert.equal(day.ok, 1, "the answered one is ok");
+  assert.equal(day.failed, 1, "the 503 is failed");
+  assert.equal(day.inputTokens, 100, "and the answered call books its tokens");
+  state.stats.jevRoutingCalls = 0;
+});
+
+test("the ledger day is the UTC day, matching the Clef 00:00 UTC reset", async () => {
+  const { today } = await import(here("ledger.ts"));
+  assert.equal(today(), new Date().toISOString().slice(0, 10));
+});
+
+test("the session caps read a positive integer from the environment and keep 20 otherwise", async () => {
+  const { envBudget } = await import(here("core.ts"));
+  const name = "PI_JEV_EYE_TEST_BUDGET";
+  delete process.env[name];
+  assert.equal(envBudget(name, 20), 20, "unset keeps the default");
+  for (const bad of ["", "abc", "0", "-3", "2.5"]) {
+    process.env[name] = bad;
+    assert.equal(envBudget(name, 20), 20, "value " + JSON.stringify(bad) + " keeps the default");
+  }
+  process.env[name] = "50";
+  assert.equal(envBudget(name, 20), 50, "a positive integer wins");
+  delete process.env[name];
+});

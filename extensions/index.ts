@@ -254,11 +254,12 @@ export default function (pi: ExtensionAPI) {
     if (event.toolName === "write" || event.toolName === "edit") {
       state.modifiedFilesThisTurn = true;
 
+      const edits = (event.input as { edits?: unknown })?.edits;
       const contentToCheck =
         event.toolName === "write"
           ? String(event.input?.content || "")
-          : Array.isArray(event.input?.edits)
-          ? event.input.edits.map((e: any) => e.newText || "").join("\n")
+          : Array.isArray(edits)
+          ? edits.map((e: any) => e.newText || "").join("\n")
           : "";
 
       // Detect secret leaks in the content about to be written

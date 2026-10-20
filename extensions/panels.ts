@@ -160,7 +160,7 @@ export const showUsage = async (ctx: any, back = true): Promise<void | "back"> =
     ctx.ui.notify([USAGE_TITLE, USAGE_DESC, "", ...buildUsage(ctx, undefined, balance)].join("\n"), "info");
     return;
   }
-  const outcome = await ctx.ui.custom<number | null>((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
+  const outcome = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
     const panel = new StatusPanel(
       theme,
       buildUsage(ctx, theme, balance),
@@ -252,7 +252,7 @@ export const showStatus = async (ctx: any, back = true): Promise<void | "back"> 
     return;
   }
 
-  const outcome = await ctx.ui.custom<number | null>((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
+  const outcome = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
     const panel = new StatusPanel(
       theme,
       buildStatus(ctx, theme),

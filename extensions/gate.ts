@@ -1,15 +1,14 @@
 // Layer 3: the semantic write gate. One batched question per diff, hard per-session budget.
 
-import { JEV_TIMEOUT_MS, authUrl, providerIdOf } from "./core.ts";
+import { JEV_TIMEOUT_MS, authUrl, envBudget, providerIdOf } from "./core.ts";
 import type { JevAuth } from "./core.ts";
-import { USD_PER_MTOK, clefNeuronsFor, clefUsdPerMTok } from "./layer1.ts";
-import { recordOwnUsage } from "./ledger.ts";
+import { recordCall, recordOwnUsage } from "./ledger.ts";
 import { state } from "./pmr.ts";
 import { withBackends, workersAiBody } from "./providers.ts";
 
 export const JEV_MIN_DIFF_LINES = 10; // Skip tiny diffs: the same question repeated per write is what burns the quota
 export const JEV_BLOCK_THRESHOLD = 0.85; // P(yes) needed to block a write
-export const JEV_MAX_REQUESTS = 20; // Hard per-session cap: one request = all dimensions, never one per question
+export const JEV_MAX_REQUESTS = envBudget("PI_JEV_EYE_MAX_REQUESTS", 20); // Hard per-session cap: one request = all dimensions, never one per question
 const JEV_MAX_STATE_CHARS = 4000; // Pruned state (signal over noise), far below the 64 KiB limit
 
 // Machine-checkable facts first: Jev judges, it does not verify.
@@ -65,6 +64,9 @@ async function attemptJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdic
       questions,
     };
 
+    // The cap holds per attempt, not per chain: a failover at the last slot would otherwise overshoot it
+    // and skip the one-time warning, which fires only when the counter equals the cap.
+    if (state.stats.jevRequests >= JEV_MAX_REQUESTS) return null;
     state.stats.jevRequests++;
     const res = await fetch(authUrl(auth), {
       method: "POST",
@@ -85,31 +87,16 @@ async function attemptJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdic
       recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
       return null;
     }
-    const inputTokens = Number(body.usage?.input_tokens) || 0;
-    // Cloudflare reports a model-specific price and meters neurons; the others fall back to the flat rate.
-    const isClef = auth.provider.id === "cloudflare";
-    const reportedCost = Number((body.usage as any)?.cost) || (isClef ? (inputTokens * clefUsdPerMTok(auth.model)) / 1e6 : NaN);
-    recordOwnUsage(
-      {
-        requests: 1,
-        ok: 1,
-        inputTokens,
-        outputTokens: Number(body.usage?.output_tokens) || 0,
-        cost: Number.isFinite(reportedCost) ? reportedCost : (inputTokens * USD_PER_MTOK) / 1e6,
-        // Only Cloudflare bills in neurons; storing 0 for the rest keeps the panel's math uniform.
-        neurons: isClef ? clefNeuronsFor(auth.model, inputTokens) : 0,
-      },
-      providerIdOf(auth)
-    );
     const answers = body.answers;
     // A 200 that carries no answer for this request is a failure of this backend, not a clean verdict:
     // the three dimensions below would all read `null`, the gate would find no block signal, and the
     // failover would never run because the attempt looked successful. At least one dimension must be a
     // number before the attempt counts as an answer.
-    if (!answers || typeof answers !== "object" || Object.values(answers).every((value: any) => typeof value?.noul !== "number")) {
-      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
-      return null;
-    }
+    const answered =
+      !!answers && typeof answers === "object" && Object.values(answers).some((value: any) => typeof value?.noul === "number");
+    // One HTTP call is one ledger row: the tokens were spent either way, only the outcome differs.
+    recordCall(auth, body, answered);
+    if (!answered) return null;
     return {
       has_slop: answers.has_slop?.noul ?? null,
       has_unfinished_todo: answers.has_unfinished_todo?.noul ?? null,

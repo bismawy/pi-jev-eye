@@ -29,7 +29,7 @@ export const loginFlow = async (ctx: any): Promise<void | "back"> => {
   let back = false;
   if (ctx.mode === "tui") {
     let picker: AccountsPicker | undefined;
-    provider = await ctx.ui.custom<JevProvider | null>((tui: any, theme: any, _kb: any, done: (value: JevProvider | null) => void) => {
+    provider = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: JevProvider | null) => void) => {
       picker = new AccountsPicker(theme, store, done, async (provider) => {
         // The delete happens inside the picker, so its row updates without a reopen. Writes stay here:
         // the rule for an emptied store (delete the file) lives in one place, `removeStoredCredentials`.

@@ -1,15 +1,14 @@
 // Usage ledger: per-day counters, the per-provider split and the provider balance line.
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import { EYE_DIR, LEGACY_USAGE_PATH, OWN_USAGE_PATH, readJsonFile } from "./core.ts";
+import { EYE_DIR, LEGACY_USAGE_PATH, OWN_USAGE_PATH, providerIdOf, readJsonFile } from "./core.ts";
 import type { JevAuth } from "./core.ts";
-import { EMPTY_TOTALS, USD_PER_MTOK, addProviderTotals, legacyTotals, mergeTotals, normalizeTotals, sumDays } from "./layer1.ts";
+import { EMPTY_TOTALS, USD_PER_MTOK, addProviderTotals, clefNeuronsFor, clefUsdPerMTok, legacyTotals, mergeTotals, normalizeTotals, sumDays } from "./layer1.ts";
 import type { DayTotals, ProviderTotals } from "./layer1.ts";
 
-export const today = (): string => {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-};
+// Cloudflare resets the free neuron allowance at 00:00 UTC, so a ledger day is a UTC day: a local
+// day would split one Clef allowance across two rows (7 hours off in WIB).
+export const today = (): string => new Date().toISOString().slice(0, 10);
 
 /** One period across both ledgers: today, or the current calendar month. */
 export function readUsage(period: string): DayTotals | undefined {
@@ -46,6 +45,27 @@ export function recordOwnUsage(patch: Partial<DayTotals>, providerId?: string): 
   } catch {
     // Stats must never break a judgment call.
   }
+}
+
+/** One HTTP call that came back 200: its tokens, cost and neurons are billed whether or not the body was usable,
+ *  so the gate and the router both book it here as exactly one row, ok or failed. */
+export function recordCall(auth: JevAuth, body: any, answered: boolean): void {
+  const inputTokens = Number(body?.usage?.input_tokens) || 0;
+  // Cloudflare reports a model-specific price and meters neurons; the others fall back to the flat rate.
+  const isClef = auth.provider.id === "cloudflare";
+  const reportedCost = Number(body?.usage?.cost) || (isClef ? (inputTokens * clefUsdPerMTok(auth.model)) / 1e6 : NaN);
+  recordOwnUsage(
+    {
+      requests: 1,
+      ...(answered ? { ok: 1 } : { failed: 1 }),
+      inputTokens,
+      outputTokens: Number(body?.usage?.output_tokens) || 0,
+      cost: Number.isFinite(reportedCost) ? reportedCost : (inputTokens * USD_PER_MTOK) / 1e6,
+      // Only Cloudflare bills in neurons; storing 0 for the rest keeps the panel math uniform.
+      neurons: isClef ? clefNeuronsFor(auth.model, inputTokens) : 0,
+    },
+    providerIdOf(auth)
+  );
 }
 
 // Account balance: OpenRouter exposes one directly, Cloudflare has no remaining-neuron route, TypeSafe has none at all.
