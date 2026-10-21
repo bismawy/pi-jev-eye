@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.1] - 2026-10-21
+
+### Fixed
+- The Layer 2 done-check now resets once per prompt run (before_agent_start) instead of per turn. An edit in one turn followed by a done claim in the next is now flagged, and a test run earlier in the same run still counts as verification.
+- Layer 3 facts no longer count object literals, default parameters, arrow no-ops, empty catch blocks, or TODO markers inside strings as empty bodies or placeholders. Only an empty body right after a parameter list counts.
+- An edit is judged inside the 20 lines of file context around it, not as the bare newText fragment. A new or unreadable path falls back to the fragments.
+- Layer 3 judges code files only. Markdown, JSON, YAML, CHANGELOG and env example files are skipped.
+- Done-claim detection now covers beres, rampung, fixed, completed, finished, implemented and the berhasil/sudah passive forms. It no longer fires on the imperative terapkan.
+- Facts are computed from the same 4000-character slice the judge receives.
+
+### Added
+- PI_JEV_EYE_BLOCK_THRESHOLD overrides the 0.85 block threshold. It accepts values above 0.5 up to 1; any other value keeps the default.
+- A block message now lists the machine-counted facts and a fix hint.
+
+### Changed
+- The status panel row badge reads SESSION instead of STATS.
+- npm test runs 143 tests (46 new).
+
 ## [0.3.0] - 2026-10-20
 
 ### Added
