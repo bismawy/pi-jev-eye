@@ -230,7 +230,8 @@ const buildStatus = (ctx: any, theme?: any): string[] => {
       ],
       routing.enabled ? "success" : "muted",
     ),
-    row("Blocked", "STATS", [
+    // In-memory counters that reset on reload, so the badge names their scope instead of implying a lifetime total.
+    row("Blocked", "SESSION", [
       `${count(s.destructiveBlocked)} dangerous`,
       `${count(s.secretsBlocked)} secrets`,
       `${count(s.slopBlocked)} slop`,
