@@ -13,9 +13,10 @@
 //   this file     event wiring only: routing, consent, Layers 1-2, shortcuts
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { DESTRUCTIVE_BASH_PATTERNS, SECRET_PATTERNS, VERIFICATION_COMMAND_PATTERNS, wipeTarget } from "./layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, SECRET_PATTERNS, wipeTarget } from "./layer1.ts";
+import { RESET_ON, noteBash, noteWrite, resetTracking, unverifiedDoneClaim } from "./layer2.ts";
 import { authChain, readBackends, resolveJevAuth, setClefModels } from "./core.ts";
-import { JEV_BLOCK_THRESHOLD, JEV_MAX_REQUESTS, JEV_MIN_DIFF_LINES, askJev } from "./gate.ts";
+import { JEV_BLOCK_THRESHOLD, JEV_MAX_REQUESTS, JEV_MIN_DIFF_LINES, askJev, blockHint, codeFacts, editContext, isCodePath, readSource } from "./gate.ts";
 import { consentAllows, consentLabel, nextConsent, readConsent, writeConsent } from "./consent.ts";
 import { installCommands } from "./commands.ts";
 import { REVIEW_CONTRACT, REVIEW_TRIGGER } from "./review.ts";
@@ -196,11 +197,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Reset turn tracking
-  pi.on("turn_start", () => {
-    state.modifiedFilesThisTurn = false;
-    state.verifiedThisTurn = false;
-  });
+  // Layer 2 tracking spans the whole prompt run, not one turn: see layer2.ts.
+  pi.on(RESET_ON, resetTracking);
 
   // Publish supervisor state to the status bar on every session start/reload.
   pi.on("session_start", async (_event: any, ctx: any) => {
@@ -216,10 +214,7 @@ export default function (pi: ExtensionAPI) {
     if (event.toolName === "bash") {
       const cmd = typeof event.input?.command === "string" ? event.input.command : "";
 
-      // Track whether a verification command ran
-      if (VERIFICATION_COMMAND_PATTERNS.some((p) => p.test(cmd))) {
-        state.verifiedThisTurn = true;
-      }
+      noteBash(cmd);
 
       // Detect destructive actions: filesystem wipes first, then the fixed patterns
       const wiped = wipeTarget(cmd);
@@ -252,7 +247,7 @@ export default function (pi: ExtensionAPI) {
 
     // 2. Check write & edit
     if (event.toolName === "write" || event.toolName === "edit") {
-      state.modifiedFilesThisTurn = true;
+      noteWrite();
 
       const edits = (event.input as { edits?: unknown })?.edits;
       const contentToCheck =
@@ -277,7 +272,7 @@ export default function (pi: ExtensionAPI) {
 
       // Layer 3: Jev semantic gate, only for diffs above the line threshold
       const consent = readConsent();
-      if (consentAllows(ctx.cwd, consent) && contentToCheck.split("\n").length >= JEV_MIN_DIFF_LINES) {
+      if (consentAllows(ctx.cwd, consent) && isCodePath(event.input?.path) && contentToCheck.split("\n").length >= JEV_MIN_DIFF_LINES) {
         const auth = authChain(readBackends());
         if (auth.length > 0) {
           if (state.stats.jevRequests >= JEV_MAX_REQUESTS) {
@@ -289,7 +284,9 @@ export default function (pi: ExtensionAPI) {
               );
             }
           } else {
-            const verdict = await askJev(contentToCheck, auth);
+            // An edit is judged in its surrounding lines, not as a bare fragment; secrets and the size threshold stay on the new text.
+            const judged = event.toolName === "edit" && Array.isArray(edits) ? editContext(readSource(ctx.cwd, event.input?.path), edits) : contentToCheck;
+            const verdict = await askJev(judged, auth);
             const hits = verdict
               ? ([
                   ["has_slop", verdict.has_slop],
@@ -301,11 +298,14 @@ export default function (pi: ExtensionAPI) {
 
             if (hits.length > 0) {
               state.stats.slopBlocked++;
+              // The agent rewrites blind without the evidence, burning the request budget; give it the counts to fix.
+              const f = codeFacts(judged);
+              const hint = blockHint(f);
               const detail = hits.map(([dim, p]) => `${dim} p=${(p as number).toFixed(2)}`).join(", ");
               ctx.ui.notify(`[pi-jev-eye] JEV BLOCK: ${detail}`, "warning");
               return {
                 block: true,
-                reason: `[pi-jev-eye] Write blocked by a Jev model judgment (${detail}, threshold p≥${JEV_BLOCK_THRESHOLD}). This is a calibrated estimate, not proof. Finish the implementation before saving.`,
+                reason: `[pi-jev-eye] Write blocked by a Jev model judgment (${detail}, threshold p≥${JEV_BLOCK_THRESHOLD}). This is a calibrated estimate, not proof. Finish the implementation before saving. ${hint}`,
               };
             }
           }
@@ -317,23 +317,11 @@ export default function (pi: ExtensionAPI) {
   // --- Layer 2: "Done-Check" state tracker at turn end ---
   pi.on("message_end", async (event, ctx) => {
     if (!state.enabled) return;
-    if (event.message.role !== "assistant") return;
-
-    // Check whether the agent claims completion without verifying
-    if (state.modifiedFilesThisTurn && !state.verifiedThisTurn) {
-      const text = Array.isArray(event.message.content)
-        ? event.message.content.map((c: any) => c.text || "").join(" ")
-        : "";
-
-      const claimsDone = /\b(selesai|sudah selesai|done|berhasil diperbaiki|berhasil dibuat|terapkan)\b/i.test(text);
-
-      if (claimsDone) {
-        state.stats.verificationReminders++;
-        ctx.ui.notify(
-          "[pi-jev-eye] Warning: files were modified but no verification (test/lint/build) ran!",
-          "warning"
-        );
-      }
+    if (unverifiedDoneClaim(event.message)) {
+      ctx.ui.notify(
+        "[pi-jev-eye] Warning: files were modified but no verification (test/lint/build) ran!",
+        "warning"
+      );
     }
   });
 
