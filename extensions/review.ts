@@ -21,7 +21,7 @@ export const REVIEW_TRIGGER = new RegExp(`${PROSE_TRIGGER.source}|${EYE_TRIGGER.
 
 // The injected contract is what makes the reply arrive in the report shape this workflow already uses.
 // Deliberately self-contained: the package never reads a skill file, so it works for anyone who installs it.
-// The same wording rules also live in ~/.pi/agent/skills/arnative-jev (section 6) — change that one too.
+// The same wording rules also ship inside this package as the `eye-judgment` skill (§6) — change that one too.
 export const REVIEW_CONTRACT = [
   "[pi-jev-eye] Reviewed turn contract:",
   "- Language: write in the operator's language (explicit operator instruction > AGENTS.md > prompt language > English fallback); keep code, paths and technical terms verbatim.",
