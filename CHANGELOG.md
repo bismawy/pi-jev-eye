@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2026-10-24
 
 ### Added
 - The package now ships the `eye-judgment` skill (pi discovers `skills/` beside `extensions/`): the calibrated judgment workflow — the Jev HTTP recipe (`POST /v1/systemone`, key lookup incl. the `auth.json` v2 shape), the batching limits (≤ 32 questions per request, `item × dimension ≤ 32`), question-writing rules, and the pre-send checklist — is now available to every install via `/skill:eye-judgment`, not only to machines with a hand-installed skill. Named after the package (Eye), not the engine, so later backends (Clef et al.) fit under it without a rename.
