@@ -24,6 +24,7 @@ pi-jev-eye is an ultra-lean, zero-dependency supervisor for [pi](https://github.
 - **Three Decision Backends:** TypeSafe Jev, OpenRouter, or **Cloudflare Workers AI (Clef / `clef-flash`)** — same gated pipeline, with the active one chosen in `/jev-eye models`. Clef runs inside Cloudflare's free daily allowance of 10,000 neurons, so the gate costs nothing for most sessions.
 - **Jev + Clef Usage Panel (`/jev-eye usage`):** One compact table shows Jev and Clef side by side (requests, input tokens, cost for the month), three period totals, and the Cloudflare free-neuron budget with its reset time and overage cost. Periods that predate the split are reported as an explicit `Earlier` row rather than silently dropping out of the table.
 - **Reviewed Turns (`jev` / `@jev` / `/eye`):** Calibrated review contract with machine facts, Jev scoring tables, and single-flight prompt alignment (`answers_request`). The flat `/eye <task>` form opens it without a prose token; so does writing `/eye` inside a sentence, because the marker is read from the prompt text and not only from the command.
+- **Shipped skill (`/skill:eye-judgment`):** The calibrated judgment workflow travels inside the package as a Pi skill — every install gets it, no separate download. Backend-agnostic in name (the package carries Jev, Clef, and whatever comes next), Jev-taught in method: the request recipe (`POST /v1/systemone`), the batching limits (≤ 32 questions per request), and the question-writing rules for triage, ranking, rubric scoring, A/B comparison, and probability estimation.
 - **Fail-Open Reliability:** Network timeouts or offline provider APIs gracefully degrade so coding sessions never stall or freeze.
 - **Account Management in Place:** One Accounts screen lists every backend with its stored state — `[Enter]` stores a key, `[Ctrl+d]` removes one after a second confirming press, so switching backends never requires a separate logout menu.
 - **Rounded Arnative Screens:** Every `/jev-eye` screen — menu, accounts, models, status, usage, routing, the key prompt, and the confirm dialog — draws inside one rounded frame with a soft-accent border derived from the live theme, a bold soft-accent chosen row, a padded `·` column, and a footer that advertises only the keys it handles.
@@ -62,6 +63,16 @@ pi -e ./extensions/index.ts
 | `jev` · `@jev` in prompt | Prompt | Trigger calibrated review format and task alignment check |
 | `/eye <task>` | Prompt | Flat trigger: opens the same reviewed contract for that turn (the `/eye` is stripped, the task is answered normally) |
 | `/eye` inside a prompt | Prompt | The same marker mid-sentence (`Hai, bantu saya /eye`) — pi only treats input as a command when the whole text starts with `/`, so the inline form reaches the review path too |
+| `/skill:eye-judgment <task>` | Skill | Force-inject the shipped judgment workflow: the Jev HTTP recipe, batching limits, and question-writing rules for triage, ranking, rubric scoring, A/B, and probability tasks |
+
+### The shipped skill
+
+Installing the package installs the `eye-judgment` skill with it (pi discovers `skills/` in the package the
+same way it discovers `extensions/`). The skill body is injected as a user message when invoked, so the
+agent follows the exact request shape instead of guessing: one request with many questions
+(`item × dimension ≤ 32`), pruned state, machine facts collected first, and the report format deferred to
+the package's own `REVIEW_CONTRACT`. The description alone also routes judgment-shaped requests to it —
+but a fast model may skip that, so `/skill:eye-judgment` is the guaranteed path.
 
 ### Providers
 
