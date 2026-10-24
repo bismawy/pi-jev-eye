@@ -32,6 +32,7 @@
   },
   "files": [
     "extensions",
+    "skills",
     "CHANGELOG.md",
     "LICENSE",
     "README.md"
@@ -48,6 +49,9 @@
     "image": "https://raw.githubusercontent.com/bismawy/pi-jev-eye/main/assets/banner.webp",
     "extensions": [
       "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "peerDependencies": {
