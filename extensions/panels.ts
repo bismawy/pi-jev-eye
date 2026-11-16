@@ -115,14 +115,12 @@ const buildUsage = (
       : paint("dim", "inactive");
   const clefDetailLine = `${paint("dim", `resets 00:00 UTC · ${n(Math.round(budget.remaining))} left${freeTierTag} · `)}${clefActiveText}`;
 
+  const sessionValue = `${paint(
+    "text",
+    `gate ${Math.min(s.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} · routing ${Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} · reviewed ${s.reviewTurns}`
+  )}${typeof contextTokens === "number" ? paint("dim", ` · ctx ${n(contextTokens)}`) : ""}`;
+
   const kvRows: [string, string][] = [
-    [
-      "Session",
-      `${paint(
-        "text",
-        `gate ${Math.min(s.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} · routing ${Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} · reviewed ${s.reviewTurns}`
-      )}${typeof contextTokens === "number" ? paint("dim", ` · ctx ${n(contextTokens)}`) : ""}`,
-    ],
     [
       "Blocked",
       paint(totalBlocked > 0 ? "warning" : "muted", `${s.destructiveBlocked} dangerous · ${s.secretsBlocked} secret · ${s.slopBlocked} slop`),
@@ -309,6 +307,7 @@ const buildUsage = (
 
   lines.push(rule);
   lines.push(renderRow("Total", totals ?? EMPTY_BUCKET, totals && totals.requests > 0 ? "text" : "muted", true));
+  lines.push("", `${paint("dim", "Session")} ${paint("dim", "·")} ${sessionValue}`);
 
   return { lines, providerIds };
 };
