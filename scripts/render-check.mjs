@@ -333,14 +333,13 @@ assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a to
   );
   assert.deepEqual([...usageOrder].sort((x, y) => x - y), usageOrder, "usage footer keeps navigation before confirm and exit");
   const usageRows = usage.split("\n");
-  // Blocked and Clef (today) share one flush-left `label · value` divider column above the table;
-  // Session sits below the Total row.
-  const kvRows = usageRows.filter((l) => /│ (Blocked|Clef \(today\))\s+·/.test(l));
-  assert.equal(kvRows.length, 2, "usage shows Blocked and Clef (today) on `label · value` rows");
+  // Session, Blocked, and Clef (today) share one flush-left `label · value` divider column below the Total row.
+  const kvRows = usageRows.filter((l) => /│ (Session|Blocked|Clef \(today\))\s+·/.test(l));
+  assert.equal(kvRows.length, 3, "usage shows Session, Blocked, and Clef (today) on `label · value` rows");
   assert.equal(new Set(kvRows.map((l) => l.indexOf("·"))).size, 1, "usage summary dividers align in one column");
   const totalIdx = usageRows.findIndex((l) => /│ Total\s+/.test(l));
-  const sessionIdx = usageRows.findIndex((l) => /│ Session\s+·\s+gate/.test(l));
-  assert.equal(totalIdx !== -1 && sessionIdx > totalIdx, true, "Session sits below the Total row");
+  const firstKvIdx = usageRows.findIndex((l) => /│ Session\s+·\s+gate/.test(l));
+  assert.equal(totalIdx !== -1 && firstKvIdx > totalIdx, true, "summary rows sit below the Total row");
   assert.equal(usage.includes("All · Today · 7 day · 30 day · 3 month"), true, "usage shows the period filter bar");
   assert.equal(usage.includes("Provider / Model"), true, "usage shows the Provider / Model table header");
   assert.equal(usage.includes("▸ TypeSafe"), true, "usage lists TypeSafe collapsed by default");
