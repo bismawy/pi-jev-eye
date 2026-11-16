@@ -284,10 +284,14 @@ const status = await open("status", "", [2], 80);
   const order = ["[↑↓] Move", "[Space] Toggle", "[Enter] Done", "[Esc] Back"].map(at);
   assert.equal(order.every((i) => i >= 0), true, `every status footer key is present, got ${order.join(",")}`);
   assert.deepEqual([...order].sort((x, y) => x - y), order, `the status footer runs nav → toggle → confirm → exits, got ${order.join(",")}`);
-  const statusRows = status.split("\n").filter((l) => /Supervisor|Folder gate|Backend|Routing|Session/.test(l));
-  assert.equal(statusRows.length, 5, "status shows the five expected rows");
-  assert.equal(new Set(statusRows.map((l) => l.indexOf("·"))).size, 1, "all five status dividers align in one column");
-  assert.equal(statusRows.some((l) => l.includes("|")), false, "status drops the old pipe separator");
+  const overviewRows = status.split("\n").filter((l) => /Backend|Routing|Session/.test(l));
+  const controlRows = status.split("\n").filter((l) => /Supervisor|Folder gate/.test(l));
+  assert.equal(overviewRows.length, 3, "status shows the three overview rows");
+  assert.equal(controlRows.length, 2, "status shows the two control rows");
+  assert.equal(new Set(overviewRows.map((l) => l.indexOf("·"))).size, 1, "overview dividers align in one column");
+  assert.equal(new Set(controlRows.map((l) => l.indexOf("·"))).size, 1, "control dividers align in one column");
+  assert.equal(status.indexOf("Session") < status.indexOf("Supervisor"), true, "overview sits above the interactive controls");
+  assert.equal([...overviewRows, ...controlRows].some((l) => l.includes("|")), false, "status drops the old pipe separator");
 }
 {
   const { ctx, screens } = harness();

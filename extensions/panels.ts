@@ -189,11 +189,16 @@ const buildStatus = (ctx: any, theme?: any, cursorIndex = -1): string[] => {
   const s = state.stats;
   const totalBlocked = s.destructiveBlocked + s.secretsBlocked + s.slopBlocked;
 
-  // One shared label column (`"Folder gate"` = 11 chars, padded to 12) so every `·` aligns across
-  // both the two interactive controls and the three read-only pipeline rows below them.
-  const line = (label: string, value: string, cursor = false): string => {
+  // Overview rows sit above the controls (same pattern as pi-arnative's Budget screen and
+  // ModelsPicker): flush-left dim labels padded to the widest overview label (`7`), followed by a
+  // blank line and the selectable controls padded to `"Folder gate"` (`11`).
+  const overviewColumn = Math.max("Backend".length, "Routing".length, "Session".length);
+  const controlColumn = Math.max("Supervisor".length, "Folder gate".length);
+  const overview = (label: string, value: string): string =>
+    `${paint("dim", label.padEnd(overviewColumn))} ${paint("dim", "·")} ${value}`;
+  const control = (label: string, value: string, cursor = false): string => {
     const prefix = cursorIndex >= 0 ? (cursor ? paint("accent", "→ ") : "  ") : "";
-    const styled = cursor ? soft(label.padEnd(12)) : paint("text", label.padEnd(12));
+    const styled = cursor ? soft(label.padEnd(controlColumn)) : paint("text", label.padEnd(controlColumn));
     return `${prefix}${styled} ${paint("dim", "·")} ${value}`;
   };
 
@@ -231,12 +236,12 @@ const buildStatus = (ctx: any, theme?: any, cursorIndex = -1): string[] => {
   )}`;
 
   return [
-    line("Supervisor", supervisorValue, cursorIndex === 0),
-    line("Folder gate", scopeValue, cursorIndex === 1),
+    overview("Backend", backendValue),
+    overview("Routing", routingValue),
+    overview("Session", sessionValue),
     "",
-    line("Backend", backendValue),
-    line("Routing", routingValue),
-    line("Session", sessionValue),
+    control("Supervisor", supervisorValue, cursorIndex === 0),
+    control("Folder gate", scopeValue, cursorIndex === 1),
     ...cloudflareHint(paint),
   ];
 };
