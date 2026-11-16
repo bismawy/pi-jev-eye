@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Accounts removes a stored key with `[R]` (pressed twice) instead of `[Ctrl+d]`; a capital letter keeps the destructive key away from the navigation keys.
+- Models sets the fallback with `[Tab]` instead of `[Ctrl+f]`, shows the `Active` / `Fallback` slot summary above the table, and reads each row as `label · state [provider]` on one divider.
+- On a screen the `/jev-eye` menu opened (Accounts, Models, Status, Usage, Routing), `[Esc]` returns to the menu instead of closing the command; a screen opened by direct subcommand keeps `[Esc]` as Cancel, and every footer now labels Esc accordingly.
+
+### Fixed
+- `resolveJevAuth()` now follows `/jev-eye models` (`backends.json` primary via `authChain`) instead of ignoring the chosen backend in favor of hardcoded provider order, and `currentCatalog()` uses the same env plus stored-key lookup as `authChain()`.
+- `agent_settled` always restores `pendingRevert` after a light turn even if the supervisor is turned off mid-turn.
+- `/jev-eye` root menu rebuilds row summaries whenever a sub-screen returns via `[←]`, and all boxed screens inherit the session thinking-level border via `borderPainterFor(theme, ctx)`.
+- `SecretPrompt` with `reveal=true` (Cloudflare account ID prompt) uses `Input` directly so cursor carets and horizontal scrolling render while typing.
+- `chosenRowPainter` derives the soft accent tier at `L=0.90, C*0.35` and `borderPainter` uses `thinking*` slots with `dim` fallback, matching `pi-arnative` theme rendering.
+- List dividers across menu, accounts, models, and routing screens use single-space `" · "` padding.
+- `probeJev()` and `postDecision()` now share `postJson()` in `extensions/providers.ts`.
+
+### Changed
+- Dropped unused `export` modifiers from internal helpers in `core.ts` and `layer1.ts`, removed redundant `isCodePath` test assertions from `gate.ts`, and collapsed `routing.ts` prompt classification onto a shared helper.
+- Updated `README.md` module list and removed unsupported claims and em/en dashes.
+
 ## [0.4.0] - 2026-10-24
 
 ### Added

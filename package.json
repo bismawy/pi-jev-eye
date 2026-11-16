@@ -24,7 +24,7 @@
   "scripts": {
     "dev": "pi -e ./extensions/index.ts",
     "test": "node --test",
-    "render-check": "node --experimental-strip-types scripts/render-check.mjs",
+    "render-check": "node --preserve-symlinks --preserve-symlinks-main --experimental-strip-types scripts/render-check.mjs",
     "typecheck": "npx -y -p typescript@7.0.2 tsc --noEmit"
   },
   "publishConfig": {

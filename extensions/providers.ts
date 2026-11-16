@@ -1,13 +1,15 @@
 // The probe that proves a credential works against a provider's live route before it is stored, and the
 // one call path every Jev/Clef request takes: active backend first, fallback behind it.
 
+import { JEV_TIMEOUT_MS, authUrl, providerIdOf } from "./core.ts";
 import type { JevAuth, JevProvider } from "./core.ts";
 import { clefBody, clefError } from "./layer1.ts";
+import { recordCall, recordOwnUsage } from "./ledger.ts";
 import { state } from "./pmr.ts";
 
 type ClefAnswer = { model?: string; answers?: Record<string, any>; usage?: { input_tokens?: number; output_tokens?: number } };
 
-export const workersAiBody = (json: any): ClefAnswer | undefined => clefBody(json) as ClefAnswer | undefined;
+const workersAiBody = (json: any): ClefAnswer | undefined => clefBody(json) as ClefAnswer | undefined;
 const workersAiError = clefError;
 
 /** One tiny request: proves the key AND that the route works, before anything is saved. */
@@ -63,4 +65,39 @@ export async function withBackends<T>(chain: JevAuth[], attempt: (auth: JevAuth)
     }
   }
   return null;
+}
+
+/**
+ * Post one System One decision payload to a backend, unwrap the Workers AI envelope, and record
+ * exactly one ledger row. Returns `null` when the backend could not answer so `withBackends` fails over.
+ */
+export async function postDecision<T>(
+  auth: JevAuth,
+  payload: { state: Record<string, any>; questions: Record<string, any> },
+  extract: (body: ClefAnswer) => T | null,
+): Promise<T | null> {
+  try {
+    const res = await fetch(authUrl(auth), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth.key}` },
+      body: JSON.stringify({ model: auth.model, ...payload }),
+      signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
+      return null;
+    }
+    const body = workersAiBody(await res.json());
+    if (!body) {
+      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
+      return null;
+    }
+    const result = extract(body);
+    // One HTTP call is one ledger row: the tokens were spent either way, only the outcome differs.
+    recordCall(auth, body, result !== null);
+    return result;
+  } catch {
+    recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
+    return null;
+  }
 }

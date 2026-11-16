@@ -296,3 +296,41 @@ test("the session caps read a positive integer from the environment and keep 20 
   assert.equal(envBudget(name, 20), 50, "a positive integer wins");
   delete process.env[name];
 });
+
+test("resolveJevAuth prefers the active backend from backends.json and falls back to default precedence", async () => {
+  const { readBackends, resolveJevAuth, writeAuthStore, writeBackends } = await import(here("core.ts"));
+  const { putCredential } = await import(here("layer1.ts"));
+  process.env.TYPESAFE_API_KEY = "t".repeat(40);
+  writeAuthStore(putCredential({ version: 2, providers: {} }, "cloudflare", { apiKey: "c".repeat(40), accountId: "a".repeat(32) }));
+  writeBackends({ primary: "cloudflare:clef-flash", fallback: "typesafe:jev-latest" });
+
+  assert.equal(resolveJevAuth()?.provider.id, "cloudflare", "active backend in backends.json wins over fixed provider order");
+  assert.equal(resolveJevAuth()?.model, "clef-flash", "and keeps the picked model");
+
+  writeBackends({ primary: "", fallback: "" });
+  assert.deepEqual(readBackends(), { primary: "", fallback: "" });
+  assert.equal(resolveJevAuth()?.provider.id, "typesafe", "empty backends.json restores default provider precedence");
+
+  delete process.env.TYPESAFE_API_KEY;
+  writeAuthStore({ version: 2, providers: {} });
+});
+
+test("currentCatalog treats Cloudflare as unconfigured when CLOUDFLARE_API_TOKEN lacks CLOUDFLARE_ACCOUNT_ID", async () => {
+  const { currentCatalog, writeAuthStore } = await import(here("core.ts"));
+  const { putCredential } = await import(here("layer1.ts"));
+  const store = putCredential({ version: 2, providers: {} }, "cloudflare", { apiKey: "c".repeat(40), accountId: "a".repeat(32) });
+  writeAuthStore(store);
+
+  process.env.CLOUDFLARE_API_TOKEN = "e".repeat(40);
+  delete process.env.CLOUDFLARE_ACCOUNT_ID;
+  const clefRow = currentCatalog(store).find((m) => m.providerId === "cloudflare");
+  assert.equal(clefRow?.configured, false, "env token without account id shadows stored key and reads not configured");
+
+  process.env.CLOUDFLARE_ACCOUNT_ID = "b".repeat(32);
+  const clefWithAccount = currentCatalog(store).find((m) => m.providerId === "cloudflare");
+  assert.equal(clefWithAccount?.configured, true, "setting CLOUDFLARE_ACCOUNT_ID makes Clef configured");
+
+  delete process.env.CLOUDFLARE_API_TOKEN;
+  delete process.env.CLOUDFLARE_ACCOUNT_ID;
+  writeAuthStore({ version: 2, providers: {} });
+});

@@ -8,7 +8,7 @@ import { EYE_MARKER, EYE_TRIGGER } from "./review.ts";
 import { readRouting, writeRouting } from "./routing.ts";
 import type { Routing } from "./routing.ts";
 import { TOGGLE_KEY, eyeCompletions, syncEyeStatus } from "./supervisor.ts";
-import { BACK, ModelsPicker, RoutingPicker, borderPainterFor, pickRow } from "./ui.ts";
+import { BACK, ModelsPicker, RoutingPicker, borderPainterFor, customScreen, pickRow } from "./ui.ts";
 import type { Backends } from "./layer1.ts";
 
 const saveRouting = (ctx: any, next: Routing): void => {
@@ -43,17 +43,9 @@ const openRoutingMenu = async (ctx: any, focus: "light" | "heavy" = "light", bac
     return;
   }
 
-  const result = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: Routing | null) => void) => {
-    const picker = new RoutingPicker(theme, available, current, focus, done, borderPainterFor(theme, ctx), back);
-    return {
-      render: (width: number) => picker.render(width),
-      invalidate: () => picker.invalidate(),
-      handleInput: (data: string) => {
-        picker.handleInput(data);
-        tui.requestRender();
-      },
-    };
-  });
+  const result = await customScreen<Routing | typeof BACK | null>(ctx, (theme, done) =>
+    new RoutingPicker(theme, available, current, focus, done, borderPainterFor(theme, ctx), back)
+  );
 
   if (result === BACK) return "back";
   if (!result) {
@@ -94,17 +86,9 @@ const openModelsMenu = async (ctx: any, back = true): Promise<void | "back"> => 
     return;
   }
 
-  const result = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: Backends | null) => void) => {
-    const picker = new ModelsPicker(theme, models, current, done, back);
-    return {
-      render: (width: number) => picker.render(width),
-      invalidate: () => picker.invalidate(),
-      handleInput: (data: string) => {
-        picker.handleInput(data);
-        tui.requestRender();
-      },
-    };
-  });
+  const result = await customScreen<Backends | typeof BACK | null>(ctx, (theme, done) =>
+    new ModelsPicker(theme, models, current, done, back, borderPainterFor(theme, ctx))
+  );
 
   if (result === BACK) return "back";
   if (!result) {
@@ -116,7 +100,7 @@ const openModelsMenu = async (ctx: any, back = true): Promise<void | "back"> => 
 };
 
 // Interactive menu: accounts, models, status, usage, routing
-const openMenu = async (ctx: any): Promise<void> => {
+const menuRows = () => {
   const auth = resolveJevAuth();
   const routing = readRouting();
   const backends = readBackends();
@@ -132,26 +116,29 @@ const openMenu = async (ctx: any): Promise<void> => {
   // One entry for credentials: the Accounts screen adds and removes, so a separate Logout row would be a
   // second path to the same operation and would drift from it. Its subcommand is `/jev-eye accounts`,
   // never `login`/`logout`: those two names promised a screen the row already owns.
-  const rows = [
+  return [
     { label: "Accounts", note: auth ? `keys & stored state (current: ${auth.provider.label})` : "TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef) key" },
     { label: "Models", note: modelsDesc },
     { label: "Status", note: "supervisor, gate scope & metrics" },
     { label: "Usage", note: "Jev/Clef spend, per-provider split & free-neuron budget" },
     { label: "Routing", note: routingDesc },
   ];
+};
 
+const openMenu = async (ctx: any): Promise<void> => {
   // The root menu has no previous screen, so it carries no [←] Back. Sub-screens that end with
   // [Esc] fall back here too, so the operator never lands in the editor with a half-open menu.
   // Remembering the last row keeps [←] on the screen the operator came from instead of resetting to
   // the first row, which read as "back sent me to Accounts".
   let cursor = 0;
   while (true) {
-    const index = await pickRow(ctx, "Jev Eye · Menu", rows, "Supervisor settings and live state for this session.", cursor);
+    // Rebuild summaries on every pass so [←] from Accounts/Models/Routing reflects what just changed.
+    const index = await pickRow(ctx, "Jev Eye · Menu", menuRows(), "Supervisor settings and live state for this session.", cursor);
     if (index === null) return;
     cursor = index;
     let outcome: void | "back";
     if (index === 0) {
-      outcome = await loginFlow(ctx);
+      outcome = await loginFlow(ctx, true);
     } else if (index === 1) {
       outcome = await openModelsMenu(ctx, true);
     } else if (index === 2) {
@@ -220,7 +207,7 @@ const eyeHandler = async (args: string, ctx: any) => {
   // `login` and `logout` were the same screen under two names. Point at the one that exists instead of
   // silently accepting either, so an old habit still reaches Accounts without keeping a duplicate row.
   if (sub === "login" || sub === "logout") {
-    ctx.ui.notify(`[pi-jev-eye] \`/jev-eye ${sub}\` was renamed to \`/jev-eye accounts\`: one screen stores a key and removes one with [Ctrl+d]. Opening it now.`, "info");
+    ctx.ui.notify(`[pi-jev-eye] \`/jev-eye ${sub}\` was renamed to \`/jev-eye accounts\`: one screen stores a key and removes one with [R]. Opening it now.`, "info");
     await loginFlow(ctx);
     return;
   }

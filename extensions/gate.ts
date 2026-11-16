@@ -3,11 +3,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { JEV_TIMEOUT_MS, authUrl, envBudget, providerIdOf } from "./core.ts";
+import { envBudget } from "./core.ts";
 import type { JevAuth } from "./core.ts";
-import { recordCall, recordOwnUsage } from "./ledger.ts";
 import { state } from "./pmr.ts";
-import { withBackends, workersAiBody } from "./providers.ts";
+import { postDecision, withBackends } from "./providers.ts";
 
 export const JEV_MIN_DIFF_LINES = 10; // Skip tiny diffs: the same question repeated per write is what burns the quota
 // P(yes) needed to block a write. PI_JEV_EYE_BLOCK_THRESHOLD overrides it per session; a value outside (0.5, 1]
@@ -98,82 +97,61 @@ interface JevVerdict {
 // `askJev` below: `null` is the one value that means "this backend could not answer", which is exactly what
 // the failover needs to tell apart from a judgment that came back clean.
 async function attemptJev(codeSnippet: string, auth: JevAuth): Promise<JevVerdict | null> {
-  try {
-    const request = state.pendingReview;
-    const questions: Record<string, any> = {
-      has_slop: {
-        type: "noul",
-        instructions:
-          "Does `code` contain a lazy stub, an empty body, or a placeholder standing in for real logic? `facts` are machine-counted and are not proof either way.",
-      },
-      has_unfinished_todo: {
-        type: "noul",
-        instructions:
-          "Does `code` leave work explicitly unfinished, such that callers of this code would hit a missing implementation? `facts.placeholder_markers` and `facts.ellipsis_only_lines` are machine-counted.",
-      },
-    };
-    // A reviewed turn adds one dimension to the SAME request, so the review costs no extra call.
-    if (request) {
-      questions.answers_request = {
-        type: "noul",
-        instructions:
-          "Does `code` plausibly fulfil `request.text` rather than only touching adjacent code? Treat `code` as the whole change under review.",
-      };
-    }
+  // The cap holds per attempt, not per chain: a failover at the last slot would otherwise overshoot it
+  // and skip the one-time warning, which fires only when the counter equals the cap.
+  if (state.stats.jevRequests >= JEV_MAX_REQUESTS) return null;
+  state.stats.jevRequests++;
 
-    const payload = {
-      model: auth.model,
+  const request = state.pendingReview;
+  const questions: Record<string, any> = {
+    has_slop: {
+      type: "noul",
+      instructions:
+        "Does `code` contain a lazy stub, an empty body, or a placeholder standing in for real logic? `facts` are machine-counted and are not proof either way.",
+    },
+    has_unfinished_todo: {
+      type: "noul",
+      instructions:
+        "Does `code` leave work explicitly unfinished, such that callers of this code would hit a missing implementation? `facts.placeholder_markers` and `facts.ellipsis_only_lines` are machine-counted.",
+    },
+  };
+  // A reviewed turn adds one dimension to the SAME request, so the review costs no extra call.
+  if (request) {
+    questions.answers_request = {
+      type: "noul",
+      instructions:
+        "Does `code` plausibly fulfil `request.text` rather than only touching adjacent code? Treat `code` as the whole change under review.",
+    };
+  }
+
+  const snippet = codeSnippet.slice(0, JEV_MAX_STATE_CHARS);
+  return postDecision(
+    auth,
+    {
       state: {
-        code: codeSnippet.slice(0, JEV_MAX_STATE_CHARS),
+        code: snippet,
         // Counted on the same slice the judge reads, so a marker past the cut is never evidence it cannot see.
-        facts: codeFacts(codeSnippet.slice(0, JEV_MAX_STATE_CHARS)),
+        facts: codeFacts(snippet),
         ...(request ? { request: { text: request } } : {}),
       },
       questions,
-    };
-
-    // The cap holds per attempt, not per chain: a failover at the last slot would otherwise overshoot it
-    // and skip the one-time warning, which fires only when the counter equals the cap.
-    if (state.stats.jevRequests >= JEV_MAX_REQUESTS) return null;
-    state.stats.jevRequests++;
-    const res = await fetch(authUrl(auth), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${auth.key}`,
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
-    });
-
-    if (!res.ok) {
-      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
-      return null;
+    },
+    (body) => {
+      const answers = body.answers;
+      // A 200 that carries no answer for this request is a failure of this backend, not a clean verdict:
+      // the three dimensions below would all read `null`, the gate would find no block signal, and the
+      // failover would never run because the attempt looked successful. At least one dimension must be a
+      // number before the attempt counts as an answer.
+      const answered =
+        !!answers && typeof answers === "object" && Object.values(answers).some((value: any) => typeof value?.noul === "number");
+      if (!answered) return null;
+      return {
+        has_slop: answers.has_slop?.noul ?? null,
+        has_unfinished_todo: answers.has_unfinished_todo?.noul ?? null,
+        answers_request: answers.answers_request?.noul ?? null,
+      };
     }
-    const body = workersAiBody(await res.json());
-    if (!body) {
-      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
-      return null;
-    }
-    const answers = body.answers;
-    // A 200 that carries no answer for this request is a failure of this backend, not a clean verdict:
-    // the three dimensions below would all read `null`, the gate would find no block signal, and the
-    // failover would never run because the attempt looked successful. At least one dimension must be a
-    // number before the attempt counts as an answer.
-    const answered =
-      !!answers && typeof answers === "object" && Object.values(answers).some((value: any) => typeof value?.noul === "number");
-    // One HTTP call is one ledger row: the tokens were spent either way, only the outcome differs.
-    recordCall(auth, body, answered);
-    if (!answered) return null;
-    return {
-      has_slop: answers.has_slop?.noul ?? null,
-      has_unfinished_todo: answers.has_unfinished_todo?.noul ?? null,
-      answers_request: answers.answers_request?.noul ?? null,
-    };
-  } catch {
-    recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
-    return null; // Fail-open when Jev times out or is offline
-  }
+  );
 }
 
 /** One attempt against one backend: `null` means this backend could not answer.

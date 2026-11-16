@@ -242,7 +242,7 @@ export function sumDays(days: any, period: string, mapper: (raw: any) => DayTota
 }
 
 /** Clef is one provider id on disk under two model names; the panel labels it as one backend. */
-export const CLEF_PROVIDER_ID = "cloudflare";
+const CLEF_PROVIDER_ID = "cloudflare";
 
 /**
  * Split a period's per-provider map into the two backends the panel shows side by side: Clef
@@ -465,11 +465,11 @@ type BoxTheme = {
  * theme if it carries one, so arnative's own keys moved to `vars` and `fg("accentSoft")` now throws
  * `Unknown theme color: accentSoft`. Falling back to another official token would silently change the
  * colour — the menu would go grey while `/arnative` stayed tinted — so the soft tier is computed from
- * the resolved token instead, using the theme generator's exact recipe (L 0.82, chroma x 0.18, hue
+ * the resolved token instead, using the theme generator's exact recipe (L 0.90, chroma x 0.35, hue
  * kept). That is the very value arnative declares in `vars.*Soft`, so the two agree by construction.
  */
-const SOFT_L = 0.82;
-const SOFT_CHROMA_SCALE = 0.18;
+const SOFT_L = 0.90;
+const SOFT_CHROMA_SCALE = 0.35;
 const softenColor = (color: { c?: number; h?: number }): { kind: "oklch"; l: number; c: number; h: number } => ({
   kind: "oklch",
   l: SOFT_L,
@@ -525,13 +525,19 @@ const softPainter = (
   tokenPainter(theme, direct) ?? softTierPainter(theme, baseToken) ?? tokenPainter(theme, fallbacks) ?? ((text) => text);
 
 /**
- * The box border: the arnative soft accent where the theme has it, otherwise the theme's
- * `borderAccent` softened — the token arnative's own screens draw their frame from — and only then the
- * session's thinking slot. `thinking*` exists in every theme (`ThemeColor`), so a built-in theme still
- * keeps a coloured frame that follows the reasoning effort; with no theme at all it is uncoloured.
+ * The box border: follows the session's thinking level via `thinking*` (`thinkingColorSlot`),
+ * falling back to `dim` when a theme's `fg` rejects the slot, and identity with no theme.
  */
 export function borderPainter(theme: BoxTheme | null | undefined, thinkingLevel?: string): (text: string) => string {
-  return softPainter(theme, ["accentSoft"], "borderAccent", [thinkingColorSlot(thinkingLevel), "accent"]);
+  const fg = theme?.fg?.bind(theme);
+  if (!fg) return (text) => text;
+  const slot = thinkingColorSlot(thinkingLevel);
+  try {
+    fg(slot, "");
+    return (text) => fg(slot, text);
+  } catch {
+    return (text) => fg("dim", text);
+  }
 }
 
 /**

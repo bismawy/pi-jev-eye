@@ -42,7 +42,9 @@ export const JEV_PROVIDERS: JevProvider[] = [
   {
     id: "cloudflare",
     label: "Cloudflare Workers AI (Clef)",
-    short: "Clef",
+    // Vendor name, like TypeSafe/OpenRouter: the models table's `[provider]` tag must not repeat the
+    // row label (`clef · [Clef]` says one thing twice; `clef · [Cloudflare]` names the vendor).
+    short: "Cloudflare",
     // The real route needs an account id, so it is built by cfRunUrl at request time; this stays the account-less display form.
     url: "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/cloudflare/clef-flash",
     model: "clef-flash", // cheaper than `clef` for the per-write gate; both are free inside the daily neuron allowance
@@ -59,9 +61,9 @@ export const EYE_DIR = join(homedir(), ".pi", "agent", "pi-jev-eye");
 export const AUTH_PATH = join(EYE_DIR, "auth.json");
 export const OWN_USAGE_PATH = join(EYE_DIR, "usage.json");
 /** The backends the operator picked in `/jev-eye models`, separate from the credentials that feed them. */
-export const BACKENDS_PATH = join(EYE_DIR, "backends.json");
+const BACKENDS_PATH = join(EYE_DIR, "backends.json");
 /** One ref separator. A provider id never carries a colon, so the first colon splits the model off. */
-export const MODEL_SEPARATOR = ":";
+const MODEL_SEPARATOR = ":";
 const LEGACY_AUTH_PATH = join(homedir(), ".pi", "agent", "pi-typesafe", "auth.json");
 export const LEGACY_USAGE_PATH = join(homedir(), ".pi", "agent", "pi-typesafe", "usage.json");
 
@@ -142,10 +144,10 @@ export interface BackendModel {
   configured: boolean;
 }
 
-export const backendRef = (providerId: string, model: string): string => `${providerId}${MODEL_SEPARATOR}${model}`;
+const backendRef = (providerId: string, model: string): string => `${providerId}${MODEL_SEPARATOR}${model}`;
 
 /** Split a ref into its parts. A component this build no longer ships stays as it was written. */
-export const backendRefParts = (ref: string): { providerId: string; model: string } => {
+const backendRefParts = (ref: string): { providerId: string; model: string } => {
   const at = ref.indexOf(MODEL_SEPARATOR);
   return at < 0 ? { providerId: ref, model: "" } : { providerId: ref.slice(0, at), model: ref.slice(at + 1) };
 };
@@ -171,14 +173,8 @@ const providerModelList = (provider: JevProvider): string[] => {
 export function currentCatalog(store: AuthStore = readAuthStore().store): BackendModel[] {
   const entries: BackendModel[] = [];
   for (const provider of JEV_PROVIDERS) {
-    const envKey = process.env[provider.keyEnv]?.trim();
-    const envAccount = provider.accountEnv ? process.env[provider.accountEnv]?.trim() : undefined;
-    const credential = storedCredential(store, provider.id);
-    // A Clef credential is unusable without its account id, so the row reads `no key` in that case — the
-    // same rule the gate applies, so the screen cannot promise a backend the gate would refuse.
-    const configured = provider.accountEnv
-      ? Boolean((envKey && envAccount) || credential?.accountId)
-      : Boolean(envKey || credential);
+    // Reuse credentialsFor so env precedence and Cloudflare's account-id rule never disagree with the gate.
+    const configured = Boolean(credentialsFor(provider.id, store));
     for (const model of providerModelList(provider)) {
       entries.push({
         ref: backendRef(provider.id, model),
@@ -209,7 +205,7 @@ export function writeBackends(backends: Backends): void {
 }
 
 /** One provider's credential from whichever source currently wins, or undefined when it has none. */
-export function credentialsFor(providerId: string, store = readAuthStore().store): JevAuth | undefined {
+function credentialsFor(providerId: string, store = readAuthStore().store): JevAuth | undefined {
   const provider = providerById(providerId);
   if (!provider) return undefined;
   // Environment first: an explicit export (headless run, CI, shared machine) wins over a stored key,
@@ -234,7 +230,7 @@ export function credentialsFor(providerId: string, store = readAuthStore().store
 }
 
 /** The credential a catalog ref resolves to right now, or undefined when that backend cannot be called. */
-export function authFor(ref: string, store = readAuthStore().store): JevAuth | undefined {
+function authFor(ref: string, store = readAuthStore().store): JevAuth | undefined {
   const { providerId, model } = backendRefParts(ref);
   const auth = credentialsFor(providerId, store);
   if (!auth) return undefined;
@@ -244,7 +240,7 @@ export function authFor(ref: string, store = readAuthStore().store): JevAuth | u
 
 /**
  * Failover order for one call: the active backend first, then the fallback, then the default precedence
- * (`resolveJevAuth`) so a session with nothing configured still reaches whatever key it has.
+ * (`defaultJevAuth`) so a session with nothing configured still reaches whatever key it has.
  *
  * A ref whose backend has no usable credential is skipped — a fallback that cannot answer is not a
  * fallback, and trying it would only add a failed request to the ledger. Refs are deduplicated, so the
@@ -258,7 +254,7 @@ export function authChain(backends: Backends, store = readAuthStore().store): Je
     if (!auth) continue;
     if (!chain.some((existing) => existing.provider.id === auth.provider.id && existing.model === auth.model)) chain.push(auth);
   }
-  const fallbackDefault = resolveJevAuth(store);
+  const fallbackDefault = defaultJevAuth(store);
   if (fallbackDefault && !chain.some((existing) => existing.provider.id === fallbackDefault.provider.id && existing.model === fallbackDefault.model)) {
     chain.push(fallbackDefault);
   }
@@ -269,7 +265,7 @@ export function authChain(backends: Backends, store = readAuthStore().store): Je
 export const authUrl = (auth: JevAuth): string =>
   auth.provider.id === "cloudflare" ? cfRunUrl(auth.accountId ?? "", auth.model) : auth.provider.url;
 
-export function resolveJevAuth(store = readAuthStore().store): JevAuth | undefined {
+function defaultJevAuth(store: AuthStore): JevAuth | undefined {
   // Environment first: an explicit export (headless run, CI, shared machine) must win over a stored key,
   // the same precedence pi-typesafe uses.
   for (const provider of JEV_PROVIDERS) {
@@ -283,6 +279,11 @@ export function resolveJevAuth(store = readAuthStore().store): JevAuth | undefin
   if (legacyKey) return { provider: JEV_PROVIDERS[0], key: legacyKey, source: "pi-typesafe login", model: JEV_PROVIDERS[0].model };
 
   return undefined;
+}
+
+/** Active backend from `backends.json` when usable, otherwise the default credential precedence. */
+export function resolveJevAuth(store = readAuthStore().store): JevAuth | undefined {
+  return authChain(readBackends(), store)[0];
 }
 
 /** What `/jev-eye status` has to explain when a Cloudflare credential is incomplete. */

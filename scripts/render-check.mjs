@@ -191,10 +191,12 @@ for (const width of [40, 80, 120]) {
   for (const key of ["toggle", "gate", "routingToggle", "accountsRemove", "routeLight", "routeHeavy"]) {
     assert.equal(showsKey(keybind(KEY_SETS[key])), true, `${KEY_SETS[key]} is a portable keycap: ${keybind(KEY_SETS[key])}`);
   }
-  // A shifted chord is not portable: Ghostty owns ctrl+shift+e/new_split and ctrl+shift+t/new_tab, and
-  // `matchesKey("\x14", "ctrl+shift+t")` is false, so the key would never fire on a legacy terminal.
+  // A ctrl+shift chord is not portable: Ghostty owns ctrl+shift+e/new_split and ctrl+shift+t/new_tab,
+  // and `matchesKey("\x14", "ctrl+shift+t")` is false, so the key would never fire on a legacy terminal.
+  // A lone shifted letter is the exception: it is the capital itself (`matchesKey("R", "shift+r")`), the
+  // pair pi-arnative ships for its destructive usage-reset key.
   for (const [name, chord] of Object.entries(KEY_SETS)) {
-    assert.equal(/shift/.test(chord), false, `${name} (${chord}) must not be a shifted chord`);
+    assert.equal(/ctrl\+shift/.test(chord), false, `${name} (${chord}) must not be a ctrl+shift chord`);
   }
 
   // Behavioural proof, not just the list: every advertised value must dispatch to a real handler.
@@ -221,12 +223,13 @@ for (const width of [40, 80, 120]) {
   }
 }
 
-// `[←] Back` is per-screen: the menu path has a previous menu, the direct subcommand does not.
-// Both branches are exercised, because advertising a key that does nothing was the original bug.
-assert.equal((await open("status from menu", "", [2], 80)).includes("[←] Back"), true, "status opened from the menu can go back");
+// `[←] Back` is omitted from all sub-menu footers for consistency with other plugins.
+assert.equal((await open("status from menu", "", [2], 80)).includes("[←] Back"), false, "status opened from the menu omits [←] Back");
 assert.equal((await open("status direct", "status", [], 80)).includes("[←] Back"), false, "status opened by subcommand cannot, and must not pretend to");
+assert.equal((await open("status direct", "status", [], 80)).includes("[Esc] Cancel"), true, "a direct subcommand has no menu behind it, so Esc is labelled Cancel");
+assert.equal((await open("status from menu", "", [2], 80)).includes("[Esc] Back"), true, "a menu-opened screen labels Esc as Back");
 assert.equal((await open("usage direct", "usage", [], 80)).includes("[←] Back"), false, "usage opened by subcommand advertises no back key");
-assert.equal((await open("routing direct", "routing", [], 80)).includes("[←] Back"), false, "routing opened by subcommand advertises no back key");
+assert.equal((await open("routing direct", "routing", [], 80)).includes("[Esc] Cancel"), true, "routing opened by subcommand cancels on Esc");
 
 // Returning from a sub-screen must leave the cursor where it was. The menu picker is rebuilt on every
 // loop pass, so a picker that starts at row 0 sends [←] back to Accounts — which read as "back went
@@ -247,6 +250,33 @@ assert.equal((await open("routing direct", "routing", [], 80)).includes("[←] B
   await run;
 }
 
+// Esc on a sub-screen the menu opened returns to the menu, not to the editor. The same screen opened
+// by subcommand has nothing behind it, so Esc ends the command instead of reopening anything.
+{
+  for (const [row, name] of [[0, "accounts"], [1, "models"], [2, "status"], [3, "usage"], [4, "routing"]]) {
+    const { ctx, screens } = harness();
+    const run = commands["jev-eye"].handler("", ctx);
+    await tick();
+    screens[0].resolve(row);
+    await tick();
+    assert.equal(!!screens[1], true, `${name}: the sub-screen opened from the menu`);
+    screens[1].wrapper.handleInput("\x1b"); // Esc
+    await tick();
+    assert.equal(!!screens[2], true, `${name}: Esc reopens the menu instead of closing the command`);
+    const menu = strip(screens[2].wrapper.render(90).join("\n"));
+    assert.equal(menu.includes("Jev Eye · Menu"), true, `${name}: Esc returned to the menu`);
+    screens[2].resolve(null);
+    await run;
+  }
+
+  const { ctx, screens } = harness();
+  const run = commands["jev-eye"].handler("models", ctx);
+  await tick();
+  screens[0].wrapper.handleInput("\x1b");
+  await run;
+  assert.equal(screens.length, 1, "Esc on a subcommand-opened screen ends the command");
+}
+
 // Every sub-screen opens inside the frame, and the read-only one advertises no toggle it ignores.
 const status = await open("status", "", [2], 80);
 assert.equal(status.includes("Grant folder"), true, "status keeps its last footer key at 80 columns");
@@ -254,7 +284,7 @@ assert.equal(status.includes("Grant folder"), true, "status keeps its last foote
 // Esc, because Back stays inside the extension and Esc leaves it).
 {
   const at = (token) => status.indexOf(token);
-  const order = ["[Enter] Done", "[Ctrl+Alt+e] Supervisor", "[Ctrl+Alt+u] Grant folder", "[←] Back", "[Esc] Cancel"].map(at);
+  const order = ["[Enter] Done", "[Ctrl+Alt+e] Supervisor", "[Ctrl+Alt+u] Grant folder", "[Esc] Back"].map(at);
   assert.equal(order.every((i) => i >= 0), true, `every status footer key is present, got ${order.join(",")}`);
   assert.deepEqual([...order].sort((x, y) => x - y), order, `the status footer runs confirm → keys → exits, got ${order.join(",")}`);
 }
@@ -262,7 +292,7 @@ const usage = await open("usage", "", [3], 80);
 assert.equal(usage.includes("[Enter] Done"), true, "usage advertises its real exits");
 assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a toggle it ignores");
 {
-  const usageOrder = ["[Enter] Done", "[Esc] Cancel"].map((token) => usage.indexOf(token));
+  const usageOrder = ["[Enter] Done", "[Esc] Back"].map((token) => usage.indexOf(token));
   assert.deepEqual([...usageOrder].sort((x, y) => x - y), usageOrder, "the read-only footer keeps confirm before the exit");
 }
 await open("routing", "", [4], 80);
@@ -274,19 +304,31 @@ await open("routing", "", [4], 80);
 {
   const models = await open("models", "models", [], 100);
   assert.equal(models.includes("[Space] Active"), true, "the active key is advertised from KEY_SETS");
-  assert.equal(models.includes("[Ctrl+f] Fallback"), true, "the fallback key is advertised from KEY_SETS");
+  assert.equal(models.includes("[Tab] Fallback"), true, "the fallback key is advertised from KEY_SETS");
   assert.equal(models.includes("[←] Back"), false, "a subcommand screen has no menu behind it, so it promises no back key");
+  // Slot summary above the table, the first thing read: with nothing picked both read (auto).
+  assert.equal(/Active\s+· \(auto\)/.test(models), true, "the Active summary sits above the table");
+  assert.equal(/Fallback\s+· \(auto\)/.test(models), true, "the Fallback summary sits beside it");
   for (const label of ["jev-latest", "typesafe/jev-1.13", "clef", "clef (flash)"]) {
     assert.equal(models.includes(label), true, `the catalog lists ${label}`);
   }
   // The parenthesised tier is what the footer dims, so it must be on the row verbatim.
   assert.equal(/clef \(flash\)/.test(models), true, "the Clef flash model carries its tier in parentheses");
+  // Rows, not the summary: a row carries a state marker (— or ✓), the summary lines never do.
   const dividerAt = (needle) => {
-    const line = models.split("\n").find((l) => l.includes(needle) && l.includes("·"));
+    const line = models.split("\n").find((l) => l.includes(needle) && l.includes("·") && /[—✓]/.test(l));
     return line.indexOf("·");
   };
   // `typesafe/jev-1.13` is the widest label, so every divider sits in its column.
   assert.equal(new Set(["jev-latest", "typesafe/jev-1.13", "clef (flash)"].map(dividerAt)).size, 1, "model rows put their divider in one column");
+  // One divider per row: the state cell and the provider tag share the line after it.
+  const unassigned = models.split("\n").find((l) => l.includes("typesafe/jev-1.13") && l.includes("·"));
+  assert.equal((unassigned.match(/·/g) ?? []).length, 1, "a model row carries exactly one divider");
+  assert.equal(/· — no key \[OpenRouter\]/.test(models), true, "an unassigned keyless row reads `— no key [provider]`");
+  // Legend order: nav, the slot keys, confirm, exit.
+  const order = ["[↑↓] Move", "[Space] Active", "[Tab] Fallback", "[Enter] Done", "[Esc] Cancel"].map((token) => models.indexOf(token));
+  assert.equal(order.every((at) => at >= 0), true, `every models legend token is present, got ${order.join(",")}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "the models legend runs nav → slot keys → confirm → exit");
 }
 
 // The Models description must fit its own frame. It names the two slot keys, so a clipped one is a
@@ -295,7 +337,7 @@ for (const width of [40, 80, 120]) {
   const screen = await open(`models header@${width}`, "models", [], width);
   assert.equal(screen.includes("…"), false, `the Models description is not clipped at ${width} columns`);
   assert.equal(screen.includes("sets fallback."), true, `the Models description reaches its period at ${width} columns`);
-  assert.equal(screen.includes("[Ctrl+f] sets fallback."), true, `the fallback key stays bracketed at ${width} columns`);
+  assert.equal(screen.includes("[Tab]"), true, `the fallback key stays bracketed at ${width} columns`);
 }
 
 // The slot keys, driven on the real component: `[Space]` assigns active, `[Ctrl+f]` the fallback, a
@@ -306,31 +348,34 @@ for (const width of [40, 80, 120]) {
   const run = commands["jev-eye"].handler("models", ctx);
   await tick();
   const picker = screens[0].wrapper;
-  const rowOf = (needle) => strip(picker.render(100).join("\n")).split("\n").find((l) => l.includes(needle));
-  const notice = () => {
-    const rows = strip(picker.render(100).join("\n")).split("\n").map((l) => l.replace(/^│|│\s*$/g, "").trim());
-    const at = rows.findIndex((l) => /^\(\d+\/\d+\)$/.test(l));
-    return at >= 0 ? rows[at + 1] : "<no counter row>";
-  };
-  assert.equal(notice(), "", "before any key the notice row stays empty");
+  // Table rows only: a row always carries a state marker (— or ✓); the Active/Fallback summary lines
+  // never do, so a summary naming the same model cannot shadow the row.
+  const rowOf = (needle) =>
+    strip(picker.render(100).join("\n")).split("\n").find((l) => l.includes(needle) && /[—✓]/.test(l));
+  // The mock ends the table at the last model: no `(n/m)` counter and no notice row under it — the
+  // Active/Fallback summary above the table is the only feedback a key needs.
+  const bare = strip(picker.render(100).join("\n")).split("\n").map((l) => l.replace(/^│|│\s*$/g, "").trim());
+  assert.equal(bare.some((l) => /^\(\d+\/\d+\)$/.test(l)), false, "Models carries no counter row");
+  assert.equal(bare.some((l) => /cleared/.test(l)), false, "Models carries no notice row");
 
   picker.handleInput(" ");
   assert.equal(rowOf("jev-latest").includes("✓ active"), true, "space makes the highlighted row active");
-  assert.equal(notice().includes("Active → "), true, `the notice names what the key did: ${notice()}`);
+  const assigned = strip(picker.render(100).join("\n")).split("\n").find((l) => l.includes("✓ active"));
+  assert.equal((assigned.match(/·/g) ?? []).length, 1, "the assigned row keeps one divider");
+  assert.equal(/Active\s+· jev-latest/.test(strip(picker.render(100).join("\n"))), true, "the Active summary follows the pending pick");
   picker.handleInput(" ");
   assert.equal(rowOf("jev-latest").includes("✓ active"), false, "a second press clears the slot, so the key is a toggle");
-  assert.equal(notice(), "Active cleared");
+  assert.equal(/Active\s+· \(auto\)/.test(strip(picker.render(100).join("\n"))), true, "the cleared slot reads (auto) in the summary");
 
   picker.handleInput(" ");
   picker.handleInput("\x1b[B"); // down to OpenRouter
-  picker.handleInput("\x06"); // ctrl+f: fallback
-  assert.equal(rowOf("typesafe/jev-1.13").includes("✓ fallback"), true, "ctrl+f assigns the fallback");
+  picker.handleInput("\t"); // tab: fallback
+  assert.equal(rowOf("typesafe/jev-1.13").includes("✓ fallback"), true, "tab assigns the fallback");
   assert.equal(rowOf("jev-latest").includes("✓ active"), true, "and leaves the active slot alone");
   picker.handleInput("\x1b[A"); // back up to TypeSafe
-  picker.handleInput("\x06"); // ctrl+f on the active row: the ref moves, it cannot occupy both
+  picker.handleInput("\t"); // tab on the active row: the ref moves, it cannot occupy both
   assert.equal(rowOf("jev-latest").includes("✓ fallback"), true, "the fallback can be moved onto the other slot");
   assert.equal(rowOf("jev-latest").includes("✓ active"), false, "and the old slot is emptied, not duplicated");
-  assert.equal(notice().includes("active cleared"), true, `the notice explains the move: ${notice()}`);
 
   screens[0].resolve(null);
   await run;
@@ -620,24 +665,24 @@ for (const width of [80, 120]) {
   await run;
 }
 
-// The frame colour follows the theme: the arnative soft token, else the session's thinking slot.
+// The frame colour follows the session's thinking slot, else dim.
 {
   const { ctx, screens } = harness({ ...ansiTheme, fg: (color, text) => `<${color}>${text}</${color}>` });
   const run = commands["jev-eye"].handler("", ctx);
   await tick();
-  assert.equal(screens[0].wrapper.render(80)[0].includes("<accentSoft>╭"), true, "an arnative theme gets the soft border");
+  assert.equal(screens[0].wrapper.render(80)[0].includes("<thinkingLow>╭"), true, "the frame follows the session's thinking level");
   screens[0].resolve(null);
   await run;
 
-  const builtin = harness({ ...ansiTheme, fg: (color, text) => {
-    if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
+  const noThinking = harness({ ...ansiTheme, fg: (color, text) => {
+    if (color.startsWith("thinking")) throw new Error(`Unknown theme color: ${color}`);
     return `<${color}>${text}</${color}>`;
   } });
-  const runBuiltin = commands["jev-eye"].handler("", builtin.ctx);
+  const runFallback = commands["jev-eye"].handler("", noThinking.ctx);
   await tick();
-  assert.equal(builtin.screens[0].wrapper.render(80)[0].includes("<thinkingLow>╭"), true, "a built-in theme follows the thinking level, not an uncoloured frame");
-  builtin.screens[0].resolve(null);
-  await runBuiltin;
+  assert.equal(noThinking.screens[0].wrapper.render(80)[0].includes("<dim>╭"), true, "a theme rejecting thinking* falls back to dim");
+  noThinking.screens[0].resolve(null);
+  await runFallback;
 }
 
 
@@ -909,7 +954,7 @@ console.log("render checks OK");
 }
 
 // The Accounts screen owns add and remove. A stored key is not recoverable from the screen, so removal
-// takes two presses of `[Ctrl+d]`, and the second press must be the only thing that writes.
+// takes two presses of `[R]`, and the second press must be the only thing that writes.
 {
   const { mkdirSync, writeFileSync, readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
@@ -922,7 +967,7 @@ console.log("render checks OK");
     { mode: 0o600 }
   );
   const read = () => (JSON.parse(readFileSync(authPath, "utf8")).providers ?? {});
-  const REMOVE = "\x04"; // ctrl+d
+  const REMOVE = "R"; // the capital: matchesKey reads the uppercase byte as `shift+r`
 
   const openAccounts = async () => {
     const h = harness();
@@ -936,7 +981,7 @@ console.log("render checks OK");
   const row = () => strip(first.screens[0].wrapper.render(90).join("\n")).split("\n").find((l) => l.includes("TypeSafe account"));
   assert.equal(row().includes("✓ stored"), true, "a stored credential reports its state");
   const legend = () => strip(first.screens[0].wrapper.render(90).join("\n"));
-  assert.equal(legend().includes("[Ctrl+d] Remove"), true, "the remove key is advertised while something is stored");
+  assert.equal(legend().includes("[R] Remove"), true, "the remove key is advertised while something is stored");
 
   first.screens[0].wrapper.handleInput(REMOVE);
   assert.equal(row().includes("again to remove"), true, "the first press asks for confirmation instead of deleting");
@@ -971,7 +1016,64 @@ console.log("render checks OK");
   const runEmpty = commands["jev-eye"].handler("accounts", ctx).catch(() => {});
   await tick();
   const empty = strip(screens[0].wrapper.render(90).join("\n"));
-  assert.equal(empty.includes("[Ctrl+d]"), false, "an empty store advertises no remove key");
+  assert.equal(empty.includes("[R]"), false, "an empty store advertises no remove key");
   screens[0].resolve(null);
   await runEmpty;
+}
+
+// Regression: openMenu rebuilds summaries on [←] Back, built-in themes tint all dialog borders via ctx,
+// and SecretPrompt(reveal=true) renders the inverse-video cursor caret.
+{
+  const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const eyeDir = join(process.env.HOME, ".pi", "agent", "pi-jev-eye");
+  mkdirSync(eyeDir, { recursive: true });
+  writeFileSync(join(eyeDir, "backends.json"), JSON.stringify({ version: 1, primary: "", fallback: "" }), { mode: 0o600 });
+
+  // openMenu summary refresh after [←] Back
+  const h = harness();
+  const runMenu = commands["jev-eye"].handler("", h.ctx);
+  await tick();
+  h.screens[0].resolve(2); // Status
+  await tick();
+  writeFileSync(join(eyeDir, "backends.json"), JSON.stringify({ version: 1, primary: "cloudflare:clef-flash", fallback: "" }), { mode: 0o600 });
+  h.screens[1].resolve(-2); // BACK
+  await tick();
+  const refreshed = strip(h.screens[2].wrapper.render(100).join("\n"));
+  assert.equal(refreshed.includes("active: clef (flash)"), true, "returning to the root menu refreshes row summaries");
+  h.screens[2].resolve(null);
+  await runMenu;
+  rmSync(join(eyeDir, "backends.json"), { force: true });
+
+  // Built-in theme (no accentSoft) passes ctx.thinkingLevel border to Accounts, Models, and SecretPrompt
+  const builtinTheme = {
+    ...ansiTheme,
+    fg: (color, text) => {
+      if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
+      return `<${color}>${text}</${color}>`;
+    },
+  };
+  for (const arg of ["accounts", "models"]) {
+    const b = harness(builtinTheme);
+    const runB = commands["jev-eye"].handler(arg, b.ctx);
+    await tick();
+    assert.equal(b.screens[0].wrapper.render(80)[0].includes("<thinkingLow>╭"), true, `${arg} inherits thinking-level border`);
+    b.screens[0].resolve(null);
+    await runB;
+  }
+
+  // SecretPrompt with reveal=true renders the inverse-video caret alongside the typed text
+  const rev = harness(builtinTheme);
+  const runRev = commands["jev-eye"].handler("login", rev.ctx);
+  await tick();
+  rev.screens[0].wrapper.handleInput("\x1b[B");
+  rev.screens[0].wrapper.handleInput("\x1b[B");
+  rev.screens[0].wrapper.handleInput("\r"); // Cloudflare -> account ID (reveal=true)
+  await tick();
+  rev.screens[1].wrapper.handleInput("a1b2c3d4");
+  const revLines = rev.screens[1].wrapper.render(72);
+  assert.equal(revLines[0].includes("<thinkingLow>╭"), true, "SecretPrompt inherits thinking-level border");
+  assert.equal(revLines.join("\n").includes("\x1b[7m"), true, "revealed prompt renders a visible cursor caret");
+  rev.screens[1].resolve(undefined);
+  await runRev;
 }

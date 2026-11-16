@@ -25,7 +25,7 @@ for (const command of wipes) {
 const scoped = [
   `${rm} -rf ./build`,
   `${rm} -rf /tmp/scratch`,
-  `${rm} -rf /home/bisma/scratch`,
+  `${rm} -rf /home/user/scratch`,
   `${rm} --force --recursive ./node_modules`,
   `${rm} /tmp/jev-req*.mjs`,
 ];
@@ -290,16 +290,16 @@ test("box width ignores ANSI escapes and counts wide glyphs as two", () => {
   assert.equal(visibleWidth(row), 8, "a styled wide row still lands on the frame width");
 });
 
-test("the border takes the soft accent, else the session's thinking slot, else no colour", () => {
-  const withSoft = borderPainter({ fg: (color, text) => `<${color}>${text}</${color}>` });
-  assert.equal(withSoft("x"), "<accentSoft>x</accentSoft>");
-  const withoutSoft = borderPainter({
+test("the border follows the session's thinking slot, else dim, else no colour", () => {
+  const withThinking = borderPainter({ fg: (color, text) => `<${color}>${text}</${color}>` }, "high");
+  assert.equal(withThinking("x"), "<thinkingHigh>x</thinkingHigh>");
+  const withoutThinking = borderPainter({
     fg: (color, text) => {
-      if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
+      if (color.startsWith("thinking")) throw new Error(`Unknown theme color: ${color}`);
       return `<${color}>${text}</${color}>`;
     },
   }, "high");
-  assert.equal(withoutSoft("x"), "<thinkingHigh>x</thinkingHigh>", "a built-in theme follows the session's thinking level");
+  assert.equal(withoutThinking("x"), "<dim>x</dim>", "a theme rejecting thinking* falls back to dim");
   assert.equal(borderPainter(null)("x"), "x", "no theme yet means no colour, not a crash");
 });
 
@@ -362,7 +362,7 @@ test("a chosen row's body takes the soft tint, never the accent", () => {
 
 // The regression that made the menu look wrong on Pi 1.2.0: arnative's `colors` lost its custom keys, so
 // `fg("accentSoft")` throws and the old probe chain landed on `thinkingText` — a grey. The soft tier must
-// be DERIVED from the official token instead (L 0.82, chroma x 0.18, hue kept), which is byte-for-byte
+// be DERIVED from the official token instead (L 0.90, chroma x 0.35, hue kept), which is byte-for-byte
 // what the theme generator declares in `vars.accentSoft`/`vars.secondarySoft`.
 test("a Pi 1.2.0 theme without accentSoft still gets the arnative soft tint, not a grey", () => {
   /** The real Theme surface pi 1.2.0 exposes: `fg` rejects the custom keys, `style`+`colors` are the way in. */
@@ -376,28 +376,28 @@ test("a Pi 1.2.0 theme without accentSoft still gets the arnative soft tint, not
     bold: (text) => `<b>${text}</b>`,
   });
 
-  // arnative.json: vars.accent oklch(78% 0.13 218), vars.accentSoft oklch(82% 0.0234 218).
-  const theme = pi12({ kind: "oklch", l: 0.78, c: 0.13, h: 218 }, { kind: "oklch", l: 0.82, c: 0.078, h: 218 });
+  // arnative.json: vars.accent oklch(78% 0.13 193), vars.accentSoft oklch(90% 0.0455 193).
+  const theme = pi12({ kind: "oklch", l: 0.78, c: 0.13, h: 193 }, { kind: "oklch", l: 0.90, c: 0.0455, h: 193 });
 
   assert.equal(
     chosenRowPainter(theme)("Login"),
-    "<oklch:0.82:0.02340:218><b>Login</b></>",
+    "<oklch:0.9:0.04550:193><b>Login</b></>",
     "the chosen label is the derived soft accent AND bold, not a grey thinkingText"
   );
   assert.equal(
     borderPainter(theme, "low")("x"),
-    "<oklch:0.82:0.01404:218>x</>",
-    "the border softens borderAccent, matching arnative's own frames, not thinkingLow"
+    "<thinkingLow>x</thinkingLow>",
+    "the border follows the session's thinking level, not borderAccent"
   );
 
-  // Pi <=1.1.0 still declares the token: the declared value wins so nothing changes for those themes.
+  // Pi <=1.1.0 still declares accentSoft, which stays on the chosen row; the border still tracks thinking*.
   const legacy = { ...theme, fg: (color, text) => `<${color}>${text}</${color}>` };
   assert.equal(chosenRowPainter(legacy)("Login"), "<accentSoft><b>Login</b></accentSoft>", "a declared accentSoft is still preferred");
-  assert.equal(borderPainter(legacy, "low")("x"), "<accentSoft>x</accentSoft>", "and so is it for the border");
+  assert.equal(borderPainter(legacy, "low")("x"), "<thinkingLow>x</thinkingLow>", "the border still follows thinking*");
 
-  // A theme that exposes no resolved colours must not lose the frame: thinking* is the last resort.
+  // A theme that exposes no resolved colours still keeps a thinking-level frame.
   const opaque = { fg: (color, text) => { if (color === "accentSoft") throw new Error("nope"); return `<${color}>${text}</${color}>`; } };
-  assert.equal(borderPainter(opaque, "high")("x"), "<thinkingHigh>x</thinkingHigh>", "no derivable colour falls back to the thinking slot");
+  assert.equal(borderPainter(opaque, "high")("x"), "<thinkingHigh>x</thinkingHigh>", "thinking slot still resolves");
 });
 
 test("a status row keeps its divider in one column and its status on its own token", () => {

@@ -1,8 +1,6 @@
 // The framed /jev-eye status and usage panels, plus the headless text fallback for each.
 // Data comes from the ledger and the gate; nothing here estimates a number it cannot source.
 
-import { Key } from "@earendil-works/pi-tui";
-import { join } from "node:path";
 import { consentAllows, nextConsent, readConsent, writeConsent } from "./consent.ts";
 import { OWN_USAGE_PATH, currentCatalog, readBackends, readAuthStore, readJsonFile, resolveJevAuth, storedCredential } from "./core.ts";
 import type { JevAuth } from "./core.ts";
@@ -13,7 +11,7 @@ import { fetchBalanceText, readUsage, today } from "./ledger.ts";
 import { state } from "./pmr.ts";
 import { JEV_MAX_ROUTING_CALLS, readRouting } from "./routing.ts";
 import { STATUS_DESC, STATUS_TITLE, cycleEyeState, panelKeys } from "./supervisor.ts";
-import { BACK, StatusPanel, borderPainterFor, modelLabelFor } from "./ui.ts";
+import { BACK, StatusPanel, borderPainterFor, customScreen, modelLabelFor } from "./ui.ts";
 
 /** A stored Cloudflare key without an account id is invisible everywhere else: say why, in status. */
 /**
@@ -160,8 +158,8 @@ export const showUsage = async (ctx: any, back = true): Promise<void | "back"> =
     ctx.ui.notify([USAGE_TITLE, USAGE_DESC, "", ...buildUsage(ctx, undefined, balance)].join("\n"), "info");
     return;
   }
-  const outcome = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
-    const panel = new StatusPanel(
+  const outcome = await customScreen<number | null>(ctx, (theme, done) =>
+    new StatusPanel(
       theme,
       buildUsage(ctx, theme, balance),
       { rebuild: () => buildUsage(ctx, theme, balance), cycleMode: () => cycleEyeState(ctx), cycleGate: () => writeConsent(nextConsent(readConsent(), ctx.cwd)) },
@@ -171,16 +169,8 @@ export const showUsage = async (ctx: any, back = true): Promise<void | "back"> =
       false, // read-only: no Mode / Grant-folder toggles on the usage screen
       borderPainterFor(theme, ctx),
       back
-    );
-    return {
-      render: (width: number) => panel.render(width),
-      invalidate: () => panel.invalidate(),
-      handleInput: (data: string) => {
-        panel.handleInput(data);
-        tui.requestRender();
-      },
-    };
-  });
+    )
+  );
   return outcome === BACK ? "back" : undefined;
 };
 
@@ -253,8 +243,8 @@ export const showStatus = async (ctx: any, back = true): Promise<void | "back"> 
     return;
   }
 
-  const outcome = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
-    const panel = new StatusPanel(
+  const outcome = await customScreen<number | null>(ctx, (theme, done) =>
+    new StatusPanel(
       theme,
       buildStatus(ctx, theme),
       {
@@ -270,15 +260,7 @@ export const showStatus = async (ctx: any, back = true): Promise<void | "back"> 
       true,
       borderPainterFor(theme, ctx),
       back
-    );
-    return {
-      render: (width: number) => panel.render(width),
-      invalidate: () => panel.invalidate(),
-      handleInput: (data: string) => {
-        panel.handleInput(data);
-        tui.requestRender();
-      },
-    };
-  });
+    )
+  );
   return outcome === BACK ? "back" : undefined;
 };
