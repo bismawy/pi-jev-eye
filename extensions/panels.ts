@@ -63,7 +63,7 @@ const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
 
   // Column widths are fixed so the header and both tables (`Backends` and `Totals`) share one grid.
   // `label: 10` leaves at least two spaces after `"All time"` before `"no requests"`.
-  const W = { label: 10, req: 5, tok: 10, cost: 9 };
+  const W = { label: 10, req: 6, tok: 10, cost: 9 };
   const cell = (text: string, width: number, alignRight = true) => {
     const s = text.length > width ? `${text.slice(0, width - 1)}…` : text;
     return alignRight ? s.padStart(width) : s.padEnd(width);
@@ -74,7 +74,7 @@ const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
     const active = t.requests > 0;
     return (
       paint(active ? "text" : "muted", cell(label, W.label, false)) +
-      paint(active ? "text" : "dim", cell(String(t.requests), W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost)) +
+      paint(active ? "text" : "dim", cell(n(t.requests), W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost)) +
       extra
     );
   };
@@ -86,12 +86,14 @@ const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
   const monthTotals = readUsage(today().slice(0, 7));
   const { clef, jev } = backendTotals(monthTotals?.providers);
   lines.push(header(""));
-  lines.push(row("Jev", jev, `  ${paint("muted", auth && auth.provider.id !== "cloudflare" ? auth.provider.label : "TypeSafe / OpenRouter")}`));
+  lines.push(row("Jev", jev, `  ${paint("muted", auth && auth.provider.id !== "cloudflare" ? auth.provider.short : "TypeSafe / OpenRouter")}`));
   lines.push(
     row(
       "Clef",
       clef,
-      `  ${paint("muted", auth?.provider.id === "cloudflare" ? auth.model : "Cloudflare")} ${paint("dim", "·")} ${paint("muted", clef.neurons >= 1 ? `${n(Math.round(clef.neurons))} neurons` : "no neurons")}`
+      `  ${paint("muted", auth?.provider.id === "cloudflare" ? auth.model : "Cloudflare")}${
+        clef.neurons >= 1 ? ` ${paint("dim", "·")} ${paint("muted", `${n(Math.round(clef.neurons))} neurons`)}` : ""
+      }`
     )
   );
   // Entries written before provider attribution existed cannot be split. Showing only the attributed
@@ -118,13 +120,16 @@ const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
   lines.push("");
 
   // 2. One-line totals on the same column grid, so the panel still answers when the split is empty.
-  lines.push(paint("accent", "Totals · both ledgers"));
+  lines.push(paint("accent", "Totals"));
   for (const [label, period] of [["Today", today()], ["Month", today().slice(0, 7)], ["All time", ""]] as const) {
     const t = readUsage(period);
+    const outcome = t
+      ? `  ${paint("muted", `${n(t.ok)} ok`)}${
+          t.failed > 0 ? ` ${paint("dim", "·")} ${paint("warning", `${n(t.failed)} fail`)}` : ""
+        } ${paint("dim", "·")} ${paint("muted", `out ${n(t.outputTokens)}`)}`
+      : "";
     lines.push(
-      t
-        ? row(label, t, `  ${paint("muted", `${t.ok} ok / ${t.failed} fail`)} ${paint("dim", "·")} ${paint("muted", `out ${n(t.outputTokens)}`)}`)
-        : paint("muted", cell(label, W.label, false)) + paint("dim", "no requests")
+      t ? row(label, t, outcome) : paint("muted", cell(label, W.label, false)) + paint("dim", "no requests")
     );
   }
   lines.push("");
@@ -142,7 +147,9 @@ const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
   );
   lines.push(
     paint("dim", `resets 00:00 UTC · ${n(Math.round(budget.remaining))} left · `) +
-      paint("muted", auth?.provider.id === "cloudflare" ? `${auth.model} · $${clefUsdPerMTok(auth.model).toFixed(3)}/M in` : "Clef not the active gate key")
+      (auth?.provider.id === "cloudflare"
+        ? paint("muted", `${auth.model} ($${clefUsdPerMTok(auth.model).toFixed(3)}/M in)`)
+        : paint("dim", "inactive"))
   );
   lines.push("");
 
@@ -153,16 +160,14 @@ const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
   const kvRows: [string, string][] = [
     [
       "Session",
-      paint(
+      `${paint(
         "text",
         `gate ${Math.min(s.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} · routing ${Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} · reviewed ${s.reviewTurns}`
-      ),
+      )}${typeof contextTokens === "number" ? paint("dim", ` · ctx ${n(contextTokens)}`) : ""}`,
     ],
     [
       "Blocked",
-      `${paint(totalBlocked > 0 ? "warning" : "text", `${s.destructiveBlocked} dangerous · ${s.secretsBlocked} secret · ${s.slopBlocked} slop`)}${
-        typeof contextTokens === "number" ? paint("dim", ` · context ${n(contextTokens)} tok`) : ""
-      }`,
+      paint(totalBlocked > 0 ? "warning" : "muted", `${s.destructiveBlocked} dangerous · ${s.secretsBlocked} secret · ${s.slopBlocked} slop`),
     ],
     ...(balance ? [["Balance", paint("text", balance)] as [string, string]] : []),
   ];
