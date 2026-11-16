@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, assignBackend, backendFooterName, backendTotals, borderPainter, boxEdge, boxFrame, boxRow, cfRunUrl, chosenRowPainter, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefRowLabel, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, packPairs, putCredential, removeCredentials, storedProviderIds, sumDays, thinkingColorSlot, validBackendRef, visibleWidth, wipeTarget, wrapWords } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, assignBackend, backendFooterName, backendTotals, borderPainter, boxEdge, boxFrame, boxRow, cfRunUrl, chosenRowPainter, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefRowLabel, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, packPairs, putCredential, removeCredentials, storedProviderIds, sumDays, sumDaysSince, thinkingColorSlot, validBackendRef, visibleWidth, wipeTarget, wrapWords } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -146,11 +146,25 @@ test("a provider's counters are kept per provider, never summed into one bucket"
 });
 
 test("folding two ledgers adds matching providers instead of replacing them", () => {
-  const own = sumDays({ "2026-10-11": { requests: 1, providers: { cloudflare: { requests: 1, inputTokens: 10 } } } }, "2026-10", normalizeTotals);
+  const own = sumDays({ "2026-10-11": { requests: 1, providers: { cloudflare: { requests: 1, inputTokens: 10, models: { "clef-flash": { requests: 1, inputTokens: 10 } } } } } }, "2026-10", normalizeTotals);
   const legacy = sumDays({ "2026-10-11": { requestsStarted: 1, inputTokens: 5 } }, "2026-10", legacyTotals);
   const merged = mergeTotals(own, legacy);
   assert.equal(merged.providers.cloudflare.requests, 1);
+  assert.equal(merged.providers.cloudflare.models["clef-flash"].requests, 1);
   assert.equal(merged.requests, 2);
+});
+
+test("sumDaysSince filters rolling date windows and preserves per-model breakdown", () => {
+  const days = {
+    "2026-10-01": { requests: 3, providers: { cloudflare: { requests: 3, models: { clef: { requests: 3 } } } } },
+    "2026-10-10": { requests: 2, providers: { cloudflare: { requests: 2, models: { "clef-flash": { requests: 2 } } } } },
+    "2026-10-15": { requests: 1, providers: { cloudflare: { requests: 1, models: { "clef-flash": { requests: 1 } } } } },
+  };
+  const recent = sumDaysSince(days, "2026-10-10", normalizeTotals);
+  assert.equal(recent.requests, 3);
+  assert.equal(recent.providers.cloudflare.models["clef-flash"].requests, 3);
+  assert.equal(recent.providers.cloudflare.models.clef, undefined);
+  assert.equal(sumDaysSince(days, "", normalizeTotals).requests, 6);
 });
 
 test("only today's neurons count against the free daily allowance", () => {

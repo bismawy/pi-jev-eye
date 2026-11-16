@@ -3,12 +3,25 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { EYE_DIR, LEGACY_USAGE_PATH, OWN_USAGE_PATH, providerIdOf, readJsonFile } from "./core.ts";
 import type { JevAuth } from "./core.ts";
-import { EMPTY_TOTALS, USD_PER_MTOK, addProviderTotals, clefNeuronsFor, clefUsdPerMTok, legacyTotals, mergeTotals, normalizeTotals, sumDays } from "./layer1.ts";
+import { EMPTY_TOTALS, USD_PER_MTOK, addProviderTotals, clefNeuronsFor, clefUsdPerMTok, legacyTotals, mergeTotals, normalizeTotals, sumDays, sumDaysSince } from "./layer1.ts";
 import type { DayTotals, ProviderTotals } from "./layer1.ts";
 
 // Cloudflare resets the free neuron allowance at 00:00 UTC, so a ledger day is a UTC day: a local
 // day would split one Clef allowance across two rows (7 hours off in WIB).
-export const today = (): string => new Date().toISOString().slice(0, 10);
+export const today = (now = new Date()): string => now.toISOString().slice(0, 10);
+
+export type UsagePeriod = "all" | "today" | "7d" | "30d" | "3m";
+
+const utcDateOffset = (now: Date, deltaDays: number): string =>
+  new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + deltaDays)).toISOString().slice(0, 10);
+
+const sinceDateFor = (period: UsagePeriod, now = new Date()): string => {
+  if (period === "all") return "";
+  if (period === "today") return today(now);
+  if (period === "7d") return utcDateOffset(now, -6);
+  if (period === "30d") return utcDateOffset(now, -29);
+  return utcDateOffset(now, -89);
+};
 
 /** One period across both ledgers: today, or the current calendar month. */
 export function readUsage(period: string): DayTotals | undefined {
@@ -18,7 +31,16 @@ export function readUsage(period: string): DayTotals | undefined {
   );
 }
 
-export function recordOwnUsage(patch: Partial<DayTotals>, providerId?: string): void {
+/** One rolling UTC window across both ledgers: all time, today, 7 days, 30 days, or 3 months. */
+export function readUsagePeriod(period: UsagePeriod, now = new Date()): DayTotals | undefined {
+  const since = sinceDateFor(period, now);
+  return mergeTotals(
+    sumDaysSince(readJsonFile(OWN_USAGE_PATH)?.days, since, normalizeTotals),
+    sumDaysSince(readJsonFile(LEGACY_USAGE_PATH)?.days, since, legacyTotals)
+  );
+}
+
+export function recordOwnUsage(patch: Partial<DayTotals>, providerId?: string, modelId?: string): void {
   try {
     const file = readJsonFile(OWN_USAGE_PATH) ?? { version: 1, days: {} };
     const days = file.days && typeof file.days === "object" ? file.days : {};
@@ -36,10 +58,10 @@ export function recordOwnUsage(patch: Partial<DayTotals>, providerId?: string): 
     }
     // The same patch is folded into the provider's own bucket, so Jev and Clef never share a total.
     if (providerId) {
-      current.providers = addProviderTotals(current.providers, providerId, patch as Partial<ProviderTotals>);
+      current.providers = addProviderTotals(current.providers, providerId, patch as Partial<ProviderTotals>, modelId);
     }
     days[today()] = current;
-    for (const day of Object.keys(days).sort().slice(0, -31)) delete days[day];
+    for (const day of Object.keys(days).sort().slice(0, -92)) delete days[day];
     mkdirSync(EYE_DIR, { recursive: true });
     writeFileSync(OWN_USAGE_PATH, `${JSON.stringify({ version: 1, days }, null, 2)}\n`, { mode: 0o600 });
   } catch {
@@ -64,7 +86,8 @@ export function recordCall(auth: JevAuth, body: any, answered: boolean): void {
       // Only Cloudflare bills in neurons; storing 0 for the rest keeps the panel math uniform.
       neurons: isClef ? clefNeuronsFor(auth.model, inputTokens) : 0,
     },
-    providerIdOf(auth)
+    providerIdOf(auth),
+    auth.model
   );
 }
 

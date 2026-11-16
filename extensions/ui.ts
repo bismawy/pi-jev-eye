@@ -302,7 +302,7 @@ export const providerTip = (provider: JevProvider): string => `Tips: key from ${
  * query must not be trusted. Every framed screen in this file renders through here. The clip keeps an
  * ellipsis: a model ref cut to `deepseek-v` must not read as a whole model name.
  */
-const framedRows = (rows: string[], width: number, paint: (text: string) => string): string[] =>
+export const framedRows = (rows: string[], width: number, paint: (text: string) => string): string[] =>
   boxFrame(
     rows.flatMap((content) => String(content).split("\n")).map((content) => truncateToWidth(content, boxInner(width))),
     width,

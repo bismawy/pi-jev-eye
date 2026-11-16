@@ -84,12 +84,12 @@ export async function postDecision<T>(
       signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
     });
     if (!res.ok) {
-      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
+      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth), auth.model);
       return null;
     }
     const body = workersAiBody(await res.json());
     if (!body) {
-      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
+      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth), auth.model);
       return null;
     }
     const result = extract(body);
@@ -97,7 +97,7 @@ export async function postDecision<T>(
     recordCall(auth, body, result !== null);
     return result;
   } catch {
-    recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
+    recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth), auth.model);
     return null;
   }
 }

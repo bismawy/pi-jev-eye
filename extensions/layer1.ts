@@ -133,8 +133,8 @@ export interface DayTotals {
   providers?: Record<string, ProviderTotals>;
 }
 
-/** One provider's share of a period. Neurons are metered only by Cloudflare; other providers stay at 0. */
-export interface ProviderTotals {
+/** One model's share of a provider's period. */
+export interface ModelTotals {
   requests: number;
   ok: number;
   failed: number;
@@ -144,12 +144,18 @@ export interface ProviderTotals {
   neurons: number;
 }
 
+/** One provider's share of a period. Neurons are metered only by Cloudflare; other providers stay at 0. */
+export interface ProviderTotals extends ModelTotals {
+  /** Per-model breakdown within this provider. Absent on entries written before per-model tracking. */
+  models?: Record<string, ModelTotals>;
+}
+
 /** The numeric counters, named once: every fold iterates this rather than Object.keys(DayTotals). */
 const DAY_COUNTERS = ["requests", "ok", "failed", "inputTokens", "outputTokens", "cost"] as const;
 const PROVIDER_COUNTERS = [...DAY_COUNTERS, "neurons"] as const;
 
 export const EMPTY_TOTALS: DayTotals = { requests: 0, ok: 0, failed: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
-const EMPTY_PROVIDER_TOTALS: ProviderTotals = {
+const EMPTY_PROVIDER_TOTALS: ModelTotals = {
   requests: 0,
   ok: 0,
   failed: 0,
@@ -160,9 +166,19 @@ const EMPTY_PROVIDER_TOTALS: ProviderTotals = {
 };
 export const USD_PER_MTOK = 0.042; // mirrors pi-typesafe's default input-token rate
 
-function normalizeProviderTotals(raw: any): ProviderTotals {
+function normalizeModelTotals(raw: any): ModelTotals {
   const totals = { ...EMPTY_PROVIDER_TOTALS };
   for (const key of PROVIDER_COUNTERS) totals[key] = Number(raw?.[key]) || 0;
+  return totals;
+}
+
+function normalizeProviderTotals(raw: any): ProviderTotals {
+  const totals: ProviderTotals = normalizeModelTotals(raw);
+  if (raw?.models && typeof raw.models === "object" && !Array.isArray(raw.models)) {
+    const models: Record<string, ModelTotals> = {};
+    for (const [id, value] of Object.entries(raw.models)) models[id] = normalizeModelTotals(value);
+    if (Object.keys(models).length > 0) totals.models = models;
+  }
   return totals;
 }
 
@@ -174,17 +190,36 @@ function normalizeProviders(raw: any): Record<string, ProviderTotals> | undefine
   return Object.keys(providers).length > 0 ? providers : undefined;
 }
 
+function addModelTotals(
+  into: Record<string, ModelTotals> | undefined,
+  id: string,
+  value: Partial<ModelTotals>,
+): Record<string, ModelTotals> {
+  const next = { ...(into ?? {}) };
+  const current = next[id] ?? { ...EMPTY_PROVIDER_TOTALS };
+  const patch: Record<string, number> = {};
+  for (const key of PROVIDER_COUNTERS) patch[key] = current[key] + (Number(value[key]) || 0);
+  next[id] = normalizeModelTotals(patch);
+  return next;
+}
+
 /** Fold one provider's patch into a period map. Used on write, and when ledgers or days are merged. */
 export function addProviderTotals(
   into: Record<string, ProviderTotals> | undefined,
   id: string,
   value: Partial<ProviderTotals>,
+  modelId?: string,
 ): Record<string, ProviderTotals> {
   const next = { ...(into ?? {}) };
   const current = next[id] ?? { ...EMPTY_PROVIDER_TOTALS };
   const patch: Record<string, number> = {};
   for (const key of PROVIDER_COUNTERS) patch[key] = current[key] + (Number(value[key]) || 0);
-  next[id] = normalizeProviderTotals(patch);
+  let models = current.models;
+  for (const [mId, mVal] of Object.entries(value.models ?? {})) {
+    models = addModelTotals(models, mId, mVal);
+  }
+  if (modelId) models = addModelTotals(models, modelId, value);
+  next[id] = normalizeProviderTotals({ ...patch, ...(models ? { models } : {}) });
   return next;
 }
 
@@ -223,13 +258,12 @@ export function mergeTotals(a: DayTotals | undefined, b: DayTotals | undefined):
   return merged;
 }
 
-/** Every entry of `days` whose date starts with `period` (a day "2026-09-20", a month "2026-09", or "" for all time), summed. */
-export function sumDays(days: any, period: string, mapper: (raw: any) => DayTotals): DayTotals | undefined {
+function sumDaysWhere(days: any, match: (date: string) => boolean, mapper: (raw: any) => DayTotals): DayTotals | undefined {
   if (!days || typeof days !== "object") return undefined;
   let found = false;
   const totals: DayTotals = { ...EMPTY_TOTALS };
   for (const [date, value] of Object.entries(days)) {
-    if (!date.startsWith(period)) continue;
+    if (!match(date)) continue;
     found = true;
     const day = mapper(value);
     for (const key of DAY_COUNTERS) totals[key] += day[key];
@@ -239,6 +273,16 @@ export function sumDays(days: any, period: string, mapper: (raw: any) => DayTota
     }
   }
   return found ? totals : undefined;
+}
+
+/** Every entry of `days` whose date starts with `period` (a day "2026-09-20", a month "2026-09", or "" for all time), summed. */
+export function sumDays(days: any, period: string, mapper: (raw: any) => DayTotals): DayTotals | undefined {
+  return sumDaysWhere(days, (date) => date.startsWith(period), mapper);
+}
+
+/** Every entry of `days` on or after `sinceDate` ("YYYY-MM-DD"), or all entries when empty. */
+export function sumDaysSince(days: any, sinceDate: string, mapper: (raw: any) => DayTotals): DayTotals | undefined {
+  return sumDaysWhere(days, (date) => !sinceDate || date >= sinceDate, mapper);
 }
 
 /** Clef is one provider id on disk under two model names; the panel labels it as one backend. */

@@ -323,23 +323,29 @@ const status = await open("status", "", [2], 80);
 }
 const usage = await open("usage", "", [3], 80);
 assert.equal(usage.includes("[Enter] Done"), true, "usage advertises its real exits");
+assert.equal(usage.includes("[←→] Period"), true, "usage advertises period switching");
+assert.equal(usage.includes("[Space] Expand"), true, "usage advertises provider expand/collapse");
 assert.equal(usage.includes("Toggle"), false, "usage must not advertise a toggle it ignores");
 assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a toggle it ignores");
 {
-  const usageOrder = ["[Enter] Done", "[Esc] Back"].map((token) => usage.indexOf(token));
-  assert.deepEqual([...usageOrder].sort((x, y) => x - y), usageOrder, "the read-only footer keeps confirm before the exit");
+  const usageOrder = ["[←→] Period", "[↑↓] Move", "[Space] Expand", "[Enter] Done", "[Esc] Back"].map((token) =>
+    usage.indexOf(token)
+  );
+  assert.deepEqual([...usageOrder].sort((x, y) => x - y), usageOrder, "usage footer keeps navigation before confirm and exit");
   const usageRows = usage.split("\n");
-  // Session and Blocked follow the same flush-left `label · value` pattern as Status overview.
-  const kvRows = usageRows.filter((l) => /│ (Session|Blocked)\s+·/.test(l));
-  assert.equal(kvRows.length, 2, "usage shows Session and Blocked on `label · value` rows");
+  // Session, Blocked, and Clef (today) share one flush-left `label · value` divider column.
+  const kvRows = usageRows.filter((l) => /│ (Session|Blocked|Clef \(today\))\s+·/.test(l));
+  assert.equal(kvRows.length, 3, "usage shows Session, Blocked, and Clef (today) on `label · value` rows");
   assert.equal(new Set(kvRows.map((l) => l.indexOf("·"))).size, 1, "usage summary dividers align in one column");
-  assert.equal(/All time\s{2,}no requests/.test(usage), true, "All time leaves at least two spaces before no requests");
-  assert.equal(usage.includes("Clef free tier · today"), true, "Clef free tier carries its own section heading");
+  assert.equal(usage.includes("All · Today · 7 day · 30 day · 3 month"), true, "usage shows the period filter bar");
+  assert.equal(usage.includes("Provider / Model"), true, "usage shows the Provider / Model table header");
+  assert.equal(usage.includes("▸ TypeSafe"), true, "usage lists TypeSafe collapsed by default");
+  assert.equal(usage.includes("▸ Cloudflare"), true, "usage lists Cloudflare collapsed by default");
   const usageNarrow = await open("usage@68", "usage", [], 68);
   assert.equal(usageNarrow.includes("…"), false, "the usage panel does not clip at 68 columns");
 }
-// Populated usage: Backends (<$0.01) and Totals (>=$0.01) share one 4-decimal cost column without
-// precision jitter, and neither table clips at 68 columns.
+// Populated usage: TypeSafe, Cloudflare, and Total share one 4-decimal cost column without
+// precision jitter, and neither table clips at 68 columns. Expanding Cloudflare shows its models.
 {
   const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
   const { join } = await import("node:path");
@@ -359,8 +365,30 @@ assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a to
           cost: 0.0145,
           neurons: 1850,
           providers: {
-            typesafe: { requests: 4, ok: 4, failed: 0, inputTokens: 10200, outputTokens: 120, cost: 0.0085, neurons: 0 },
-            cloudflare: { requests: 8, ok: 7, failed: 1, inputTokens: 14300, outputTokens: 200, cost: 0.006, neurons: 1850 },
+            typesafe: {
+              requests: 4,
+              ok: 4,
+              failed: 0,
+              inputTokens: 10200,
+              outputTokens: 120,
+              cost: 0.0085,
+              neurons: 0,
+              models: {
+                "jev-latest": { requests: 4, ok: 4, failed: 0, inputTokens: 10200, outputTokens: 120, cost: 0.0085, neurons: 0 },
+              },
+            },
+            cloudflare: {
+              requests: 8,
+              ok: 7,
+              failed: 1,
+              inputTokens: 14300,
+              outputTokens: 200,
+              cost: 0.006,
+              neurons: 1850,
+              models: {
+                "clef-flash": { requests: 8, ok: 7, failed: 1, inputTokens: 14300, outputTokens: 200, cost: 0.006, neurons: 1850 },
+              },
+            },
           },
         },
       },
@@ -368,13 +396,30 @@ assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a to
   );
   const populated = await open("usage populated@68", "usage", [], 68);
   assert.equal(populated.includes("…"), false, "populated usage rows fit inside 68 columns without clipping");
-  const costLines = populated.split("\n").filter((l) => /│ (Jev|Clef|Today|Month|All time)\s+\d/.test(l));
-  assert.equal(costLines.length, 5, "populated usage renders both Backends and all three Totals rows");
+  const costLines = populated.split("\n").filter((l) => /│ (?:[▸▾] )?(TypeSafe|Cloudflare|Total)\s+\d/.test(l));
+  assert.equal(costLines.length, 3, "populated usage renders TypeSafe, Cloudflare, and Total rows");
   assert.equal(
     new Set(costLines.map((l) => l.indexOf("$") + l.slice(l.indexOf("$")).indexOf("."))).size,
     1,
-    "Backends and Totals align every cost decimal point in one column"
+    "provider rows and Total align every cost decimal point in one column"
   );
+
+  // Interactive check: expand Cloudflare (`↓` then `Space`) to reveal `clef (flash)`, and switch period (`→`).
+  const { ctx, screens } = harness();
+  const run = commands["jev-eye"].handler("usage", ctx);
+  await tick();
+  const panel = screens[0].wrapper;
+  panel.handleInput("\x1b[B"); // Down -> Cloudflare
+  panel.handleInput(" "); // Space -> Expand Cloudflare
+  const expanded = strip(panel.render(88).join("\n"));
+  assert.equal(expanded.includes("▾ Cloudflare"), true, "Space expands the highlighted provider");
+  assert.equal(expanded.includes("clef (flash)"), true, "expanded Cloudflare lists clef (flash)");
+  panel.handleInput("\x1b[C"); // Right -> Today
+  const todayView = strip(panel.render(88).join("\n"));
+  assert.equal(/Total\s+12\s+24,500\s+\$0\.0145/.test(todayView), true, "Right switches period and keeps today's 12 requests");
+  screens[0].resolve(undefined);
+  await run;
+
   rmSync(usagePath, { force: true });
 }
 await open("routing", "", [4], 80);
@@ -540,6 +585,7 @@ for (const width of [40, 80, 120]) {
     "\u2265", // ≥
     "\u25cb", "\u25cf", "\u2713", // ○ ● ✓ (status marker, stored marker)
     "\u2588", "\u2591", // █ ░ (usage bar)
+    "\u25b8", "\u25be", // ▸ ▾ (tree expand/collapse)
   ]);
   const rpc = rpcHarness();
   for (const [label, arg] of [["status", "status"], ["usage", "usage"], ["accounts", "accounts"], ["menu", ""]]) {

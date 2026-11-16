@@ -81,6 +81,15 @@ export const panelKeys = (controls: boolean, back = true): string[] =>
     `[Esc] ${back ? "Back" : "Cancel"}`,
   ];
 
+/** Keybind legend for the interactive `/jev-eye usage` screen (period tabs + collapsible provider tree). */
+export const usageKeys = (back = true): string[] => [
+  "[←→] Period",
+  "[↑↓] Move",
+  "[Space] Expand",
+  "[Enter] Done",
+  `[Esc] ${back ? "Back" : "Cancel"}`,
+];
+
 /** Paint a keybinding for a legend, from the same table the handler matches against. */
 export const keybind = (key: string): string => `[${keycap(key)}]`;
 
