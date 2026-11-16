@@ -4,13 +4,13 @@
 import { consentAllows, nextConsent, readConsent, writeConsent } from "./consent.ts";
 import { OWN_USAGE_PATH, currentCatalog, readBackends, readAuthStore, readJsonFile, resolveJevAuth, storedCredential } from "./core.ts";
 import type { JevAuth } from "./core.ts";
-import { JEV_BLOCK_THRESHOLD, JEV_MAX_REQUESTS, JEV_MIN_DIFF_LINES } from "./gate.ts";
-import { backendTotals, clefBudget, clefUsdPerMTok, neuronsSpentOn, statusRow } from "./layer1.ts";
+import { JEV_MAX_REQUESTS } from "./gate.ts";
+import { backendTotals, chosenRowPainter, clefBudget, clefUsdPerMTok, neuronsSpentOn } from "./layer1.ts";
 import type { ProviderTotals } from "./layer1.ts";
 import { fetchBalanceText, readUsage, today } from "./ledger.ts";
 import { state } from "./pmr.ts";
 import { JEV_MAX_ROUTING_CALLS, readRouting } from "./routing.ts";
-import { STATUS_DESC, STATUS_TITLE, cycleEyeState, panelKeys } from "./supervisor.ts";
+import { STATUS_DESC, STATUS_TITLE, cycleEyeState } from "./supervisor.ts";
 import { BACK, StatusPanel, borderPainterFor, customScreen, modelLabelFor } from "./ui.ts";
 
 /** A stored Cloudflare key without an account id is invisible everywhere else: say why, in status. */
@@ -174,81 +174,86 @@ export const showUsage = async (ctx: any, back = true): Promise<void | "back"> =
   return outcome === BACK ? "back" : undefined;
 };
 
-/** Status body only: plain text in headless mode, colourised when the panel hands over a theme.
- *  Spend lives in `/jev-eye usage`; this screen answers "what is active right now" in five lines. */
-const buildStatus = (ctx: any, theme?: any): string[] => {
+/** Status body only: plain text in headless mode (`cursorIndex = -1`), interactive in TUI.
+ *  Detailed spend, per-provider totals, and block breakdowns live in `/jev-eye usage`. */
+const buildStatus = (ctx: any, theme?: any, cursorIndex = -1): string[] => {
   const auth = resolveJevAuth();
   const consent = readConsent();
   const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
-
-  // A zero count is the healthy value, so only a non-zero one draws the eye.
-  const count = (value: number) => paint(value > 0 ? "warning" : "text", String(value));
-
+  const soft = theme ? chosenRowPainter(theme) : (text: string) => text;
   const routing = readRouting();
   const models: any[] = ctx?.modelRegistry?.getAvailable?.() ?? [];
   const backends = readBackends();
   const catalog = currentCatalog();
-  const backendLabel = (ref: string) => {
-    const row = catalog.find((m) => m.ref === ref);
-    return row ? `${row.label} · ${row.providerShort}` : ref;
-  };
   const thisFolderOn = consentAllows(ctx.cwd, consent);
-  const scope = consent.mode === "folder" ? `This folder (${thisFolderOn ? "ON" : "off"})` : consent.mode === "all" ? "All folders" : "Disabled";
   const s = state.stats;
-  const gate = Math.min(s.jevRequests, JEV_MAX_REQUESTS);
-  const classified = Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS);
+  const totalBlocked = s.destructiveBlocked + s.secretsBlocked + s.slopBlocked;
 
-  // One row = `Label · STATUS | detail`: the left column is scannable, the right column is the
-  // evidence. `statusRow` pads the label so every `·` lands in one column, like the list menus.
-  const row = (name: string, status: string, details: (string | false | undefined)[], accent: string) =>
-    statusRow(name, status, details, (token, text) => paint(token, text), accent);
+  // One shared label column (`"Folder gate"` = 11 chars, padded to 12) so every `·` aligns across
+  // both the two interactive controls and the three read-only pipeline rows below them.
+  const line = (label: string, value: string, cursor = false): string => {
+    const prefix = cursorIndex >= 0 ? (cursor ? paint("accent", "→ ") : "  ") : "";
+    const styled = cursor ? soft(label.padEnd(12)) : paint("text", label.padEnd(12));
+    return `${prefix}${styled} ${paint("dim", "·")} ${value}`;
+  };
 
-  const lines = [
-    row("Supervisor", state.enabled ? "ENABLED" : "DISABLED", [state.reviewMode ? "Review all turns" : "Review prompt trigger"], state.enabled ? "success" : "warning"),
-    row("Scope folders", consent.mode === "disabled" ? "OFF" : "ON", [scope], consent.mode === "disabled" ? "warning" : "success"),
-    auth
-      ? row("Gate", "READY", [backends.primary ? backendLabel(backends.primary) : `${auth.provider.short} · ${auth.model}`, backends.fallback ? `fallback ${backendLabel(backends.fallback)}` : `auto: ${auth.provider.short}`, `Key from ${auth.source}`], "success")
-      : row("Gate", "OFFLINE", ["no key, run `/jev-eye accounts`"], "warning"),
-    row("Rules", "ACTIVE", [`Block at p≥${JEV_BLOCK_THRESHOLD} on diffs ≥${JEV_MIN_DIFF_LINES} lines`, `gate ${gate}/${JEV_MAX_REQUESTS}`, `routing ${classified}/${JEV_MAX_ROUTING_CALLS}${s.fallbacks > 0 ? ` · ${s.fallbacks} fallback` : ""}`], "success"),
-    row(
-      "Routing",
-      routing.enabled ? "ON" : "OFF",
-      [
-        `light ${modelLabelFor(models, routing.light) || "unset"}`,
-        `heavy ${modelLabelFor(models, routing.heavy) || "unset"}`,
-        `${s.lightTurns} light / ${s.heavyTurns} heavy turns`,
-      ],
-      routing.enabled ? "success" : "muted",
-    ),
-    // In-memory counters that reset on reload, so the badge names their scope instead of implying a lifetime total.
-    row("Blocked", "SESSION", [
-      `${count(s.destructiveBlocked)} dangerous`,
-      `${count(s.secretsBlocked)} secrets`,
-      `${count(s.slopBlocked)} slop`,
-      `${count(s.verificationReminders)} unverified`,
-      `${s.reviewTurns} reviewed turns`,
-    ], "muted"),
+  const supervisorValue = !state.enabled
+    ? paint("warning", "DISABLED")
+    : state.reviewMode
+      ? `${paint("success", "REVIEW")} ${paint("muted", "(all turns)")}`
+      : `${paint("success", "ENABLED")} ${paint("muted", "(prompt trigger)")}`;
+
+  const scopeValue =
+    consent.mode === "all"
+      ? paint("success", "ALL FOLDERS")
+      : consent.mode === "folder"
+        ? `${paint(thisFolderOn ? "success" : "warning", "THIS FOLDER")} ${paint("muted", `(${thisFolderOn ? "ON" : "off"})`)}`
+        : paint("warning", "DISABLED");
+
+  const primaryRow = backends.primary ? catalog.find((m) => m.ref === backends.primary) : undefined;
+  const fallbackRow = backends.fallback ? catalog.find((m) => m.ref === backends.fallback) : undefined;
+  const activeText = primaryRow
+    ? `${primaryRow.label} (${primaryRow.providerShort})`
+    : auth
+      ? `${auth.model} (${auth.provider.short})`
+      : "";
+  const backendValue = !auth
+    ? `${paint("warning", "OFFLINE")} ${paint("muted", "· no key")}`
+    : `${paint("text", activeText)}${fallbackRow ? paint("muted", ` → ${fallbackRow.label}`) : ""}`;
+
+  const routingValue = routing.enabled
+    ? `${paint("success", "ON")} ${paint("muted", `· ${modelLabelFor(models, routing.light) || "unset"} → ${modelLabelFor(models, routing.heavy) || "unset"}`)}`
+    : paint("muted", "OFF");
+
+  const sessionValue = `${paint(totalBlocked > 0 ? "warning" : "muted", `${totalBlocked} blocked`)}${paint(
+    "dim",
+    ` · ${s.reviewTurns} reviewed${s.fallbacks > 0 ? ` · ${s.fallbacks} fallback` : ""}`
+  )}`;
+
+  return [
+    line("Supervisor", supervisorValue, cursorIndex === 0),
+    line("Folder gate", scopeValue, cursorIndex === 1),
+    "",
+    line("Backend", backendValue),
+    line("Routing", routingValue),
+    line("Session", sessionValue),
     ...cloudflareHint(paint),
   ];
-
-  const contextTokens = ctx?.getContextUsage?.()?.tokens;
-  if (typeof contextTokens === "number") lines.push(row("Context", "USED", [`${contextTokens.toLocaleString("en-US")} tokens`], "muted"));
-  return lines;
 };
 
 /** `/jev-eye status`: the framed panel, falling back to the same body as plain text without a TUI. */
 export const showStatus = async (ctx: any, back = true): Promise<void | "back"> => {
   if (ctx.mode !== "tui") {
-    ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx), "", panelKeys(true, back).join("  ")].join("\n"), "info");
+    ctx.ui.notify([STATUS_TITLE, STATUS_DESC, "", ...buildStatus(ctx)].join("\n"), "info");
     return;
   }
 
   const outcome = await customScreen<number | null>(ctx, (theme, done) =>
     new StatusPanel(
       theme,
-      buildStatus(ctx, theme),
+      buildStatus(ctx, theme, 0),
       {
-        rebuild: () => buildStatus(ctx, theme),
+        rebuild: (cursor = 0) => buildStatus(ctx, theme, cursor),
         cycleMode: () => {
           cycleEyeState(ctx);
         },

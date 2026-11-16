@@ -119,7 +119,7 @@ const menuRows = () => {
   return [
     { label: "Accounts", note: auth ? `keys & stored state (current: ${auth.provider.label})` : "TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef) key" },
     { label: "Models", note: modelsDesc },
-    { label: "Status", note: "supervisor, gate scope & metrics" },
+    { label: "Status", note: "supervisor & folder gate toggles, backend & session state" },
     { label: "Usage", note: "Jev/Clef spend, per-provider split & free-neuron budget" },
     { label: "Routing", note: routingDesc },
   ];
@@ -190,7 +190,7 @@ const eyeHandler = async (args: string, ctx: any) => {
     // also advertises. A second name for it here is how `on`/`review`/`off`/`toggle` ended up as four
     // subcommands with no menu row, no completion anyone wanted, and a mode value that had to be kept
     // in sync with `cycleEyeState` by hand.
-    ctx.ui.notify(`[pi-jev-eye] Supervisor mode is the ${TOGGLE_KEY} keybinding (and the Status screen's footer). There is no \`/jev-eye ${sub}\`; run \`/jev-eye status\` to see the current mode.`, "warning");
+    ctx.ui.notify(`[pi-jev-eye] Supervisor mode is the ${TOGGLE_KEY} keybinding (or toggle it in \`/jev-eye status\`). There is no \`/jev-eye ${sub}\`; run \`/jev-eye status\` to see the current mode.`, "warning");
     return;
   }
 

@@ -52,7 +52,7 @@ export const GATE_KEY = KEY_SETS.gate;
 
 // `/jev-eye status` panel chrome: title, one-line description, footer.
 export const STATUS_TITLE = "Jev Eye · Status";
-export const STATUS_DESC = "Supervisor, gate, routing and interception for this Pi session.";
+export const STATUS_DESC = "Live controls and active pipeline for this session.";
 /** Keycap hint only: `ctrl+alt+e` -> `Ctrl+Alt+e`. A lone shifted letter types the capital itself, so
  *  its keycap is that capital: `shift+r` renders `[R]`, not the two-key `[Shift+r]`. */
 export const keycap = (key: string): string => {
@@ -69,13 +69,13 @@ const eyeMode = (enabled: boolean, reviewMode: boolean): "ON" | "REVIEW" | "OFF"
 /**
  * The framed screens' keybind legend, in one place so a new screen cannot invent its own wording or
  * advertise a key it does not act on. `back` is per-screen: only a screen an extension opened itself
- * has somewhere to return to, so `[←] Back` is advertised exactly when `[←]` is handled. A read-only
- * screen (usage) carries no toggles. The footer wraps inside the frame, so no key is dropped.
+ * has somewhere to return to, so Esc labels Back vs Cancel accordingly. A read-only screen (usage)
+ * carries no toggles. The footer wraps inside the frame, so no key is dropped.
  */
 export const panelKeys = (controls: boolean, back = true): string[] =>
   [
+    ...(controls ? ["[↑↓] Move", "[Space] Toggle"] : []),
     "[Enter] Done",
-    ...(controls ? [`[${keycap(TOGGLE_KEY)}] Supervisor`, `[${keycap(GATE_KEY)}] Grant folder`] : []),
     // A screen opened from the menu steps back to it on Esc (pi-arnative's submenu convention); a screen
     // a subcommand opened directly has nothing behind it, so Esc cancels.
     `[Esc] ${back ? "Back" : "Cancel"}`,
@@ -115,7 +115,7 @@ export function cycleEyeState(ctx?: any): "ON" | "REVIEW" | "OFF" {
 export const EYE_SUBCOMMANDS = [
   { value: "accounts", label: "accounts", description: "Accounts screen [menu row]: store a key for TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef), and remove one with [R]" },
   { value: "models", label: "models", description: "Models screen [menu row]: choose the active Jev/Clef backend and the fallback it fails over to" },
-  { value: "status", label: "status", description: "Show supervisor, gate scope, routing and interception stats [menu row]" },
+  { value: "status", label: "status", description: "Live supervisor controls, active backend, routing and session summary [menu row]" },
   { value: "usage", label: "usage", description: "Show Jev/Clef spend: per-provider totals and the Cloudflare free-neuron budget [menu row]" },
   { value: "routing", label: "routing", description: "Model routing screen: pick the light and heavy targets [menu row]" },
   { value: "routing light", label: "routing light", description: "Open the routing screen focused on the light slot" },

@@ -693,14 +693,15 @@ export class ModelsPicker {
   invalidate(): void {}
 }
 
-/** `/jev-eye status` panel: the same framing as the routing picker and the vision-watcher screen, with
- *  both advertised keybindings live so the footer never promises a key that does nothing here. */
+/** `/jev-eye status` (interactive controls) and `/jev-eye usage` (read-only) panel. */
 export class StatusPanel {
   private lines: string[];
+  /** Highlighted control row (0 = Supervisor, 1 = Folder gate) when `controls` is true. */
+  private index = 0;
   private readonly paint: (text: string) => string;
   private readonly theme: any;
   private readonly actions: {
-    rebuild: () => string[];
+    rebuild: (cursor?: number) => string[];
     cycleMode: () => void;
     cycleGate: () => void;
   };
@@ -715,7 +716,7 @@ export class StatusPanel {
   constructor(
     theme: any,
     lines: string[],
-    actions: { rebuild: () => string[]; cycleMode: () => void; cycleGate: () => void },
+    actions: { rebuild: (cursor?: number) => string[]; cycleMode: () => void; cycleGate: () => void },
     done: (value?: typeof BACK) => void,
     title: string = STATUS_TITLE,
     desc: string = STATUS_DESC,
@@ -737,7 +738,12 @@ export class StatusPanel {
   /** A toggle changes state, so the body is rebuilt in place; the caller re-renders after input. */
   private apply(mutate: () => void): void {
     mutate();
-    this.lines = this.actions.rebuild();
+    this.lines = this.actions.rebuild(this.controls ? this.index : undefined);
+  }
+
+  private move(delta: number): void {
+    this.index = (this.index + delta + 2) % 2;
+    this.lines = this.actions.rebuild(this.index);
   }
 
   handleInput(data: string): void {
@@ -760,12 +766,29 @@ export class StatusPanel {
       this.done();
       return;
     }
+    if (!this.controls) return;
+    if (matchesKey(data, Key.up)) return this.move(-1);
+    if (matchesKey(data, Key.down)) return this.move(1);
+    if (matchesKey(data, Key.home)) {
+      this.index = 0;
+      this.lines = this.actions.rebuild(this.index);
+      return;
+    }
+    if (matchesKey(data, Key.end)) {
+      this.index = 1;
+      this.lines = this.actions.rebuild(this.index);
+      return;
+    }
+    if (matchesKey(data, Key.space)) {
+      this.apply(this.index === 0 ? this.actions.cycleMode : this.actions.cycleGate);
+      return;
+    }
     if (matchesKey(data, TOGGLE_KEY)) {
-      if (this.controls) this.apply(this.actions.cycleMode);
+      this.apply(this.actions.cycleMode);
       return;
     }
     if (matchesKey(data, GATE_KEY)) {
-      if (this.controls) this.apply(this.actions.cycleGate);
+      this.apply(this.actions.cycleGate);
     }
   }
 

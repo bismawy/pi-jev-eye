@@ -279,17 +279,45 @@ assert.equal((await open("routing direct", "routing", [], 80)).includes("[Esc] C
 
 // Every sub-screen opens inside the frame, and the read-only one advertises no toggle it ignores.
 const status = await open("status", "", [2], 80);
-assert.equal(status.includes("Grant folder"), true, "status keeps its last footer key at 80 columns");
-// One legend order on every framed screen: nav/confirm, the screen's keys, then the exits (Back before
-// Esc, because Back stays inside the extension and Esc leaves it).
 {
   const at = (token) => status.indexOf(token);
-  const order = ["[Enter] Done", "[Ctrl+Alt+e] Supervisor", "[Ctrl+Alt+u] Grant folder", "[Esc] Back"].map(at);
+  const order = ["[↑↓] Move", "[Space] Toggle", "[Enter] Done", "[Esc] Back"].map(at);
   assert.equal(order.every((i) => i >= 0), true, `every status footer key is present, got ${order.join(",")}`);
-  assert.deepEqual([...order].sort((x, y) => x - y), order, `the status footer runs confirm → keys → exits, got ${order.join(",")}`);
+  assert.deepEqual([...order].sort((x, y) => x - y), order, `the status footer runs nav → toggle → confirm → exits, got ${order.join(",")}`);
+  const statusRows = status.split("\n").filter((l) => /Supervisor|Folder gate|Backend|Routing|Session/.test(l));
+  assert.equal(statusRows.length, 5, "status shows the five expected rows");
+  assert.equal(new Set(statusRows.map((l) => l.indexOf("·"))).size, 1, "all five status dividers align in one column");
+  assert.equal(statusRows.some((l) => l.includes("|")), false, "status drops the old pipe separator");
+}
+{
+  const { ctx, screens } = harness();
+  const run = commands["jev-eye"].handler("status", ctx);
+  await tick();
+  const panel = screens[0].wrapper;
+  const view = () => strip(panel.render(80).join("\n"));
+  assert.equal(/→ Supervisor\s+· ENABLED/.test(view()), true, "status opens with cursor on Supervisor");
+  panel.handleInput(" ");
+  assert.equal(/→ Supervisor\s+· REVIEW/.test(view()), true, "Space cycles Supervisor from ENABLED to REVIEW");
+  panel.handleInput("\x1b[B"); // Down
+  assert.equal(/→ Folder gate/.test(view()), true, "Down moves the cursor to Folder gate");
+  const beforeGate = view().split("\n").find((l) => l.includes("Folder gate"));
+  panel.handleInput(" ");
+  const afterGate = view().split("\n").find((l) => l.includes("Folder gate"));
+  assert.notEqual(afterGate, beforeGate, "Space cycles Folder gate when highlighted");
+  panel.handleInput("\x1b\x05"); // Ctrl+Alt+e shortcut still works inside the panel
+  assert.equal(/Supervisor\s+· DISABLED/.test(view()), true, "Ctrl+Alt+e still cycles Supervisor inside Status");
+  // Restore defaults so later checks see the initial state.
+  panel.handleInput("\x1b\x05"); // DISABLED -> ENABLED
+  panel.handleInput(" "); // Folder gate cycle back once more if needed — restore consent file below
+  screens[0].resolve(undefined);
+  await run;
+  const { rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  rmSync(join(process.env.HOME, ".pi", "agent", "pi-jev-eye", "consent.json"), { force: true });
 }
 const usage = await open("usage", "", [3], 80);
 assert.equal(usage.includes("[Enter] Done"), true, "usage advertises its real exits");
+assert.equal(usage.includes("Toggle"), false, "usage must not advertise a toggle it ignores");
 assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a toggle it ignores");
 {
   const usageOrder = ["[Enter] Done", "[Esc] Back"].map((token) => usage.indexOf(token));

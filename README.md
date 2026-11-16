@@ -53,7 +53,7 @@ pi -e ./extensions/index.ts
 | `/jev-eye` | Global | Interactive menu: Accounts, Models, Status, Usage, Routing |
 | `/jev-eye accounts` | Setup | Authenticate with TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef) against the live route (mode 0600), and remove the highlighted stored key with `[R]` (press twice) |
 | `/jev-eye models` | Setup | Models screen: `[Space]` sets the **active** backend and `[Tab]` sets its **fallback** in `backends.json` |
-| `/jev-eye status` | Inspect | Live state: supervisor, active backend and fallback, gate scope, rules, routing, block counts. Spend lives in `usage` |
+| `/jev-eye status` | Inspect | Live controls and active pipeline: `Supervisor` and `Folder gate` toggles (`[Space]`), active backend, routing, and session summary. Detailed counts and spend live in `usage` |
 | `/jev-eye usage` | Inspect | Spend breakdown: Jev vs Clef side by side, period totals, and the Cloudflare free-neuron budget |
 | `/jev-eye routing` | Routing | Interactive TUI model router for light and heavy task slots (`routing light` / `routing heavy` focus a slot; `routing on` / `routing off` toggle it) |
 | `jev` · `@jev` in prompt | Prompt | Trigger calibrated review format and task alignment check |

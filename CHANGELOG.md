@@ -6,6 +6,7 @@
 - Accounts removes a stored key with `[R]` (pressed twice) instead of `[Ctrl+d]`; a capital letter keeps the destructive key away from the navigation keys.
 - Models sets the fallback with `[Tab]` instead of `[Ctrl+f]`, shows the `Active` / `Fallback` slot summary above the table, and reads each row as `label · state [provider]` on one divider.
 - On a screen the `/jev-eye` menu opened (Accounts, Models, Status, Usage, Routing), `[Esc]` returns to the menu instead of closing the command; a screen opened by direct subcommand keeps `[Esc]` as Cancel, and every footer now labels Esc accordingly.
+- `/jev-eye status` moves `Supervisor` and `Folder gate` toggles onto selectable rows (`[↑↓]` Move, `[Space]` Toggle; `[Ctrl+Alt+e]` and `[Ctrl+Alt+u]` still work), drops the duplicate rules and per-category block rows already shown in `usage`, and aligns every row on one `·` divider.
 
 ### Fixed
 - `resolveJevAuth()` now follows `/jev-eye models` (`backends.json` primary via `authChain`) instead of ignoring the chosen backend in favor of hardcoded provider order, and `currentCatalog()` uses the same env plus stored-key lookup as `authChain()`.
