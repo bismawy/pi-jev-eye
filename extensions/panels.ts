@@ -189,17 +189,17 @@ const buildStatus = (ctx: any, theme?: any, cursorIndex = -1): string[] => {
   const s = state.stats;
   const totalBlocked = s.destructiveBlocked + s.secretsBlocked + s.slopBlocked;
 
-  // Overview rows sit above the controls (same pattern as pi-arnative's Budget screen and
-  // ModelsPicker): flush-left dim labels padded to the widest overview label (`7`), followed by a
-  // blank line and the selectable controls padded to `"Folder gate"` (`11`).
-  const overviewColumn = Math.max("Backend".length, "Routing".length, "Session".length);
-  const controlColumn = Math.max("Supervisor".length, "Folder gate".length);
+  // One table: every row carries a 2-character marker slot (`→ ` on the highlighted control, two
+  // spaces elsewhere — the menu's cursor convention) and a label column padded to the widest label
+  // (`"Folder gate"` = 11), so all five `·` dividers share one column. The overview rows above the
+  // controls answer "what is active" first; the controls below take the cursor.
+  const column = Math.max("Backend".length, "Routing".length, "Session".length, "Supervisor".length, "Folder gate".length);
   const overview = (label: string, value: string): string =>
-    `${paint("dim", label.padEnd(overviewColumn))} ${paint("dim", "·")} ${value}`;
+    `  ${paint("dim", label.padEnd(column))} ${paint("dim", "·")} ${value}`;
   const control = (label: string, value: string, cursor = false): string => {
-    const prefix = cursorIndex >= 0 ? (cursor ? paint("accent", "→ ") : "  ") : "";
-    const styled = cursor ? soft(label.padEnd(controlColumn)) : paint("text", label.padEnd(controlColumn));
-    return `${prefix}${styled} ${paint("dim", "·")} ${value}`;
+    const marker = cursorIndex >= 0 ? (cursor ? paint("accent", "→ ") : "  ") : "  ";
+    const styled = cursor ? soft(label.padEnd(column)) : paint("text", label.padEnd(column));
+    return `${marker}${styled} ${paint("dim", "·")} ${value}`;
   };
 
   const supervisorValue = !state.enabled
