@@ -51,22 +51,33 @@ const usageBalance = async (auth: JevAuth | undefined): Promise<string | undefin
 const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
   const paint = (color: string, value: string) => (theme ? theme.fg(color, value) : value);
   const n = (value: number) => value.toLocaleString("en-US");
-  const usd = (value: number) => (value >= 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(6)}`);
+  // Four decimals across the whole column keep decimal points aligned between Backends and Totals;
+  // zero renders as `-` so unused rows carry no `$0.000000` noise.
+  const usd = (value: number): string => {
+    if (value <= 0) return "-";
+    if (value < 0.0001) return "<$0.0001";
+    return `$${value.toFixed(4)}`;
+  };
   const auth = resolveJevAuth();
   const days = readJsonFile(OWN_USAGE_PATH)?.days;
 
-  // Column widths are fixed so the header and every row line up byte-for-byte.
-  const W = { label: 9, req: 6, tok: 11, cost: 10 };
+  // Column widths are fixed so the header and both tables (`Backends` and `Totals`) share one grid.
+  // `label: 10` leaves at least two spaces after `"All time"` before `"no requests"`.
+  const W = { label: 10, req: 5, tok: 10, cost: 9 };
   const cell = (text: string, width: number, alignRight = true) => {
     const s = text.length > width ? `${text.slice(0, width - 1)}…` : text;
     return alignRight ? s.padStart(width) : s.padEnd(width);
   };
   const header = (label: string) =>
     paint("dim", cell(label, W.label, false) + cell("req", W.req) + cell("in tok", W.tok) + cell("cost", W.cost));
-  const row = (label: string, t: ProviderTotals, extra = "", color = "text") =>
-    paint(color, cell(label, W.label, false)) +
-    paint("dim", cell(String(t.requests), W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost)) +
-    extra;
+  const row = (label: string, t: Pick<ProviderTotals, "requests" | "inputTokens" | "cost">, extra = "") => {
+    const active = t.requests > 0;
+    return (
+      paint(active ? "text" : "muted", cell(label, W.label, false)) +
+      paint(active ? "text" : "dim", cell(String(t.requests), W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost)) +
+      extra
+    );
+  };
 
   const lines: string[] = [];
 
@@ -77,7 +88,11 @@ const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
   lines.push(header(""));
   lines.push(row("Jev", jev, `  ${paint("muted", auth && auth.provider.id !== "cloudflare" ? auth.provider.label : "TypeSafe / OpenRouter")}`));
   lines.push(
-    row("Clef", clef, `  ${paint("muted", auth?.provider.id === "cloudflare" ? auth.model : "Cloudflare")} · ${clef.neurons >= 1 ? `${n(Math.round(clef.neurons))} neurons` : "no neurons"}`)
+    row(
+      "Clef",
+      clef,
+      `  ${paint("muted", auth?.provider.id === "cloudflare" ? auth.model : "Cloudflare")} ${paint("dim", "·")} ${paint("muted", clef.neurons >= 1 ? `${n(Math.round(clef.neurons))} neurons` : "no neurons")}`
+    )
   );
   // Entries written before provider attribution existed cannot be split. Showing only the attributed
   // rows would make the table look complete while it covered a fraction of the period.
@@ -90,12 +105,8 @@ const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
         "Earlier",
         {
           requests: unattributed,
-          ok: 0,
-          failed: 0,
           inputTokens: share(monthTotals!.inputTokens, clef.inputTokens + jev.inputTokens),
-          outputTokens: 0,
           cost: share(monthTotals!.cost, clef.cost + jev.cost),
-          neurons: share(monthTotals!.neurons ?? 0, clef.neurons + jev.neurons),
         },
         `  ${paint("muted", `before the split · no provider data (${Math.round((unattributed / monthTotals!.requests) * 100)}%)`)}`
       )
@@ -106,46 +117,59 @@ const buildUsage = (ctx: any, theme?: any, balance?: string): string[] => {
   }
   lines.push("");
 
-  // 2. One-line totals, so the panel still answers when the split is empty.
+  // 2. One-line totals on the same column grid, so the panel still answers when the split is empty.
   lines.push(paint("accent", "Totals · both ledgers"));
   for (const [label, period] of [["Today", today()], ["Month", today().slice(0, 7)], ["All time", ""]] as const) {
     const t = readUsage(period);
     lines.push(
       t
-        ? paint("dim", cell(label, W.label, false)) +
-            paint("dim", cell(`${t.requests}`, W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost)) +
-            paint("muted", `  ${t.ok} ok / ${t.failed} fail · out ${n(t.outputTokens)}`)
-        : paint("dim", cell(label, W.label, false)) + paint("muted", "no requests")
+        ? row(label, t, `  ${paint("muted", `${t.ok} ok / ${t.failed} fail`)} ${paint("dim", "·")} ${paint("muted", `out ${n(t.outputTokens)}`)}`)
+        : paint("muted", cell(label, W.label, false)) + paint("dim", "no requests")
     );
   }
   lines.push("");
 
-  // 3. The Clef free budget is the one number that changes behaviour (the gate stops working if it is exhausted).
+  // 3. The Clef free budget sits under its own heading, flush-left like the rest of the screen so the
+  //    bar + count never clips at 68–75 columns and the detail row carries no misleading cursor indent.
+  lines.push(paint("accent", "Clef free tier · today"));
   const budget = clefBudget(neuronsSpentOn(days, today()));
   const barWidth = 20;
   const filled = Math.min(barWidth, Math.round((budget.used / budget.free) * barWidth));
   const exhausted = budget.used >= budget.free;
+  const tierStatus = budget.overageUsd > 0 ? paint("warning", `over ${usd(budget.overageUsd)}`) : paint("success", "free");
   lines.push(
-    `${paint("accent", "Clef free tier")} ${paint(exhausted ? "warning" : "success", "█".repeat(filled))}${paint("dim", "░".repeat(barWidth - filled))} ${n(Math.round(budget.used))}/${n(budget.free)} neurons today${budget.overageUsd > 0 ? paint("warning", ` · over ${usd(budget.overageUsd)}`) : " · free"}`
+    `${paint(exhausted ? "warning" : "success", "█".repeat(filled))}${paint("dim", "░".repeat(barWidth - filled))}  ${paint("text", `${n(Math.round(budget.used))}/${n(budget.free)}`)} ${paint("muted", "neurons")} ${paint("dim", "·")} ${tierStatus}`
   );
   lines.push(
-    paint("dim", `  resets 00:00 UTC · ${n(Math.round(budget.remaining))} left · `) +
+    paint("dim", `resets 00:00 UTC · ${n(Math.round(budget.remaining))} left · `) +
       paint("muted", auth?.provider.id === "cloudflare" ? `${auth.model} · $${clefUsdPerMTok(auth.model).toFixed(3)}/M in` : "Clef not the active gate key")
   );
   lines.push("");
 
-  // 4. Session counters, one line each, no prose.
+  // 4. Session counters: same flush-left `label · value` overview pattern as `/jev-eye status`.
   const s = state.stats;
-  lines.push(
-    paint("accent", "Session ") +
-      paint("dim", `gate ${Math.min(s.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} · routing ${Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} · reviewed ${s.reviewTurns}`)
-  );
-  lines.push(
-    paint("accent", "Blocked ") +
-      paint("dim", `${s.destructiveBlocked} dangerous · ${s.secretsBlocked} secret · ${s.slopBlocked} slop`) +
-      (typeof ctx?.getContextUsage?.()?.tokens === "number" ? paint("dim", ` · context ${n(ctx.getContextUsage().tokens)} tok`) : "")
-  );
-  if (balance) lines.push(paint("accent", "Balance ") + paint("dim", balance));
+  const totalBlocked = s.destructiveBlocked + s.secretsBlocked + s.slopBlocked;
+  const contextTokens = ctx?.getContextUsage?.()?.tokens;
+  const kvRows: [string, string][] = [
+    [
+      "Session",
+      paint(
+        "text",
+        `gate ${Math.min(s.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} · routing ${Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} · reviewed ${s.reviewTurns}`
+      ),
+    ],
+    [
+      "Blocked",
+      `${paint(totalBlocked > 0 ? "warning" : "text", `${s.destructiveBlocked} dangerous · ${s.secretsBlocked} secret · ${s.slopBlocked} slop`)}${
+        typeof contextTokens === "number" ? paint("dim", ` · context ${n(contextTokens)} tok`) : ""
+      }`,
+    ],
+    ...(balance ? [["Balance", paint("text", balance)] as [string, string]] : []),
+  ];
+  const kvColumn = Math.max(...kvRows.map(([label]) => label.length));
+  for (const [label, value] of kvRows) {
+    lines.push(`${paint("dim", label.padEnd(kvColumn))} ${paint("dim", "·")} ${value}`);
+  }
   return lines;
 };
 

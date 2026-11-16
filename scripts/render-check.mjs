@@ -328,6 +328,54 @@ assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a to
 {
   const usageOrder = ["[Enter] Done", "[Esc] Back"].map((token) => usage.indexOf(token));
   assert.deepEqual([...usageOrder].sort((x, y) => x - y), usageOrder, "the read-only footer keeps confirm before the exit");
+  const usageRows = usage.split("\n");
+  // Session and Blocked follow the same flush-left `label · value` pattern as Status overview.
+  const kvRows = usageRows.filter((l) => /│ (Session|Blocked)\s+·/.test(l));
+  assert.equal(kvRows.length, 2, "usage shows Session and Blocked on `label · value` rows");
+  assert.equal(new Set(kvRows.map((l) => l.indexOf("·"))).size, 1, "usage summary dividers align in one column");
+  assert.equal(/All time\s{2,}no requests/.test(usage), true, "All time leaves at least two spaces before no requests");
+  assert.equal(usage.includes("Clef free tier · today"), true, "Clef free tier carries its own section heading");
+  const usageNarrow = await open("usage@68", "usage", [], 68);
+  assert.equal(usageNarrow.includes("…"), false, "the usage panel does not clip at 68 columns");
+}
+// Populated usage: Backends (<$0.01) and Totals (>=$0.01) share one 4-decimal cost column without
+// precision jitter, and neither table clips at 68 columns.
+{
+  const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const usagePath = join(process.env.HOME, ".pi", "agent", "pi-jev-eye", "usage.json");
+  const day = new Date().toISOString().slice(0, 10);
+  mkdirSync(join(process.env.HOME, ".pi", "agent", "pi-jev-eye"), { recursive: true });
+  writeFileSync(
+    usagePath,
+    JSON.stringify({
+      days: {
+        [day]: {
+          requests: 12,
+          ok: 11,
+          failed: 1,
+          inputTokens: 24500,
+          outputTokens: 320,
+          cost: 0.0145,
+          neurons: 1850,
+          providers: {
+            typesafe: { requests: 4, ok: 4, failed: 0, inputTokens: 10200, outputTokens: 120, cost: 0.0085, neurons: 0 },
+            cloudflare: { requests: 8, ok: 7, failed: 1, inputTokens: 14300, outputTokens: 200, cost: 0.006, neurons: 1850 },
+          },
+        },
+      },
+    })
+  );
+  const populated = await open("usage populated@68", "usage", [], 68);
+  assert.equal(populated.includes("…"), false, "populated usage rows fit inside 68 columns without clipping");
+  const costLines = populated.split("\n").filter((l) => /│ (Jev|Clef|Today|Month|All time)\s+\d/.test(l));
+  assert.equal(costLines.length, 5, "populated usage renders both Backends and all three Totals rows");
+  assert.equal(
+    new Set(costLines.map((l) => l.indexOf("$") + l.slice(l.indexOf("$")).indexOf("."))).size,
+    1,
+    "Backends and Totals align every cost decimal point in one column"
+  );
+  rmSync(usagePath, { force: true });
 }
 await open("routing", "", [4], 80);
 

@@ -7,6 +7,7 @@
 - Models sets the fallback with `[Tab]` instead of `[Ctrl+f]`, shows the `Active` / `Fallback` slot summary above the table, and reads each row as `label · state [provider]` on one divider.
 - On a screen the `/jev-eye` menu opened (Accounts, Models, Status, Usage, Routing), `[Esc]` returns to the menu instead of closing the command; a screen opened by direct subcommand keeps `[Esc]` as Cancel, and every footer now labels Esc accordingly.
 - `/jev-eye status` places the pipeline overview (`Backend`, `Routing`, `Session`) above selectable `Supervisor` and `Folder gate` toggles (`[↑↓]` Move, `[Space]` Toggle; `[Ctrl+Alt+e]` and `[Ctrl+Alt+u]` still work) and drops the duplicate rules and per-category block rows already shown in `usage`.
+- `/jev-eye usage` aligns `Backends` and `Totals` on one four-decimal cost grid (showing `-` for zero and `<$0.0001` below one tenth of a mill), gives `Clef free tier` its own heading so the bar and details stay flush-left without clipping down to 68 columns, and formats `Session`, `Blocked`, and `Balance` on the same `label · value` column as `status`.
 
 ### Fixed
 - `resolveJevAuth()` now follows `/jev-eye models` (`backends.json` primary via `authChain`) instead of ignoring the chosen backend in favor of hardcoded provider order, and `currentCatalog()` uses the same env plus stored-key lookup as `authChain()`.
