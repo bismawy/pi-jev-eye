@@ -319,7 +319,7 @@ interface UsagePanelState {
   expanded: Set<string>;
 }
 
-/** Interactive `/jev-eye usage` panel: period tabs (`←→`) and collapsible provider tree (`↑↓` + `Space`). */
+/** Interactive `/jev-eye usage` panel: range cycling (`Tab` / `←→`) and collapsible provider tree (`↑↓` + `Space`). */
 class UsagePanel {
   private readonly view: UsagePanelState = { periodIndex: 0, cursor: 0, expanded: new Set<string>() };
   private providerIds: string[] = [];
@@ -358,12 +358,12 @@ class UsagePanel {
       this.done();
       return;
     }
-    if (matchesKey(data, Key.left)) {
-      this.view.periodIndex = (this.view.periodIndex - 1 + USAGE_PERIODS.length) % USAGE_PERIODS.length;
+    if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
+      this.view.periodIndex = (this.view.periodIndex + 1) % USAGE_PERIODS.length;
       return;
     }
-    if (matchesKey(data, Key.right)) {
-      this.view.periodIndex = (this.view.periodIndex + 1) % USAGE_PERIODS.length;
+    if (matchesKey(data, "shift+tab") || matchesKey(data, Key.left)) {
+      this.view.periodIndex = (this.view.periodIndex - 1 + USAGE_PERIODS.length) % USAGE_PERIODS.length;
       return;
     }
     if (matchesKey(data, Key.up)) {

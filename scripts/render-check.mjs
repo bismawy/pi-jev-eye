@@ -323,12 +323,12 @@ const status = await open("status", "", [2], 80);
 }
 const usage = await open("usage", "", [3], 80);
 assert.equal(usage.includes("[Enter] Done"), true, "usage advertises its real exits");
-assert.equal(usage.includes("[←→] Period"), true, "usage advertises period switching");
+assert.equal(usage.includes("[Tab] Range"), true, "usage advertises range switching");
 assert.equal(usage.includes("[Space] Expand"), true, "usage advertises provider expand/collapse");
 assert.equal(usage.includes("Toggle"), false, "usage must not advertise a toggle it ignores");
 assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a toggle it ignores");
 {
-  const usageOrder = ["[←→] Period", "[↑↓] Move", "[Space] Expand", "[Enter] Done", "[Esc] Back"].map((token) =>
+  const usageOrder = ["[↑↓] Move", "[Tab] Range", "[Space] Expand", "[Enter] Done", "[Esc] Back"].map((token) =>
     usage.indexOf(token)
   );
   assert.deepEqual([...usageOrder].sort((x, y) => x - y), usageOrder, "usage footer keeps navigation before confirm and exit");
@@ -414,9 +414,9 @@ assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a to
   const expanded = strip(panel.render(88).join("\n"));
   assert.equal(expanded.includes("▾ Cloudflare"), true, "Space expands the highlighted provider");
   assert.equal(expanded.includes("clef (flash)"), true, "expanded Cloudflare lists clef (flash)");
-  panel.handleInput("\x1b[C"); // Right -> Today
+  panel.handleInput("\t"); // Tab -> Today
   const todayView = strip(panel.render(88).join("\n"));
-  assert.equal(/Total\s+12\s+24,500\s+\$0\.0145/.test(todayView), true, "Right switches period and keeps today's 12 requests");
+  assert.equal(/Total\s+12\s+24,500\s+\$0\.0145/.test(todayView), true, "Tab switches range and keeps today's 12 requests");
   screens[0].resolve(undefined);
   await run;
 
