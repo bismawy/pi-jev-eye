@@ -340,7 +340,7 @@ assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a to
   const totalIdx = usageRows.findIndex((l) => /│ Total\s+/.test(l));
   const firstKvIdx = usageRows.findIndex((l) => /│ Session\s+·\s+gate/.test(l));
   assert.equal(totalIdx !== -1 && firstKvIdx > totalIdx, true, "summary rows sit below the Total row");
-  assert.equal(usage.includes("All · Today · 7 day · 30 day · 3 month"), true, "usage shows the period filter bar");
+  assert.equal(usage.includes("All time · Today · 7 day · 30 day"), true, "usage shows the period filter bar");
   assert.equal(usage.includes("Provider / Model"), true, "usage shows the Provider / Model table header");
   assert.equal(usage.includes("▸ TypeSafe"), true, "usage lists TypeSafe collapsed by default");
   assert.equal(usage.includes("▸ Cloudflare"), true, "usage lists Cloudflare collapsed by default");

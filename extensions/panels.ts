@@ -46,11 +46,10 @@ const usageBalance = async (auth: JevAuth | undefined): Promise<string | undefin
 };
 
 const USAGE_PERIODS: { id: UsagePeriod; label: string }[] = [
-  { id: "all", label: "All" },
+  { id: "all", label: "All time" },
   { id: "today", label: "Today" },
   { id: "7d", label: "7 day" },
   { id: "30d", label: "30 day" },
-  { id: "3m", label: "3 month" },
 ];
 
 interface UsageRenderOptions {
