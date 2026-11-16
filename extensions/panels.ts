@@ -103,17 +103,8 @@ const buildUsage = (
   const barWidth = innerWidth < 68 ? 18 : 20;
   const filled = Math.min(barWidth, Math.round((budget.used / budget.free) * barWidth));
   const exhausted = budget.used >= budget.free;
-  const tierStatus = budget.overageUsd > 0 ? paint("warning", `over ${usd(budget.overageUsd)}`) : paint("success", "free");
-  const clefBarLine = `${paint(exhausted ? "warning" : "success", "█".repeat(filled))}${paint("dim", "░".repeat(barWidth - filled))}  ${paint("text", `${n(Math.round(budget.used))}/${n(budget.free)}`)} ${paint("muted", "neurons")} ${paint("dim", "·")} ${tierStatus}`;
-  const freeTierTag = innerWidth >= 72 ? " (free-tier)" : "";
-  const clefActiveText =
-    auth?.provider.id === "cloudflare"
-      ? paint(
-          "muted",
-          innerWidth >= 76 ? `${auth.model} ($${clefUsdPerMTok(auth.model).toFixed(3)}/M in)` : auth.model
-        )
-      : paint("dim", "inactive");
-  const clefDetailLine = `${paint("dim", `resets 00:00 UTC · ${n(Math.round(budget.remaining))} left${freeTierTag} · `)}${clefActiveText}`;
+  const tierStatus = budget.overageUsd > 0 ? paint("warning", `over ${usd(budget.overageUsd)}`) : paint("success", "free-tier");
+  const clefBarLine = `${paint(exhausted ? "warning" : "success", "█".repeat(filled))}${paint("dim", "░".repeat(barWidth - filled))}  ${paint("text", `${n(Math.round(budget.used))}/${n(budget.free)}`)} ${paint("muted", "neurons")} ${paint("dim", "·")} ${tierStatus}${paint("dim", " (resets 00:00 UTC)")}`;
 
   const kvRows: [string, string][] = [
     [
@@ -305,10 +296,8 @@ const buildUsage = (
   lines.push(renderRow("Total", totals ?? EMPTY_BUCKET, totals && totals.requests > 0 ? "text" : "muted", true));
   lines.push("");
   const kvColumn = Math.max(...kvRows.map(([label]) => label.length));
-  const detailIndent = " ".repeat(kvColumn + 3);
   for (const [label, value] of kvRows) {
     lines.push(`${paint("dim", label.padEnd(kvColumn))} ${paint("dim", "·")} ${value}`);
-    if (label === "Clef (today)") lines.push(`${detailIndent}${clefDetailLine}`);
   }
 
   return { lines, providerIds };
