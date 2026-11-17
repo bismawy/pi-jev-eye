@@ -121,9 +121,11 @@ const buildUsage = (
     ...(balance ? [["Balance", paint("text", balance)] as [string, string]] : []),
   ];
 
-  // 2. Period filter bar between horizontal rules.
-  const rule = paint("dim", "─".repeat(Math.max(20, innerWidth)));
-  lines.push(rule);
+  // 2. Period filter bar between horizontal rules. Each rule wraps only its own content: the bar
+  //    hugs the period labels, the table rule hugs the column grid — not the full frame width.
+  const plainPeriodBar = USAGE_PERIODS.map((p, i) => (i === periodIndex ? `[${p.label}]` : p.label)).join(" · ");
+  const rule = (width: number) => paint("dim", "─".repeat(Math.max(20, width)));
+  lines.push(rule(plainPeriodBar.length));
   lines.push(
     USAGE_PERIODS.map((p, idx) =>
       idx === periodIndex
@@ -133,7 +135,7 @@ const buildUsage = (
         : paint("dim", p.label)
     ).join(paint("dim", " · "))
   );
-  lines.push(rule);
+  lines.push(rule(plainPeriodBar.length));
 
   // 3. Provider / Model table.
   const W = { label: 19, req: 8, tok: 11, cost: 10 };
@@ -291,7 +293,7 @@ const buildUsage = (
     );
   }
 
-  lines.push(rule);
+  lines.push(rule(gridWidth));
   lines.push(renderRow("Total", totals ?? EMPTY_BUCKET, totals && totals.requests > 0 ? "text" : "muted", true));
   lines.push("");
   const kvColumn = Math.max(...kvRows.map(([label]) => label.length));
