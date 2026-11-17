@@ -2,6 +2,7 @@
 // One declaration per key: the footer, the shortcuts and the notifications all read KEY_SETS.
 
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { consentAllows, consentLabel, readConsent } from "./consent.ts";
 import { authChain, readBackends } from "./core.ts";
 import { backendFooterName } from "./layer1.ts";
 import { state } from "./pmr.ts";
@@ -119,6 +120,23 @@ export function cycleEyeState(ctx?: any): "ON" | "REVIEW" | "OFF" {
   }
   if (ctx) syncEyeStatus(ctx);
   return eyeMode(state.enabled, state.reviewMode);
+}
+
+// The two save announcements, one home each: the `ctrl+alt` shortcuts and the Status screen's
+// `[Space]` toggles change the same state, so both paths must say the same thing. Callers write the
+// state first; these read it back and speak once.
+export function announceMode(ctx: any): void {
+  const mode = eyeMode(state.enabled, state.reviewMode);
+  const desc = mode === "OFF" ? "supervisor disabled" : mode === "REVIEW" ? "all turns reviewed" : "prompt trigger";
+  ctx.ui.notify(`[pi-jev-eye] Mode: ${mode} (${desc}). Cycle with ${TOGGLE_KEY}.`, mode === "OFF" ? "warning" : "info");
+}
+
+export function announceGate(ctx: any): void {
+  const consent = readConsent();
+  ctx.ui.notify(
+    `[pi-jev-eye] Jev gate: ${consentLabel(consent)} · this folder ${consentAllows(ctx.cwd, consent) ? "ON" : "off"}. ${GATE_KEY} cycles again.`,
+    consent.mode === "disabled" ? "warning" : "info"
+  );
 }
 
 // Live state + keybindings render in the panel footer, not in Pi's status bar.

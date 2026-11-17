@@ -12,7 +12,7 @@ import { fetchBalanceText, readUsagePeriod, today } from "./ledger.ts";
 import type { UsagePeriod } from "./ledger.ts";
 import { state } from "./pmr.ts";
 import { JEV_MAX_ROUTING_CALLS, readRouting } from "./routing.ts";
-import { STATUS_DESC, STATUS_TITLE, cycleEyeState, usageKeys } from "./supervisor.ts";
+import { STATUS_DESC, STATUS_TITLE, announceGate, announceMode, cycleEyeState, usageKeys } from "./supervisor.ts";
 import { BACK, StatusPanel, borderPainterFor, customScreen, framedRows, modelLabelFor } from "./ui.ts";
 
 /** A stored Cloudflare key without an account id is invisible everywhere else: say why, in status. */
@@ -348,6 +348,11 @@ class UsagePanel {
       this.done(this.back ? BACK : undefined);
       return;
     }
+    // Same hidden back door every other screen has: [←] means Back when a menu sits behind the screen.
+    if (this.back && matchesKey(data, Key.left)) {
+      this.done(BACK);
+      return;
+    }
     if (matchesKey(data, Key.enter)) {
       this.done();
       return;
@@ -513,8 +518,12 @@ export const showStatus = async (ctx: any, back = true): Promise<void | "back"> 
         rebuild: (cursor = 0) => buildStatus(ctx, theme, cursor),
         cycleMode: () => {
           cycleEyeState(ctx);
+          announceMode(ctx);
         },
-        cycleGate: () => writeConsent(nextConsent(readConsent(), ctx.cwd)),
+        cycleGate: () => {
+          writeConsent(nextConsent(readConsent(), ctx.cwd));
+          announceGate(ctx);
+        },
       },
       done,
       STATUS_TITLE,

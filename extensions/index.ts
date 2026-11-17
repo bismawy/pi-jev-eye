@@ -17,11 +17,11 @@ import { DESTRUCTIVE_BASH_PATTERNS, SECRET_PATTERNS, wipeTarget } from "./layer1
 import { RESET_ON, noteBash, noteWrite, resetTracking, unverifiedDoneClaim } from "./layer2.ts";
 import { authChain, readBackends, resolveJevAuth, setClefModels } from "./core.ts";
 import { JEV_BLOCK_THRESHOLD, JEV_MAX_REQUESTS, JEV_MIN_DIFF_LINES, askJev, blockHint, codeFacts, editContext, isCodePath, readSource } from "./gate.ts";
-import { consentAllows, consentLabel, nextConsent, readConsent, writeConsent } from "./consent.ts";
+import { consentAllows, nextConsent, readConsent, writeConsent } from "./consent.ts";
 import { installCommands } from "./commands.ts";
 import { REVIEW_CONTRACT, REVIEW_TRIGGER } from "./review.ts";
 import { state } from "./pmr.ts";
-import { GATE_KEY, TOGGLE_KEY, cycleEyeState, syncEyeStatus } from "./supervisor.ts";
+import { GATE_KEY, TOGGLE_KEY, announceGate, announceMode, cycleEyeState, syncEyeStatus } from "./supervisor.ts";
 import { JEV_MAX_ROUTING_CALLS, classifyWeight, isLightByPattern, readRouting } from "./routing.ts";
 
 /**
@@ -180,21 +180,16 @@ export default function (pi: ExtensionAPI) {
   pi.registerShortcut(TOGGLE_KEY, {
     description: "Cycle pi-jev-eye mode: ON -> REVIEW -> OFF",
     handler: async (ctx: any) => {
-      const mode = cycleEyeState(ctx);
-      const desc = mode === "OFF" ? "supervisor disabled" : mode === "REVIEW" ? "all turns reviewed" : "prompt trigger";
-      ctx.ui.notify(`[pi-jev-eye] Mode: ${mode} (${desc}). Cycle with ${TOGGLE_KEY}.`, mode === "OFF" ? "warning" : "info");
+      cycleEyeState(ctx);
+      announceMode(ctx);
     },
   });
 
   pi.registerShortcut(GATE_KEY, {
     description: "Cycle the Jev gate value: all folders / this folder / disabled",
     handler: async (ctx: any) => {
-      const next = nextConsent(readConsent(), ctx.cwd);
-      writeConsent(next);
-      ctx.ui.notify(
-        `[pi-jev-eye] Jev gate: ${consentLabel(next)} · this folder ${consentAllows(ctx.cwd, next) ? "ON" : "off"}. ${GATE_KEY} cycles again.`,
-        next.mode === "disabled" ? "warning" : "info"
-      );
+      writeConsent(nextConsent(readConsent(), ctx.cwd));
+      announceGate(ctx);
     },
   });
 
