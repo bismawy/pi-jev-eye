@@ -2,13 +2,12 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { EYE_DIR, JEV_TIMEOUT_MS, authUrl, envBudget, providerIdOf, readJsonFile } from "./core.ts";
+import { EYE_DIR, envBudget, readJsonFile } from "./core.ts";
 import type { JevAuth } from "./core.ts";
-import { recordCall, recordOwnUsage } from "./ledger.ts";
 
 import { THINKING_LEVELS, SLOT_DEFAULT_THINKING, state } from "./pmr.ts";
 import type { ThinkingLevel } from "./pmr.ts";
-import { withBackends, workersAiBody } from "./providers.ts";
+import { postDecision, withBackends } from "./providers.ts";
 
 export interface Routing {
   enabled: boolean;
@@ -51,50 +50,33 @@ export const isLightByPattern = (prompt: string): boolean => LIGHT_TASK_PATTERNS
 /** One judgment against one backend: `null` means this backend could not answer.
  *  Exported so the failover path can be driven directly by `npm test`, without a network or a session. */
 export async function attemptWeight(prompt: string, auth: JevAuth): Promise<"light" | "heavy" | "unclear" | null> {
-  try {
-    // The cap holds per attempt, not per chain: a failover at the last slot would otherwise overshoot it
-    // and skip the one-time warning, which fires only when the counter equals the cap.
-    if (state.stats.jevRoutingCalls >= JEV_MAX_ROUTING_CALLS) return null;
-    state.stats.jevRoutingCalls++;
-    const res = await fetch(authUrl(auth), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth.key}` },
-      body: JSON.stringify({
-        model: auth.model,
-        state: { request: { text: prompt.slice(0, 600) } },
-        questions: {
-          weight: {
-            type: "choice",
-            instructions:
-              "Which kind of turn is `request.text`: a light repository chore, or a task that needs real review and reasoning?",
-            criteria: {
-              light: "Routine repository or housekeeping action, no design or review involved",
-              heavy: "Code, design, debugging, or analysis that needs careful review",
-              unclear: "Too short or too vague to tell",
-            },
+  // The cap holds per attempt, not per chain: a failover at the last slot would otherwise overshoot it
+  // and skip the one-time warning, which fires only when the counter equals the cap.
+  if (state.stats.jevRoutingCalls >= JEV_MAX_ROUTING_CALLS) return null;
+  state.stats.jevRoutingCalls++;
+
+  return postDecision(
+    auth,
+    {
+      state: { request: { text: prompt.slice(0, 600) } },
+      questions: {
+        weight: {
+          type: "choice",
+          instructions:
+            "Which kind of turn is `request.text`: a light repository chore, or a task that needs real review and reasoning?",
+          criteria: {
+            light: "Routine repository or housekeeping action, no design or review involved",
+            heavy: "Code, design, debugging, or analysis that needs careful review",
+            unclear: "Too short or too vague to tell",
           },
         },
-      }),
-      signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
-      return null;
+      },
+    },
+    (body) => {
+      const choice = body.answers?.weight?.choice;
+      return choice === "light" || choice === "heavy" || choice === "unclear" ? choice : null;
     }
-    const body = workersAiBody(await res.json());
-    if (!body) {
-      recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
-      return null;
-    }
-    const choice = body.answers?.weight?.choice;
-    const answered = choice === "light" || choice === "heavy" || choice === "unclear";
-    // Routing spends the same quota as the gate, so it books the same ledger row.
-    recordCall(auth, body, answered);
-    return answered ? choice : null;
-  } catch {
-    recordOwnUsage({ requests: 1, failed: 1 }, providerIdOf(auth));
-    return null;
-  }
+  );
 }
 
 /**

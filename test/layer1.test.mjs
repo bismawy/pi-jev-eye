@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DESTRUCTIVE_BASH_PATTERNS, assignBackend, backendFooterName, backendTotals, borderPainter, boxEdge, boxFrame, boxRow, cfRunUrl, chosenRowPainter, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefRowLabel, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, packPairs, putCredential, removeCredentials, storedProviderIds, statusRow, sumDays, thinkingColorSlot, validBackendRef, visibleWidth, wipeTarget, wrapWords } from "../extensions/layer1.ts";
+import { DESTRUCTIVE_BASH_PATTERNS, assignBackend, backendFooterName, backendTotals, borderPainter, boxEdge, boxFrame, boxRow, cfRunUrl, chosenRowPainter, clefBody, clefBudget, clefError, clefNeuronsFor, clefNeuronsPerMTok, clefRowLabel, clefUsdPerMTok, isCloudflareAccountId, legacyTotals, mergeTotals, migrateAuthStore, neuronsSpentOn, normalizeTotals, packPairs, putCredential, removeCredentials, storedProviderIds, sumDays, sumDaysSince, thinkingColorSlot, validBackendRef, visibleWidth, wipeTarget, wrapWords } from "../extensions/layer1.ts";
 
 // The literal is assembled so this file cannot trip the extension's own bash gate while it is being written.
 const rm = "r" + "m";
@@ -25,7 +25,7 @@ for (const command of wipes) {
 const scoped = [
   `${rm} -rf ./build`,
   `${rm} -rf /tmp/scratch`,
-  `${rm} -rf /home/bisma/scratch`,
+  `${rm} -rf /home/user/scratch`,
   `${rm} --force --recursive ./node_modules`,
   `${rm} /tmp/jev-req*.mjs`,
 ];
@@ -146,11 +146,25 @@ test("a provider's counters are kept per provider, never summed into one bucket"
 });
 
 test("folding two ledgers adds matching providers instead of replacing them", () => {
-  const own = sumDays({ "2026-10-11": { requests: 1, providers: { cloudflare: { requests: 1, inputTokens: 10 } } } }, "2026-10", normalizeTotals);
+  const own = sumDays({ "2026-10-11": { requests: 1, providers: { cloudflare: { requests: 1, inputTokens: 10, models: { "clef-flash": { requests: 1, inputTokens: 10 } } } } } }, "2026-10", normalizeTotals);
   const legacy = sumDays({ "2026-10-11": { requestsStarted: 1, inputTokens: 5 } }, "2026-10", legacyTotals);
   const merged = mergeTotals(own, legacy);
   assert.equal(merged.providers.cloudflare.requests, 1);
+  assert.equal(merged.providers.cloudflare.models["clef-flash"].requests, 1);
   assert.equal(merged.requests, 2);
+});
+
+test("sumDaysSince filters rolling date windows and preserves per-model breakdown", () => {
+  const days = {
+    "2026-10-01": { requests: 3, providers: { cloudflare: { requests: 3, models: { clef: { requests: 3 } } } } },
+    "2026-10-10": { requests: 2, providers: { cloudflare: { requests: 2, models: { "clef-flash": { requests: 2 } } } } },
+    "2026-10-15": { requests: 1, providers: { cloudflare: { requests: 1, models: { "clef-flash": { requests: 1 } } } } },
+  };
+  const recent = sumDaysSince(days, "2026-10-10", normalizeTotals);
+  assert.equal(recent.requests, 3);
+  assert.equal(recent.providers.cloudflare.models["clef-flash"].requests, 3);
+  assert.equal(recent.providers.cloudflare.models.clef, undefined);
+  assert.equal(sumDaysSince(days, "", normalizeTotals).requests, 6);
 });
 
 test("only today's neurons count against the free daily allowance", () => {
@@ -290,16 +304,16 @@ test("box width ignores ANSI escapes and counts wide glyphs as two", () => {
   assert.equal(visibleWidth(row), 8, "a styled wide row still lands on the frame width");
 });
 
-test("the border takes the soft accent, else the session's thinking slot, else no colour", () => {
-  const withSoft = borderPainter({ fg: (color, text) => `<${color}>${text}</${color}>` });
-  assert.equal(withSoft("x"), "<accentSoft>x</accentSoft>");
-  const withoutSoft = borderPainter({
+test("the border follows the session's thinking slot, else dim, else no colour", () => {
+  const withThinking = borderPainter({ fg: (color, text) => `<${color}>${text}</${color}>` }, "high");
+  assert.equal(withThinking("x"), "<thinkingHigh>x</thinkingHigh>");
+  const withoutThinking = borderPainter({
     fg: (color, text) => {
-      if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
+      if (color.startsWith("thinking")) throw new Error(`Unknown theme color: ${color}`);
       return `<${color}>${text}</${color}>`;
     },
   }, "high");
-  assert.equal(withoutSoft("x"), "<thinkingHigh>x</thinkingHigh>", "a built-in theme follows the session's thinking level");
+  assert.equal(withoutThinking("x"), "<dim>x</dim>", "a theme rejecting thinking* falls back to dim");
   assert.equal(borderPainter(null)("x"), "x", "no theme yet means no colour, not a crash");
 });
 
@@ -362,7 +376,7 @@ test("a chosen row's body takes the soft tint, never the accent", () => {
 
 // The regression that made the menu look wrong on Pi 1.2.0: arnative's `colors` lost its custom keys, so
 // `fg("accentSoft")` throws and the old probe chain landed on `thinkingText` — a grey. The soft tier must
-// be DERIVED from the official token instead (L 0.82, chroma x 0.18, hue kept), which is byte-for-byte
+// be DERIVED from the official token instead (L 0.90, chroma x 0.35, hue kept), which is byte-for-byte
 // what the theme generator declares in `vars.accentSoft`/`vars.secondarySoft`.
 test("a Pi 1.2.0 theme without accentSoft still gets the arnative soft tint, not a grey", () => {
   /** The real Theme surface pi 1.2.0 exposes: `fg` rejects the custom keys, `style`+`colors` are the way in. */
@@ -376,50 +390,28 @@ test("a Pi 1.2.0 theme without accentSoft still gets the arnative soft tint, not
     bold: (text) => `<b>${text}</b>`,
   });
 
-  // arnative.json: vars.accent oklch(78% 0.13 218), vars.accentSoft oklch(82% 0.0234 218).
-  const theme = pi12({ kind: "oklch", l: 0.78, c: 0.13, h: 218 }, { kind: "oklch", l: 0.82, c: 0.078, h: 218 });
+  // arnative.json: vars.accent oklch(78% 0.13 193), vars.accentSoft oklch(90% 0.0455 193).
+  const theme = pi12({ kind: "oklch", l: 0.78, c: 0.13, h: 193 }, { kind: "oklch", l: 0.90, c: 0.0455, h: 193 });
 
   assert.equal(
     chosenRowPainter(theme)("Login"),
-    "<oklch:0.82:0.02340:218><b>Login</b></>",
+    "<oklch:0.9:0.04550:193><b>Login</b></>",
     "the chosen label is the derived soft accent AND bold, not a grey thinkingText"
   );
   assert.equal(
     borderPainter(theme, "low")("x"),
-    "<oklch:0.82:0.01404:218>x</>",
-    "the border softens borderAccent, matching arnative's own frames, not thinkingLow"
+    "<thinkingLow>x</thinkingLow>",
+    "the border follows the session's thinking level, not borderAccent"
   );
 
-  // Pi <=1.1.0 still declares the token: the declared value wins so nothing changes for those themes.
+  // Pi <=1.1.0 still declares accentSoft, which stays on the chosen row; the border still tracks thinking*.
   const legacy = { ...theme, fg: (color, text) => `<${color}>${text}</${color}>` };
   assert.equal(chosenRowPainter(legacy)("Login"), "<accentSoft><b>Login</b></accentSoft>", "a declared accentSoft is still preferred");
-  assert.equal(borderPainter(legacy, "low")("x"), "<accentSoft>x</accentSoft>", "and so is it for the border");
+  assert.equal(borderPainter(legacy, "low")("x"), "<thinkingLow>x</thinkingLow>", "the border still follows thinking*");
 
-  // A theme that exposes no resolved colours must not lose the frame: thinking* is the last resort.
+  // A theme that exposes no resolved colours still keeps a thinking-level frame.
   const opaque = { fg: (color, text) => { if (color === "accentSoft") throw new Error("nope"); return `<${color}>${text}</${color}>`; } };
-  assert.equal(borderPainter(opaque, "high")("x"), "<thinkingHigh>x</thinkingHigh>", "no derivable colour falls back to the thinking slot");
-});
-
-test("a status row keeps its divider in one column and its status on its own token", () => {
-  const p = (token, text) => `<${token}>${text}</${token}>`;
-  const plain = (token, text) => (token === "dim" ? text : `${token}:${text}`);
-
-  const rows = [
-    statusRow("Supervisor", "ENABLED", ["Review prompt trigger"], plain, "success"),
-    statusRow("Scope folders", "ON", ["All Folders"], plain, "success"),
-    statusRow("Gate", "READY", ["TypeSafe · jev-latest"], plain, "success"),
-    statusRow("Context", "USED", ["0 tokens"], plain, "muted"),
-  ];
-  const dividers = rows.map((row) => row.indexOf("·"));
-  assert.equal(new Set(dividers).size, 1, `all dividers share one column: ${dividers.join(",")}`);
-
-  assert.equal(rows[0], "Supervisor    · success:ENABLED | Review prompt trigger");
-  assert.equal(rows[1], "Scope folders · success:ON | All Folders");
-  assert.equal(statusRow("Gate", "OFFLINE", [], plain, "warning"), "Gate          · warning:OFFLINE", "no details -> no trailing pipe");
-  assert.equal(statusRow("Gate", "READY", [false, undefined, "only"], plain), "Gate          · muted:READY | only", "falsy details drop out");
-  assert.equal(statusRow("Supervisor", "ENABLED", [], p, "success").includes("<dim>·</dim>"), true, "divider is dim");
-  // A label wider than the column must widen the column instead of eating the divider.
-  assert.equal(statusRow("A very long label", "ON", [], plain, "success"), "A very long label· success:ON");
+  assert.equal(borderPainter(opaque, "high")("x"), "<thinkingHigh>x</thinkingHigh>", "thinking slot still resolves");
 });
 
 // The Models screen's store folds: one slot holds one model, and the active backend is never its own

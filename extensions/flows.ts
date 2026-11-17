@@ -5,10 +5,10 @@ import { AUTH_BACKUP_PATH, AUTH_PATH, JEV_PROVIDERS, envAccountId, isPlausibleKe
 import type { JevProvider } from "./core.ts";
 import { cfRunUrl, isCloudflareAccountId, putCredential, removeCredentials, storedProviderIds } from "./layer1.ts";
 import { probeJev } from "./providers.ts";
-import { AccountsPicker, accountRowLabels, promptForConfirm, promptForText, providerTip } from "./ui.ts";
+import { AccountsPicker, accountRowLabels, borderPainterFor, customScreen, promptForConfirm, promptForText, providerTip } from "./ui.ts";
 import { syncEyeStatus } from "./supervisor.ts";
 
-export const loginFlow = async (ctx: any): Promise<void | "back"> => {
+export const loginFlow = async (ctx: any, fromMenu = false): Promise<void | "back"> => {
   // A key already exported in the environment is described, never overwritten by a stored one.
   const sources = keySources();
   if (sources.usable.length > 0 || sources.cfTokenWithoutAccount) {
@@ -26,32 +26,32 @@ export const loginFlow = async (ctx: any): Promise<void | "back"> => {
   // `ctx.ui.custom` is a documented no-op there (rpc-extension-ui.md).
   const { store } = readAuthStore();
   let provider: JevProvider | null;
-  let back = false;
+  let wentBack = false;
   if (ctx.mode === "tui") {
     let picker: AccountsPicker | undefined;
-    provider = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: JevProvider | null) => void) => {
-      picker = new AccountsPicker(theme, store, done, async (provider) => {
-        // The delete happens inside the picker, so its row updates without a reopen. Writes stay here:
-        // the rule for an emptied store (delete the file) lives in one place, `removeStoredCredentials`.
-        await removeStoredCredentials(ctx, [provider.id], envNote());
-      });
-      return {
-        render: (width: number) => picker!.render(width),
-        invalidate: () => picker!.invalidate(),
-        handleInput: (data: string) => {
-          picker!.handleInput(data);
-          tui.requestRender();
+    provider = await customScreen<JevProvider | null>(ctx, (theme, done) => {
+      picker = new AccountsPicker(
+        theme,
+        store,
+        done,
+        async (provider) => {
+          // The delete happens inside the picker, so its row updates without a reopen. Writes stay here:
+          // the rule for an emptied store (delete the file) lives in one place, `removeStoredCredentials`.
+          await removeStoredCredentials(ctx, [provider.id], envNote());
         },
-      };
+        fromMenu,
+        borderPainterFor(theme, ctx)
+      );
+      return picker;
     });
     // `custom` resolves one value, so the Back flag is read from the component instance afterwards.
-    back = picker?.wentBack === true;
+    wentBack = picker?.wentBack === true;
   } else {
     const labels = accountRowLabels(store);
     const choice = await ctx.ui.select("pi-jev-eye · where is your Jev key from?", labels);
     provider = choice ? JEV_PROVIDERS[labels.indexOf(choice)] ?? null : null;
   }
-  if (!provider) return back ? "back" : undefined;
+  if (!provider) return wentBack ? "back" : undefined;
   ctx.ui.notify(`[pi-jev-eye] ${providerTip(provider)}`, "info");
 
   // Clef cannot be reached without an account id, so collect it before the secret. An account id is

@@ -13,8 +13,8 @@ import { GATE_KEY, KEY_SETS, STATUS_DESC, STATUS_TITLE, TOGGLE_KEY, keybind, key
 
 /**
  * Border painter for a screen: the session's thinking level colours the box, as in `/arnative`.
- * The probe order lives in `borderPainter` (layer1, covered by `npm test`), which prefers the
- * arnative soft token before falling back to the thinking slot every theme defines. */
+ * Delegates to `borderPainter` (layer1, covered by `npm test`), which selects the theme's
+ * `thinking*` slot for `ctx?.thinkingLevel` and falls back to `dim`. */
 export const borderPainterFor = (theme: any, ctx?: any) => borderPainter(theme, ctx?.thinkingLevel);
 
 /**
@@ -25,7 +25,7 @@ export const borderPainterFor = (theme: any, ctx?: any) => borderPainter(theme, 
  * tip for whatever is under the cursor, which is the whole point of the tip.
  *
  * Two ways out, deliberately different: `[Enter]` picks the backend to store a key for, and
- * `[Ctrl+d]` removes the highlighted one. Removal asks twice — the row switches to a warning, and only a
+ * `[R]` removes the highlighted one. Removal asks twice — the row switches to a warning, and only a
  * second press deletes — because a key cannot be recovered from this screen. The write itself stays with
  * the caller (`onRemove`), so the filesystem rule for an emptied store lives in one place.
  */
@@ -35,7 +35,10 @@ export class AccountsPicker {
   private readonly done: (value: JevProvider | null) => void;
   private readonly onRemove: (provider: JevProvider) => Promise<void>;
   private readonly soft: (text: string) => string;
-  /** Whose removal awaits its second `[Ctrl+d]`; cleared by any move or by a completed removal. */
+  private readonly paint: (text: string) => string;
+  /** True when the menu opened this screen: Esc then steps back to it instead of closing the command. */
+  private readonly back: boolean;
+  /** Whose removal awaits its second `[R]`; cleared by any move or by a completed removal. */
   private pendingRemove: string | null = null;
   /** True while `onRemove` runs, so a key repeat cannot start a second deletion. */
   private busy = false;
@@ -46,10 +49,14 @@ export class AccountsPicker {
     store: AuthStore,
     done: (value: JevProvider | null) => void,
     onRemove: (provider: JevProvider) => Promise<void>,
+    back = false,
+    paint: (text: string) => string = borderPainterFor(theme),
   ) {
     this.theme = theme;
     this.done = done;
     this.onRemove = onRemove;
+    this.back = back;
+    this.paint = paint;
     this.soft = chosenRowPainter(theme);
     this.options = JEV_PROVIDERS.map((provider) => ({
       label: provider.label,
@@ -106,8 +113,14 @@ export class AccountsPicker {
       this.done(this.options[this.index]?.provider ?? null);
       return;
     }
-    if (matchesKey(data, Key.escape)) this.done(null);
-    if (matchesKey(data, Key.left)) {
+    // With a menu behind the screen, Esc steps back to it (same as [←]); a direct `/jev-eye accounts`
+    // has nothing to return to, so Esc cancels.
+    if (matchesKey(data, Key.escape)) {
+      if (this.back) this.wentBack = true;
+      this.done(null);
+      return;
+    }
+    if (this.back && matchesKey(data, Key.left)) {
       this.wentBack = true;
       this.done(null);
     }
@@ -115,7 +128,6 @@ export class AccountsPicker {
 
   render(width: number): string[] {
     const t = this.theme;
-    const paint = borderPainterFor(t);
     const inner = width - 4; // two walls, two spaces
     const removeKey = keycap(KEY_SETS.accountsRemove);
     const stored = this.options.some((option) => option.status === "stored");
@@ -134,11 +146,11 @@ export class AccountsPicker {
         ? t.fg("warning", `press [${removeKey}] again to remove`)
         : option.status === "stored"
           ? t.fg("success", "✓ stored")
-          : t.fg("dim", "• not configured");
+          : t.fg("dim", "- not configured");
       const label = cursor ? this.soft(option.label) : t.fg("text", option.label);
       const pad = " ".repeat(Math.max(0, column - visibleWidth(option.label)));
-      // `Label  ·  state`, the same divider rule as every list menu, so the state column lines up.
-      lines.push(`${cursor ? t.fg("accent", "→ ") : "  "}${label}${pad}  ${t.fg("dim", "·")}  ${mark}`);
+      // `Label · state`, the same divider rule as every list menu, so the state column lines up.
+      lines.push(`${cursor ? t.fg("accent", "→ ") : "  "}${label}${pad} ${t.fg("dim", "·")} ${mark}`);
     }
     // The live tip: whatever is highlighted, not a static caption.
     const current = this.options[this.index];
@@ -150,11 +162,16 @@ export class AccountsPicker {
     }
     lines.push("");
     // Wrapped, never truncated: every advertised key stays visible on a narrow screen. A key is only
-    // advertised when some row can act on it — `[Ctrl+d]` does nothing with nothing stored.
-    const legend = ["[↑↓] Move", "[Enter] Choose", ...(stored ? [`[${removeKey}] Remove`] : []), "[←] Back", "[Esc] Cancel"];
+    // advertised when some row can act on it — `[R]` does nothing with nothing stored.
+    const legend = [
+      "[↑↓] Move",
+      "[Enter] Choose",
+      ...(stored ? [`[${removeKey}] Remove`] : []),
+      `[Esc] ${this.back ? "Back" : "Cancel"}`,
+    ];
     for (const pair of packPairs(legend, inner)) lines.push(t.fg("dim", pair));
     // Arnative frame: round corners, one content row per line, so a short terminal clips cleanly.
-    return framedRows(lines, width, paint);
+    return framedRows(lines, width, this.paint);
   }
 
   invalidate(): void {}
@@ -235,7 +252,7 @@ class ListPicker {
       const chosen = i === this.index;
       const label = chosen ? this.soft(item.label) : t.fg(item.note ? "text" : "muted", item.label);
       const pad = " ".repeat(Math.max(0, column - visibleWidth(item.label)));
-      const note = item.note ? `${t.fg("dim", "  ·  ")}${t.fg("dim", item.note)}` : "";
+      const note = item.note ? `${t.fg("dim", " · ")}${t.fg("dim", item.note)}` : "";
       lines.push(`${chosen ? t.fg("accent", "→ ") : "  "}${label}${pad}${note}`);
     }
     lines.push("");
@@ -263,18 +280,9 @@ export async function pickRow(
     const choice = await ctx.ui.select(title, labels);
     return choice ? labels.indexOf(choice) : null;
   }
-  const picked = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: number | null) => void) => {
-    const picker = new ListPicker(theme, title, rows, subtitle, done, borderPainterFor(theme, ctx), initialIndex);
-    return {
-      render: (width: number) => picker.render(width),
-      invalidate: () => picker.invalidate(),
-      handleInput: (data: string) => {
-        picker.handleInput(data);
-        tui.requestRender();
-      },
-    };
-  });
-  return picked;
+  return await customScreen<number | null>(ctx, (theme, done) =>
+    new ListPicker(theme, title, rows, subtitle, done, borderPainterFor(theme, ctx), initialIndex)
+  );
 }
 
 /**
@@ -294,7 +302,7 @@ export const providerTip = (provider: JevProvider): string => `Tips: key from ${
  * query must not be trusted. Every framed screen in this file renders through here. The clip keeps an
  * ellipsis: a model ref cut to `deepseek-v` must not read as a whole model name.
  */
-const framedRows = (rows: string[], width: number, paint: (text: string) => string): string[] =>
+export const framedRows = (rows: string[], width: number, paint: (text: string) => string): string[] =>
   boxFrame(
     rows.flatMap((content) => String(content).split("\n")).map((content) => truncateToWidth(content, boxInner(width))),
     width,
@@ -315,9 +323,10 @@ class SecretInput extends Input {
 }
 
 /**
- * One screen for the routing targets, keybind-driven: type to filter, `space` assigns the
- * highlighted model as the light target, `ctrl+h` as the heavy target, `enter` saves,
- * `esc` discards. Rows carry `✓ (light)` / `✓ (heavy)` so both slots stay visible at once.
+ * One screen for the routing targets, keybind-driven: `/` opens the filter's typing mode, `space`
+ * assigns the highlighted model as the light target, `tab` as the heavy target, and pressing the
+ * slot key again walks that slot's thinking until `off` clears it; `enter` saves, `esc` discards.
+ * Rows carry `✓ light · level` / `✓ heavy · level` so both slots stay visible at once.
  */
 const modelRef = (model: any): string => `${model.provider}/${model.id}`;
 
@@ -350,12 +359,16 @@ export const modelLabelFor = (models: any[], ref: string): string => {
  */
 export const SLOT_TOKEN = { light: "accent", heavy: "warning" } as const;
 
+/** The idle filter placeholder, capitalised: it is a sentence in the operator's language. */
+const FILTER_PLACEHOLDER = "Type to filter models...";
+
 export class RoutingPicker {
   private pending: Routing;
-  private query = "";
+  /** The filter field (ListPicker's filter line): a real cursor while typing; the idle state is
+   *  drawn by `render`, because pi-tui's Input paints a fake block cursor whatever `focused` says. */
+  private readonly field: Input;
+  private typing = false;
   private index = 0;
-  /** Last thing a key did, shown under the table so the folded thinking step is not invisible. */
-  private notice = "";
   private readonly models: any[];
   private readonly theme: any;
   private readonly done: (value: Routing | typeof BACK | null) => void;
@@ -381,17 +394,34 @@ export class RoutingPicker {
     this.paint = paint;
     this.soft = chosenRowPainter(theme);
     this.back = back;
+    this.field = new Input({
+      prompt: theme.fg("accent", "> "),
+      placeholder: FILTER_PLACEHOLDER,
+      placeholderStyle: (s: string) => theme.fg("muted", s),
+    });
     const preferred = focus === "light" ? initial.light : initial.heavy;
     const at = models.findIndex((m) => modelRef(m) === preferred);
     this.index = at >= 0 ? at : 0;
   }
 
+  /** What the filter field holds — the source of truth for `filtered()`. */
+  private get query(): string {
+    return this.field.getValue();
+  }
+
+  /** Fuzzy match, spaces ignored: the query's characters must appear in order (ListPicker's rule),
+   *  so `agy gem` still finds `remote/agy-cli/gemini-…` where a plain `includes` finds nothing. */
   private filtered(): any[] {
-    const terms = this.query.toLowerCase().split(/\s+/).filter(Boolean);
-    if (terms.length === 0) return this.models;
+    const q = this.query.toLowerCase().replace(/\s+/g, "");
+    if (!q) return this.models;
     return this.models.filter((m) => {
-      const haystack = `${m.id} ${m.provider} ${m.name ?? ""}`.toLowerCase();
-      return terms.every((t) => haystack.includes(t));
+      const haystack = `${m.provider}/${m.id} ${m.name ?? ""}`.toLowerCase();
+      let at = 0;
+      for (const ch of haystack) {
+        if (ch === q[at]) at++;
+        if (at === q.length) return true;
+      }
+      return at === q.length;
     });
   }
 
@@ -401,46 +431,88 @@ export class RoutingPicker {
     this.index = (this.index + delta + rows.length) % rows.length;
   }
 
+  /** The slot's thinking list — the ring the slot key walks, one entry per press. */
+  private levels(slot: "light" | "heavy"): ThinkingLevel[] {
+    return slot === "light" ? LIGHT_THINKING_LEVELS : HEAVY_THINKING_LEVELS;
+  }
+
   private assign(slot: "light" | "heavy"): void {
     const row = this.filtered()[this.index];
     if (!row) return;
     const ref = modelRef(row);
-    // Already assigned to this row: the key walks that slot's thinking level instead of clearing it.
-    // Removing an assignment is `[Ctrl+r] Routing` + `[Enter]` (routing needs both targets), so no key
-    // needs to unset a slot — and the pair of thinking chords this replaces cannot come back.
+    // Already assigned to this row: the key walks the slot's thinking, and the walk ends at `off`,
+    // which clears the slot — so the key alone can undo what it did, and `[R]` is the shortcut.
     if (this.pending[slot] === ref) return this.cycleThinking(slot);
     const field = slot === "light" ? "lightThinking" : "heavyThinking";
-    this.pending = { ...this.pending, [slot]: ref, [field]: SLOT_DEFAULT_THINKING[slot] };
-    // One sentence, once: what the key assigned and what pressing it again will cycle.
-    this.notice = `${slot === "light" ? "Light" : "Heavy"} slot → ${ref} · thinking ${this.pending[field as keyof Routing]} · press again to cycle`;
+    // The walk starts at the list's first level (light: off-thinking, heavy: low), so every level
+    // and the off at the end is reachable from the key alone — no second chord, no dead end.
+    this.pending = { ...this.pending, [slot]: ref, [field]: this.levels(slot)[0] };
   }
 
-  /** Walks one slot's thinking level through the list its default lives in. */
+  /** Advances one slot's thinking; past the last level the walk lands on `off` and clears the slot. */
   private cycleThinking(slot: "light" | "heavy"): void {
     const field = slot === "light" ? "lightThinking" : "heavyThinking";
-    const levels = slot === "light" ? LIGHT_THINKING_LEVELS : HEAVY_THINKING_LEVELS;
-    const current = (this.pending[field as keyof Routing] as ThinkingLevel | undefined) ?? SLOT_DEFAULT_THINKING[slot];
-    const next = levels[(levels.indexOf(current) + 1) % levels.length];
-    this.pending = { ...this.pending, [field]: next };
-    this.notice = `${slot === "light" ? "Light" : "Heavy"} thinking → ${next}`;
+    const levels = this.levels(slot);
+    const at = levels.indexOf(this.pending[field as keyof Routing] as ThinkingLevel);
+    if (at < 0 || at + 1 >= levels.length) {
+      // Off: the slot leaves this row. The thinking field returns to the store default, so a
+      // re-assign starts clean.
+      this.pending = { ...this.pending, [slot]: "", [field]: SLOT_DEFAULT_THINKING[slot] };
+      return;
+    }
+    this.pending = { ...this.pending, [field]: levels[at + 1] };
+  }
+
+  /** `[R]`: clear the whole routing configuration at once — both slots, thinking back to the
+   *  defaults, routing off. A row-scoped reset would need a second key for the other slot; the
+   *  walk-to-off already undoes one slot, so Reset owns the whole screen instead. */
+  private resetAll(): void {
+    this.pending = {
+      enabled: false,
+      light: "",
+      heavy: "",
+      lightThinking: SLOT_DEFAULT_THINKING.light,
+      heavyThinking: SLOT_DEFAULT_THINKING.heavy,
+    };
+  }
+
+  /** The filter is a mode, not a guess: `/` turns typing on, and while it is on every key is text
+   *  (Space and digits included), so the slot keys cannot fire mid-word. `/` or Enter ends typing
+   *  and keeps the filter; Esc wipes a typed filter first and closes the screen only when it is
+   *  empty. `↑↓` moves the list even while typing. */
+  private searchKey(data: string): boolean {
+    const setTyping = (on: boolean): true => {
+      this.typing = on;
+      this.field.focused = on;
+      return true;
+    };
+    if (!this.typing) return data === "/" && setTyping(true);
+    if (data === "/" || matchesKey(data, Key.enter)) return setTyping(false);
+    if (matchesKey(data, Key.escape)) {
+      if (!this.query) return false; // filter already empty: the screen's own Esc (Back/Cancel) runs
+      this.field.setValue("");
+      this.index = 0;
+      return setTyping(false);
+    }
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) return false;
+    const before = this.query;
+    this.field.handleInput(data);
+    if (this.query !== before) this.index = 0;
+    return true;
   }
 
   handleInput(data: string): void {
+    if (this.searchKey(data)) return;
     if (matchesKey(data, Key.up)) return this.move(-1);
     if (matchesKey(data, Key.down)) return this.move(1);
-    // `\x08` satisfies BOTH `Key.backspace` and `ctrl+h` in pi's parser, so the heavy chord is matched
-    // (with its alias) before backspace: otherwise the filter prompt would eat the heavy assignment in
-    // every terminal that reports ctrl+h as backspace. Backspace is the less destructive match here,
-    // because the query is recoverable and a slot assignment is what the operator asked for.
-    if (matchesKey(data, KEY_SETS.routeHeavy) || matchesKey(data, KEY_SETS.routeHeavyAlias)) return this.assign("heavy");
+    // `tab` carries the heavy assignment — the same walk-to-the-next-slot gesture the Models screen
+    // uses. Unlike the `ctrl+h` it replaces, tab shares no keycode with backspace, so the filter
+    // prompt below keeps backspace for itself and can never eat an assignment.
+    if (matchesKey(data, KEY_SETS.routeHeavy)) return this.assign("heavy");
     if (matchesKey(data, Key.space) || data === " ") return this.assign("light");
+    if (matchesKey(data, KEY_SETS.routingReset)) return this.resetAll();
     if (matchesKey(data, KEY_SETS.routingToggle)) {
       this.pending = { ...this.pending, enabled: !this.pending.enabled };
-      return;
-    }
-    if (matchesKey(data, Key.backspace)) {
-      this.query = this.query.slice(0, -1);
-      this.index = 0;
       return;
     }
     if (matchesKey(data, Key.enter)) {
@@ -449,11 +521,8 @@ export class RoutingPicker {
       return this.done({ ...this.pending, enabled: this.pending.enabled && both });
     }
     if (this.back && matchesKey(data, Key.left)) return this.done(BACK);
-    if (matchesKey(data, Key.escape)) return this.done(null);
-    if (data.length === 1 && data >= " ") {
-      this.query += data;
-      this.index = 0;
-    }
+    // From the menu, Esc steps back to it; a direct subcommand has nothing behind it, so Esc cancels.
+    if (matchesKey(data, Key.escape)) return this.done(this.back ? BACK : null);
   }
 
   render(width: number): string[] {
@@ -461,29 +530,47 @@ export class RoutingPicker {
     const paint = this.paint;
     const inner = width - 4; // two walls, two spaces
     const rows = this.filtered();
+    // Summary sits ABOVE the filter & table (like ModelsPicker) so it stays rock-steady while typing.
+    const slotColumn = Math.max("Routing".length, "Light".length, "Heavy".length);
+    const summaryRow = (label: string, value: string): string =>
+      `${t.fg("dim", label.padEnd(slotColumn))}${t.fg("dim", " · ")}${value}`;
+    const routingValue = `${this.pending.enabled ? t.fg("success", "ON") : t.fg("muted", "off")}${
+      this.pending.enabled && (!this.pending.light || !this.pending.heavy) ? t.fg("warning", " (needs both targets)") : ""
+    }`;
+    const targetValue = (ref: string | undefined, token: string, thinking: string) => {
+      const name = ref ? t.fg(token, modelLabelFor(this.models, ref)) : t.fg("muted", "(unset)");
+      return `${name}${t.fg("dim", " · ")}${t.fg("muted", thinking)}`;
+    };
+
     const lines: string[] = [
       t.fg("accent", t.bold("Jev Eye · Routing")),
       // The description carries both facts the screen needs: what routing does, and that the slot key does
       // twice the work. The table and the legend below stay pure (rows, keys, labels) — no `×2` marker
       // duplicating this sentence in the legend.
       ...wrapWords(
-        `Chores to the cheap model, real work to the strongest. ${keybind(KEY_SETS.routeLight)} / ${keybind(KEY_SETS.routeHeavy)} assign a slot; press again to cycle its thinking. ${keybind(KEY_SETS.routingToggle)} toggles routing.`,
+        `Chores run cheap, work runs strong. ${keybind(KEY_SETS.routeLight)} / ${keybind(KEY_SETS.routeHeavy)} assign a slot and cycle thinking; off clears it. ${keybind(KEY_SETS.routingReset)} resets all. ${keybind(KEY_SETS.routingToggle)} toggles routing.`,
         inner
       ).map((line) => t.fg("muted", line)),
       "",
-      // The query is one line, but a stray paste must never break the frame: spread it first.
-      ...`${t.fg("accent", "> ")}${this.query}${this.query ? "" : t.fg("dim", "type to filter")}`.split("\n"),
+      summaryRow("Routing", routingValue),
+      summaryRow("Light", targetValue(this.pending.light, SLOT_TOKEN.light, this.pending.lightThinking ?? "low")),
+      summaryRow("Heavy", targetValue(this.pending.heavy, SLOT_TOKEN.heavy, this.pending.heavyThinking ?? "high")),
       "",
     ];
+    // The filter line, two painted states (ListPicker's rule): idle draws the muted prompt and no
+    // cursor — pi-tui's Input would paint a fake one — while typing hands the row to the real field.
+    const idle = `${t.fg("borderMuted", "> ")}${this.query ? t.fg("text", this.query) : t.fg("dim", FILTER_PLACEHOLDER)}`;
+    lines.push(...(this.typing ? this.field.render(Math.max(1, inner)) : [truncateToWidth(idle, inner, "")]));
+    lines.push("");
 
     const start = Math.max(0, Math.min(this.index - Math.floor(RoutingPicker.WINDOW / 2), Math.max(0, rows.length - RoutingPicker.WINDOW)));
     const slice = rows.slice(start, start + RoutingPicker.WINDOW);
-    if (slice.length === 0) lines.push(t.fg("warning", "  no model matches this filter"));
+    if (slice.length === 0) lines.push(t.fg("warning", "no model matches this filter"));
+    if (start > 0) lines.push(t.fg("dim", `↑ ${start} more`));
 
-    // One model row = `model id  ·  assigned slots  ·  [provider]`: the id is padded to the widest id so
-    // every divider lands in one column, exactly as the list menus do. Only the slot column carries its
-    // own colours (light accent, heavy amber) and no surrounding padding, so `✓ light` reads as one unit.
-    const column = Math.max(...rows.map((m) => visibleWidth(String(m.id))), 0);
+    // ListPicker layout from pi-arnative: `provider/model` padded to the widest full catalog ref so
+    // the `·` divider stays in one steady column even while filtering, followed by the slot state.
+    const column = Math.max(0, ...this.models.map((m) => visibleWidth(modelRef(m))));
     const slotCell = (ref: string) => {
       const slots = [
         this.pending.light === ref ? ["light", SLOT_TOKEN.light, this.pending.lightThinking ?? ""] : null,
@@ -493,39 +580,23 @@ export class RoutingPicker {
       // The thinking level rides in the slot cell: it is the one setting a second press of this key
       // changes, so hiding it elsewhere would make that press look like nothing happened.
       return slots
-        .map(([label, token, thinking]) => `${t.fg(token, `✓ ${label}`)}${thinking ? t.fg("muted", ` (${thinking})`) : ""}`)
+        .map(([label, token, thinking]) => `${t.fg(token, `✓ ${label}`)}${thinking ? `${t.fg("dim", " · ")}${t.fg("muted", thinking)}` : ""}`)
         .join(t.fg("dim", " · "));
     };
     for (const model of slice) {
       const ref = modelRef(model);
       const cursor = rows[this.index] === model;
-      const pad = " ".repeat(Math.max(0, column - visibleWidth(String(model.id))));
-      // Chosen row: the arrow keeps the accent, the model id takes the soft tint, the provider tag stays muted.
+      const pad = " ".repeat(Math.max(0, column - visibleWidth(ref)));
+      // Chosen row: the arrow keeps the accent, the model ref takes the soft tint.
       const prefix = cursor ? t.fg("accent", "→ ") : "  ";
-      const name = cursor ? this.soft(model.id) : t.fg("text", model.id);
-      const provider = t.fg("muted", `[${model.provider}]`);
-      lines.push(`${prefix}${name}${pad}  ${t.fg("dim", "·")} ${slotCell(ref)} ${t.fg("dim", "·")} ${provider}`);
+      const name = cursor ? this.soft(ref) : t.fg("text", ref);
+      lines.push(truncateToWidth(`${prefix}${name}${pad} ${t.fg("dim", "·")} ${slotCell(ref)}`, inner, ""));
     }
 
-    const position = rows.length === 0 ? 0 : Math.min(this.index + 1, rows.length);
-    lines.push(t.fg("muted", `  (${position}/${rows.length})`));
-    // After a key, this row reports what just changed; before any key it stays empty, because the
-    // description above already names the fold. One line, one job.
-    lines.push(this.notice ? t.fg("muted", `  ${this.notice}`) : "");
+    const below = rows.length - start - slice.length;
+    if (below > 0) lines.push(t.fg("dim", `↓ ${below} more`));
     lines.push("");
-    lines.push(
-      `${t.fg("dim", "Routing: ")}${this.pending.enabled ? t.fg("success", "ON") : t.fg("muted", "off")}${
-        this.pending.enabled && (!this.pending.light || !this.pending.heavy) ? t.fg("warning", "  (needs both targets)") : ""
-      }`
-    );
-    lines.push(
-      `${t.fg("dim", "Light model: ")}${this.pending.light ? t.fg(SLOT_TOKEN.light, modelLabelFor(this.models, this.pending.light)) : t.fg("muted", "(unset)")} ${t.fg("muted", `[thinking: ${this.pending.lightThinking ?? "low"}]`)}`
-    );
-    lines.push(
-      `${t.fg("dim", "Heavy model: ")}${this.pending.heavy ? t.fg(SLOT_TOKEN.heavy, modelLabelFor(this.models, this.pending.heavy)) : t.fg("muted", "(unset)")} ${t.fg("muted", `[thinking: ${this.pending.heavyThinking ?? "high"}]`)}`
-    );
-    lines.push("");
-    const count = `${this.models.length} models`;
+    const count = `${rows.length}/${this.models.length} models`;
     const prefix = `${count} · `;
     // The skill's legend order, nav first and exits last: what the screen always acts on, then the
     // screen's own keys, then `[←] Back` (only when there is a menu behind it), then cancel. Each
@@ -534,12 +605,13 @@ export class RoutingPicker {
     // legend remains a plain key list.
     const legend = [
       "[↑↓] Move",
-      "[Enter] Done",
+      `${keybind(KEY_SETS.routingFilter)} Filter`,
       `${keybind(KEY_SETS.routeLight)} Light`,
       `${keybind(KEY_SETS.routeHeavy)} Heavy`,
+      `${keybind(KEY_SETS.routingReset)} Reset`,
       `${keybind(KEY_SETS.routingToggle)} Routing`,
-      ...(this.back ? ["[←] Back"] : []),
-      "[Esc] Cancel",
+      "[Enter] Done",
+      `[Esc] ${this.back ? "Back" : "Cancel"}`,
     ];
     // The count rides the first legend row, so the wrapping budget is what is left after that prefix.
     const legendRows = packPairs(legend, Math.max(1, inner - visibleWidth(prefix)));
@@ -553,7 +625,7 @@ export class RoutingPicker {
 
 /**
  * The Models screen: one list of every backend this session can call, and the two slots that pick which
- * model answers. `[Space]` makes the highlighted row the active backend, `[Ctrl+f]` its fallback.
+ * model answers. `[Space]` makes the highlighted row the active backend, `[Tab]` its fallback.
  *
  * One list, not a provider list plus a model sub-list: the two Clef models are two rows of the same table,
  * which is what makes `/jev-eye models clef-flash` and `/jev-eye models clef` (see `matchModelRef`) the
@@ -565,17 +637,24 @@ export class RoutingPicker {
 export class ModelsPicker {
   private pending: Backends;
   private index = 0;
-  /** Last thing a key did, under the table; empty before the first key, when the description says it all. */
-  private notice = "";
   private readonly models: BackendModel[];
   private readonly theme: any;
+  private readonly paint: (text: string) => string;
   private readonly soft: (text: string) => string;
   private readonly done: (value: Backends | typeof BACK | null) => void;
   /** False when the screen was opened straight from `/jev-eye models`, which has no menu behind it. */
   private readonly back: boolean;
 
-  constructor(theme: any, models: BackendModel[], initial: Backends, done: (value: Backends | typeof BACK | null) => void, back = true) {
+  constructor(
+    theme: any,
+    models: BackendModel[],
+    initial: Backends,
+    done: (value: Backends | typeof BACK | null) => void,
+    back = true,
+    paint: (text: string) => string = borderPainterFor(theme),
+  ) {
     this.theme = theme;
+    this.paint = paint;
     this.models = models;
     this.pending = { ...initial };
     this.done = done;
@@ -587,23 +666,15 @@ export class ModelsPicker {
 
   private move(delta: number): void {
     this.index = (this.index + delta + this.models.length) % this.models.length;
-    this.notice = "";
   }
 
   /** The two slots; nothing else is assignable, so no key can invent a third role. */
   private assign(slot: "primary" | "fallback"): void {
     const row = this.models[this.index];
     if (!row) return;
-    const before = this.pending;
-    this.pending = assignBackend(before, slot, row.ref);
-    const role = slot === "primary" ? "Active" : "Fallback";
-    // Three outcomes, three sentences: the key cleared its own slot, the key moved the model off the
-    // other slot, or the key just assigned. The middle one is the move `assignBackend` allows so one
-    // model can never be both the active backend and its own fallback.
-    const otherRole = slot === "primary" ? "fallback" : "active";
-    if (before[slot] === row.ref) this.notice = `${role} cleared`;
-    else if (before[slot === "primary" ? "fallback" : "primary"] === row.ref) this.notice = `${role} → ${row.label}; ${otherRole} cleared`;
-    else this.notice = `${role} → ${row.label}`;
+    // assignBackend may move the ref off the other slot, so one model can never be both the active
+    // backend and its own fallback. The summary lines above the table show the result — no notice row.
+    this.pending = assignBackend(this.pending, slot, row.ref);
   }
 
   handleInput(data: string): void {
@@ -621,13 +692,21 @@ export class ModelsPicker {
     if (matchesKey(data, KEY_SETS.modelsFallback)) return this.assign("fallback");
     if (matchesKey(data, Key.enter)) return this.done({ ...this.pending });
     if (this.back && matchesKey(data, Key.left)) return this.done(BACK);
-    if (matchesKey(data, Key.escape)) return this.done(null);
+    // From the menu, Esc steps back to it; a direct `/jev-eye models` has nothing behind it, so Esc cancels.
+    if (matchesKey(data, Key.escape)) return this.done(this.back ? BACK : null);
   }
 
   render(width: number): string[] {
     const t = this.theme;
-    const paint = borderPainterFor(t);
     const inner = width - 4; // two walls, two spaces
+    // The two slots sit ABOVE the table: what answers right now is the first thing read, before any row
+    // is scanned. Labels are padded to the widest one, so both `·` dividers share one column.
+    const slotColumn = Math.max("Active".length, "Fallback".length);
+    const slotRow = (name: string, ref: string, token: string): string => {
+      const row = this.models.find((m) => m.ref === ref);
+      const value = row ? t.fg(token, row.label) : t.fg("muted", "(auto)");
+      return `${t.fg("dim", name.padEnd(slotColumn))}${t.fg("dim", " · ")}${value}`;
+    };
     const lines: string[] = [
       t.fg("accent", t.bold("Jev Eye · Models")),
       ...wrapWords(
@@ -635,62 +714,58 @@ export class ModelsPicker {
         inner
       ).map((line) => t.fg("muted", line)),
       "",
+      slotRow("Active", this.pending.primary, SLOT_TOKEN.light),
+      slotRow("Fallback", this.pending.fallback, SLOT_TOKEN.heavy),
+      "",
     ];
 
-    // Same list template as every other screen: label padded to the widest one, so both `·` dividers and
-    // the state column land in one place. The reference is the label — `clef-flash` and `clef` differ
-    // only by the tier in parentheses.
+    // Same list template as every other screen: label padded to the widest one, so the `·` dividers land
+    // in one place. The reference is the label — `clef-flash` and `clef` differ only by the tier in
+    // parentheses. One divider per row: the state cell and the provider tag share the line after it
+    // (`· ✓ active [TypeSafe]`, `· — no key [OpenRouter]`).
     const column = Math.max(...this.models.map((m) => visibleWidth(m.label)), 0);
     for (const [i, model] of this.models.entries()) {
       const cursor = i === this.index;
       const pad = " ".repeat(Math.max(0, column - visibleWidth(model.label)));
-      const slot = this.pending.primary === model.ref ? SLOT_TOKEN.light : this.pending.fallback === model.ref ? SLOT_TOKEN.heavy : "";
-      const slotLabel = this.pending.primary === model.ref ? "✓ active" : "✓ fallback";
+      const assigned = this.pending.primary === model.ref ? "primary" : this.pending.fallback === model.ref ? "fallback" : "";
+      const slotLabel = assigned === "primary" ? "✓ active" : assigned === "fallback" ? "✓ fallback" : "—";
+      const slotToken = assigned === "primary" ? SLOT_TOKEN.light : assigned === "fallback" ? SLOT_TOKEN.heavy : "dim";
       // Slot first, key state second: a row can be assigned while its key is missing (an export or a
       // credential can appear later), and hiding the assignment behind `no key` would make the screen
       // look like the key did nothing.
-      const state = `${slot ? t.fg(slot, slotLabel) : t.fg("dim", "—")}${model.configured ? "" : t.fg("warning", " · no key")}`;
+      const state = `${t.fg(slotToken, slotLabel)}${model.configured ? "" : ` ${t.fg("warning", "no key")}`}`;
       const label = cursor ? this.soft(model.label) : model.configured ? t.fg("text", model.label) : t.fg("muted", model.label);
       lines.push(
-        `${cursor ? t.fg("accent", "→ ") : "  "}${label}${pad}  ${t.fg("dim", "·")} ${state} ${t.fg("dim", "·")} ${t.fg("muted", `[${model.providerShort}]`)}`
+        `${cursor ? t.fg("accent", "→ ") : "  "}${label}${pad} ${t.fg("dim", "·")} ${state} ${t.fg("muted", `[${model.providerShort}]`)}`
       );
     }
 
-    lines.push(t.fg("muted", `  (${this.models.length === 0 ? 0 : this.index + 1}/${this.models.length})`));
-    lines.push(this.notice ? t.fg("muted", `  ${this.notice}`) : "");
-    lines.push("");
-    // One line per slot, so a screen with no assignment still says what it will fall back to (the
-    // credential precedence), instead of leaving the operator to guess.
-    const slotLine = (name: string, ref: string, token: string) => {
-      const row = this.models.find((m) => m.ref === ref);
-      return `${t.fg("dim", `${name}: `)}${row ? t.fg(token, row.label) : t.fg("muted", "(auto)")}`;
-    };
-    lines.push(slotLine("Active", this.pending.primary, SLOT_TOKEN.light));
-    lines.push(slotLine("Fallback", this.pending.fallback, SLOT_TOKEN.heavy));
+    // No counter row and no notice row: the mock the screen was built from ends the table at the last
+    // model, and the summary above the table already shows what a key just did.
     lines.push("");
     const legend = [
       "[↑↓] Move",
-      "[Enter] Done",
       `${keybind(KEY_SETS.modelsPrimary)} Active`,
       `${keybind(KEY_SETS.modelsFallback)} Fallback`,
-      ...(this.back ? ["[←] Back"] : []),
-      "[Esc] Cancel",
+      "[Enter] Done",
+      `[Esc] ${this.back ? "Back" : "Cancel"}`,
     ];
     for (const pair of packPairs(legend, inner)) lines.push(t.fg("dim", pair));
-    return framedRows(lines, width, paint);
+    return framedRows(lines, width, this.paint);
   }
 
   invalidate(): void {}
 }
 
-/** `/jev-eye status` panel: the same framing as the routing picker and the vision-watcher screen, with
- *  both advertised keybindings live so the footer never promises a key that does nothing here. */
+/** `/jev-eye status` (interactive controls) and `/jev-eye usage` (read-only) panel. */
 export class StatusPanel {
   private lines: string[];
+  /** Highlighted control row (0 = Supervisor, 1 = Folder gate) when `controls` is true. */
+  private index = 0;
   private readonly paint: (text: string) => string;
   private readonly theme: any;
   private readonly actions: {
-    rebuild: () => string[];
+    rebuild: (cursor?: number) => string[];
     cycleMode: () => void;
     cycleGate: () => void;
   };
@@ -705,7 +780,7 @@ export class StatusPanel {
   constructor(
     theme: any,
     lines: string[],
-    actions: { rebuild: () => string[]; cycleMode: () => void; cycleGate: () => void },
+    actions: { rebuild: (cursor?: number) => string[]; cycleMode: () => void; cycleGate: () => void },
     done: (value?: typeof BACK) => void,
     title: string = STATUS_TITLE,
     desc: string = STATUS_DESC,
@@ -727,7 +802,12 @@ export class StatusPanel {
   /** A toggle changes state, so the body is rebuilt in place; the caller re-renders after input. */
   private apply(mutate: () => void): void {
     mutate();
-    this.lines = this.actions.rebuild();
+    this.lines = this.actions.rebuild(this.controls ? this.index : undefined);
+  }
+
+  private move(delta: number): void {
+    this.index = (this.index + delta + 2) % 2;
+    this.lines = this.actions.rebuild(this.index);
   }
 
   handleInput(data: string): void {
@@ -736,16 +816,43 @@ export class StatusPanel {
       this.done(BACK);
       return;
     }
-    if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape) || matchesKey(data, "ctrl+c")) {
+    if (matchesKey(data, "ctrl+c")) {
       this.done();
       return;
     }
+    // Esc follows the screen's depth: from the menu it steps back to it; a subcommand-opened screen has
+    // nothing behind it, so Esc cancels.
+    if (matchesKey(data, Key.escape)) {
+      this.done(this.back ? BACK : undefined);
+      return;
+    }
+    if (matchesKey(data, Key.enter)) {
+      this.done();
+      return;
+    }
+    if (!this.controls) return;
+    if (matchesKey(data, Key.up)) return this.move(-1);
+    if (matchesKey(data, Key.down)) return this.move(1);
+    if (matchesKey(data, Key.home)) {
+      this.index = 0;
+      this.lines = this.actions.rebuild(this.index);
+      return;
+    }
+    if (matchesKey(data, Key.end)) {
+      this.index = 1;
+      this.lines = this.actions.rebuild(this.index);
+      return;
+    }
+    if (matchesKey(data, Key.space)) {
+      this.apply(this.index === 0 ? this.actions.cycleMode : this.actions.cycleGate);
+      return;
+    }
     if (matchesKey(data, TOGGLE_KEY)) {
-      if (this.controls) this.apply(this.actions.cycleMode);
+      this.apply(this.actions.cycleMode);
       return;
     }
     if (matchesKey(data, GATE_KEY)) {
-      if (this.controls) this.apply(this.actions.cycleGate);
+      this.apply(this.actions.cycleGate);
     }
   }
 
@@ -776,17 +883,28 @@ export class StatusPanel {
 
 class SecretPrompt {
   private readonly theme: any;
+  private readonly paint: (text: string) => string;
   private readonly title: string;
   private readonly hint: string;
   private readonly reveal: boolean;
-  private readonly input = new SecretInput();
+  private readonly input: Input;
   isFocused = false;
 
-  constructor(theme: any, title: string, hint: string, done: (value?: string) => void, reveal = false) {
+  constructor(
+    theme: any,
+    title: string,
+    hint: string,
+    done: (value?: string) => void,
+    reveal = false,
+    paint: (text: string) => string = borderPainterFor(theme),
+  ) {
     this.theme = theme;
+    this.paint = paint;
     this.title = title;
     this.hint = hint;
     this.reveal = reveal;
+    // Revealed values use pi-tui Input directly so horizontal scrolling and the cursor caret stay live.
+    this.input = reveal ? new Input({ prompt: "" }) : new SecretInput();
     this.input.onSubmit = (value) => done(value);
     this.input.onEscape = () => done(undefined);
   }
@@ -816,12 +934,11 @@ class SecretPrompt {
     const hints = wrapWords(this.hint, inner).map((line: string) => t.fg("muted", line));
     // One rendered input line, kept whole so the caret marker stays inside it: clipping the bullet run
     // first is what keeps the marker from falling off the end of a long pasted key.
-    // A secret renders bullets; an account id is not a secret, so it is shown as typed.
-    const field = this.reveal
-      ? `${t.fg("accent", "  ")}${t.fg("text", truncateToWidth(this.input.getValue(), Math.max(0, inner - 2), ""))}`
-      : t.fg("accent", "  ") + (this.input.render(inner - 2)[0] ?? "");
+    // A secret renders bullets; an account id is not a secret, so it is shown as typed with its caret.
+    const rendered = this.input.render(Math.max(0, inner - 2))[0] ?? "";
+    const field = t.fg("accent", "  ") + (this.reveal ? t.fg("text", rendered) : rendered);
     const legend = packPairs(["[Enter] Verify & save", "[Esc] Cancel"], inner).map((pair: string) => t.fg("dim", pair));
-    return framedRows([title, ...hints, "", field, "", ...legend], width, borderPainterFor(t));
+    return framedRows([title, ...hints, "", field, "", ...legend], width, this.paint);
   }
 }
 
@@ -832,6 +949,7 @@ class SecretPrompt {
  */
 class BoxedConfirm {
   private readonly theme: any;
+  private readonly paint: (text: string) => string;
   private readonly title: string;
   private readonly message: string;
   private readonly done: (value: boolean) => void;
@@ -839,8 +957,15 @@ class BoxedConfirm {
   private readonly choices = ["Confirm", "Cancel"];
   private index = 0;
 
-  constructor(theme: any, title: string, message: string, done: (value: boolean) => void) {
+  constructor(
+    theme: any,
+    title: string,
+    message: string,
+    done: (value: boolean) => void,
+    paint: (text: string) => string = borderPainterFor(theme),
+  ) {
     this.theme = theme;
+    this.paint = paint;
     this.title = title;
     this.message = message;
     this.done = done;
@@ -880,14 +1005,14 @@ class BoxedConfirm {
       return `${chosen ? t.fg("accent", "→ ") : "  "}${chosen ? soft(label) : t.fg("text", label)}`;
     });
     const legend = packPairs(["[↑↓] Select", "[Enter] Choose", "[Esc] Cancel"], inner).map((pair: string) => t.fg("dim", pair));
-    return framedRows([title, ...message, "", ...choices, "", ...legend], width, borderPainterFor(t));
+    return framedRows([title, ...message, "", ...choices, "", ...legend], width, this.paint);
   }
 }
 
 /** The custom dialogs only exist in TUI mode: `custom` is a documented no-op in RPC, not a missing method. */
-async function customScreen<T>(ctx: any, build: (tui: any, theme: any, done: (value: T) => void) => any): Promise<T> {
+export async function customScreen<T>(ctx: any, build: (theme: any, done: (value: T) => void) => any): Promise<T> {
   return await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (value: T) => void) => {
-    const component = build(tui, theme, done);
+    const component = build(theme, done);
     return {
       render: (width: number) => component.render(width),
       invalidate: () => component.invalidate?.(),
@@ -906,8 +1031,8 @@ async function customScreen<T>(ctx: any, build: (tui: any, theme: any, done: (va
  */
 export async function promptForText(ctx: any, title: string, hint: string, reveal = false): Promise<string | undefined> {
   if (ctx.mode !== "tui") return await ctx.ui.input(reveal ? title : `${title} (visible while typing)`, hint);
-  return await customScreen<string | undefined>(ctx, (tui: any, theme: any, done: (value: string | undefined) => void) =>
-    new SecretPrompt(theme, title, hint, done, reveal)
+  return await customScreen<string | undefined>(ctx, (theme: any, done: (value: string | undefined) => void) =>
+    new SecretPrompt(theme, title, hint, done, reveal, borderPainterFor(theme, ctx))
   );
 }
 
@@ -917,8 +1042,8 @@ export async function promptForText(ctx: any, title: string, hint: string, revea
  */
 export async function promptForConfirm(ctx: any, title: string, message: string): Promise<boolean> {
   if (ctx.mode !== "tui") return await ctx.ui.confirm(title, message);
-  const answer = await customScreen<boolean>(ctx, (tui: any, theme: any, done: (value: boolean) => void) =>
-    new BoxedConfirm(theme, title, message, done)
+  const answer = await customScreen<boolean>(ctx, (theme: any, done: (value: boolean) => void) =>
+    new BoxedConfirm(theme, title, message, done, borderPainterFor(theme, ctx))
   );
   return answer === true;
 }

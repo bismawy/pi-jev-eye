@@ -24,23 +24,33 @@ export const KEY_SETS = {
   gate: "ctrl+alt+u",
   /** Cycle the model router on/off inside the routing screen. */
   routingToggle: "ctrl+r",
-  /** Remove the highlighted credential on the Accounts screen. `ctrl+d` is pi's `app.session.delete`, but
-   *  a custom component owns focus while it is open, so the key never reaches that action. */
-  accountsRemove: "ctrl+d",
+  /** Remove the highlighted credential on the Accounts screen. A capital R on purpose: the screen has
+   *  no text field, so a plain `r` stays free, and a destructive key must not sit beside the navigation
+   *  keys. `matchesKey` reads the uppercase byte as `shift+r` (pi-arnative's usage reset ships the same
+   *  pair), and `keycap` renders it as `[R]`. */
+  accountsRemove: "shift+r",
   /** Assign the highlighted model to the light slot; pressing it again walks that slot's thinking level.
    *  One key for both steps keeps the screen free of a second chord — `ctrl+t` / `ctrl+shift+t` were
    *  exactly the unportable pair the two separate keys needed. */
   routeLight: "space",
-  /** Assign the highlighted model to the heavy slot; pressing it again walks its thinking level. */
-  routeHeavy: "ctrl+h",
-  /** Alias for `ctrl+h`: some terminals report ctrl+h as backspace (`\x08` satisfies both keys), so a
-   *  handler that matches the two in order never loses the assignment. */
-  routeHeavyAlias: "ctrl+q",
+  /** Assign the highlighted model to the heavy slot; pressing it again walks its thinking level
+   *  (low → … → max, then off clears the slot). `tab` is the same walk-to-the-next-slot gesture
+   *  the Models screen uses for its fallback; `ctrl+h` shared a keycode with backspace, so the
+   *  filter prompt could eat the assignment in terminals that report them as one key. */
+  routeHeavy: "tab",
+  /** Routing screen: clear the routing configuration at once — both slots, thinking back to the
+   *  defaults, routing off. Capital R on purpose, the same destructive-key shape as `accountsRemove`:
+   *  while the filter is typing, every key is text, so a lowercase `r` could not fire anyway. */
+  routingReset: "shift+r",
+  /** Routing screen: open the filter's typing mode. While typing, every key is text, so the slot
+   *  keys wait; `/` or Enter keeps the filter and hands the keys back to the list. */
+  routingFilter: "/",
   /** Models screen: make the highlighted backend the active one. `space` is the same
    *  "assign the highlighted row" gesture the routing screen uses; `[[` and `]]` on screen say which slot. */
   modelsPrimary: "space",
-  /** Models screen: make the highlighted backend the fallback, tried when the active one cannot answer. */
-  modelsFallback: "ctrl+f",
+  /** Models screen: make the highlighted backend the fallback, tried when the active one cannot answer.
+   *  `tab` is the walk-to-the-next-slot gesture; `ctrl+f` was one more chord to memorise. */
+  modelsFallback: "tab",
 } as const;
 
 export const TOGGLE_KEY = KEY_SETS.toggle;
@@ -49,13 +59,16 @@ export const GATE_KEY = KEY_SETS.gate;
 
 // `/jev-eye status` panel chrome: title, one-line description, footer.
 export const STATUS_TITLE = "Jev Eye · Status";
-export const STATUS_DESC = "Supervisor, gate, routing and interception for this Pi session.";
-// Keycap hint only: `ctrl+alt+e` -> `Ctrl+Alt+e`.
-export const keycap = (key: string) =>
-  key
-    .split("+")
+export const STATUS_DESC = "Live controls and active pipeline for this session.";
+/** Keycap hint only: `ctrl+alt+e` -> `Ctrl+Alt+e`. A lone shifted letter types the capital itself, so
+ *  its keycap is that capital: `shift+r` renders `[R]`, not the two-key `[Shift+r]`. */
+export const keycap = (key: string): string => {
+  const parts = key.split("+");
+  if (parts.length === 2 && parts[0] === "shift" && parts[1].length === 1) return parts[1].toUpperCase();
+  return parts
     .map((part) => (part.length > 1 ? part[0].toUpperCase() + part.slice(1) : part))
     .join("+");
+};
 
 const eyeMode = (enabled: boolean, reviewMode: boolean): "ON" | "REVIEW" | "OFF" =>
   !enabled ? "OFF" : reviewMode ? "REVIEW" : "ON";
@@ -63,18 +76,26 @@ const eyeMode = (enabled: boolean, reviewMode: boolean): "ON" | "REVIEW" | "OFF"
 /**
  * The framed screens' keybind legend, in one place so a new screen cannot invent its own wording or
  * advertise a key it does not act on. `back` is per-screen: only a screen an extension opened itself
- * has somewhere to return to, so `[←] Back` is advertised exactly when `[←]` is handled. A read-only
- * screen (usage) carries no toggles. The footer wraps inside the frame, so no key is dropped.
+ * has somewhere to return to, so Esc labels Back vs Cancel accordingly. A read-only screen (usage)
+ * carries no toggles. The footer wraps inside the frame, so no key is dropped.
  */
 export const panelKeys = (controls: boolean, back = true): string[] =>
   [
+    ...(controls ? ["[↑↓] Move", "[Space] Toggle"] : []),
     "[Enter] Done",
-    ...(controls ? [`[${keycap(TOGGLE_KEY)}] Supervisor`, `[${keycap(GATE_KEY)}] Grant folder`] : []),
-    ...(back ? ["[←] Back"] : []),
-    // The exits last, in the order they act: Back stays inside the extension, Esc leaves it. Same order
-    // as the routing picker's legend, so one reading works on every framed screen.
-    "[Esc] Cancel",
+    // A screen opened from the menu steps back to it on Esc (pi-arnative's submenu convention); a screen
+    // a subcommand opened directly has nothing behind it, so Esc cancels.
+    `[Esc] ${back ? "Back" : "Cancel"}`,
   ];
+
+/** Keybind legend for the interactive `/jev-eye usage` screen (range cycling + collapsible provider tree). */
+export const usageKeys = (back = true): string[] => [
+  "[↑↓] Move",
+  "[Tab] Range",
+  "[Space] Expand",
+  "[Enter] Done",
+  `[Esc] ${back ? "Back" : "Cancel"}`,
+];
 
 /** Paint a keybinding for a legend, from the same table the handler matches against. */
 export const keybind = (key: string): string => `[${keycap(key)}]`;
@@ -108,9 +129,9 @@ export function cycleEyeState(ctx?: any): "ON" | "REVIEW" | "OFF" {
 // to sit in the list with no counterpart anywhere visible. Supervisor mode has one path, the
 // `ctrl+alt+e` keybinding, and it is named by that keybinding rather than by a subcommand.
 export const EYE_SUBCOMMANDS = [
-  { value: "accounts", label: "accounts", description: "Accounts screen [menu row]: store a key for TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef), and remove one with [Ctrl+d]" },
+  { value: "accounts", label: "accounts", description: "Accounts screen [menu row]: store a key for TypeSafe, OpenRouter, or Cloudflare Workers AI (Clef), and remove one with [R]" },
   { value: "models", label: "models", description: "Models screen [menu row]: choose the active Jev/Clef backend and the fallback it fails over to" },
-  { value: "status", label: "status", description: "Show supervisor, gate scope, routing and interception stats [menu row]" },
+  { value: "status", label: "status", description: "Live supervisor controls, active backend, routing and session summary [menu row]" },
   { value: "usage", label: "usage", description: "Show Jev/Clef spend: per-provider totals and the Cloudflare free-neuron budget [menu row]" },
   { value: "routing", label: "routing", description: "Model routing screen: pick the light and heavy targets [menu row]" },
   { value: "routing light", label: "routing light", description: "Open the routing screen focused on the light slot" },

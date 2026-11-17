@@ -33,7 +33,7 @@ const { keybind } = await import(new URL("../extensions/supervisor.ts", import.m
  * symbols are not portable: a key the terminal cannot draw is advertised as a control it is not, and
  * one the operator cannot read is worse than no legend. `Ctrl+Shift+T` is the pair this replaces.
  */
-const showsKey = (text) => /^\[[^\]]*[A-Za-z][^\]]*\]$/.test(text) && /\bshift\b/i.test(text) === false;
+const showsKey = (text) => /^\[[^\]]*[A-Za-z/][^\]]*\]$/.test(text) && /\bshift\b/i.test(text) === false;
 
 const commands = {};
 const sent = [];
@@ -51,7 +51,7 @@ install({
 // correctly and would count the tags as columns.
 const TOKEN_CODE = {
   accent: 1, accentSoft: 2, tint: 3, text: 4, muted: 5, dim: 6, success: 7, warning: 8, error: 9,
-  thinkingOff: 10, thinkingLow: 11, thinkingHigh: 12, thinkingText: 13,
+  thinkingOff: 10, thinkingLow: 11, thinkingHigh: 12, thinkingText: 13, borderMuted: 14,
 };
 const ansiTheme = {
   fg: (color, text) => {
@@ -188,13 +188,15 @@ for (const width of [40, 80, 120]) {
 
   // Every key the two global shortcuts announce must survive a narrow, legacy terminal: the frame is
   // drawn with plain ASCII letters, never a ligature or a modifier symbol.
-  for (const key of ["toggle", "gate", "routingToggle", "accountsRemove", "routeLight", "routeHeavy"]) {
+  for (const key of ["toggle", "gate", "routingToggle", "accountsRemove", "routingReset", "routingFilter", "routeLight", "routeHeavy"]) {
     assert.equal(showsKey(keybind(KEY_SETS[key])), true, `${KEY_SETS[key]} is a portable keycap: ${keybind(KEY_SETS[key])}`);
   }
-  // A shifted chord is not portable: Ghostty owns ctrl+shift+e/new_split and ctrl+shift+t/new_tab, and
-  // `matchesKey("\x14", "ctrl+shift+t")` is false, so the key would never fire on a legacy terminal.
+  // A ctrl+shift chord is not portable: Ghostty owns ctrl+shift+e/new_split and ctrl+shift+t/new_tab,
+  // and `matchesKey("\x14", "ctrl+shift+t")` is false, so the key would never fire on a legacy terminal.
+  // A lone shifted letter is the exception: it is the capital itself (`matchesKey("R", "shift+r")`), the
+  // pair pi-arnative ships for its destructive usage-reset key.
   for (const [name, chord] of Object.entries(KEY_SETS)) {
-    assert.equal(/shift/.test(chord), false, `${name} (${chord}) must not be a shifted chord`);
+    assert.equal(/ctrl\+shift/.test(chord), false, `${name} (${chord}) must not be a ctrl+shift chord`);
   }
 
   // Behavioural proof, not just the list: every advertised value must dispatch to a real handler.
@@ -221,12 +223,13 @@ for (const width of [40, 80, 120]) {
   }
 }
 
-// `[←] Back` is per-screen: the menu path has a previous menu, the direct subcommand does not.
-// Both branches are exercised, because advertising a key that does nothing was the original bug.
-assert.equal((await open("status from menu", "", [2], 80)).includes("[←] Back"), true, "status opened from the menu can go back");
+// `[←] Back` is omitted from all sub-menu footers for consistency with other plugins.
+assert.equal((await open("status from menu", "", [2], 80)).includes("[←] Back"), false, "status opened from the menu omits [←] Back");
 assert.equal((await open("status direct", "status", [], 80)).includes("[←] Back"), false, "status opened by subcommand cannot, and must not pretend to");
+assert.equal((await open("status direct", "status", [], 80)).includes("[Esc] Cancel"), true, "a direct subcommand has no menu behind it, so Esc is labelled Cancel");
+assert.equal((await open("status from menu", "", [2], 80)).includes("[Esc] Back"), true, "a menu-opened screen labels Esc as Back");
 assert.equal((await open("usage direct", "usage", [], 80)).includes("[←] Back"), false, "usage opened by subcommand advertises no back key");
-assert.equal((await open("routing direct", "routing", [], 80)).includes("[←] Back"), false, "routing opened by subcommand advertises no back key");
+assert.equal((await open("routing direct", "routing", [], 80)).includes("[Esc] Cancel"), true, "routing opened by subcommand cancels on Esc");
 
 // Returning from a sub-screen must leave the cursor where it was. The menu picker is rebuilt on every
 // loop pass, so a picker that starts at row 0 sends [←] back to Accounts — which read as "back went
@@ -247,23 +250,180 @@ assert.equal((await open("routing direct", "routing", [], 80)).includes("[←] B
   await run;
 }
 
+// Esc on a sub-screen the menu opened returns to the menu, not to the editor. The same screen opened
+// by subcommand has nothing behind it, so Esc ends the command instead of reopening anything.
+{
+  for (const [row, name] of [[0, "accounts"], [1, "models"], [2, "status"], [3, "usage"], [4, "routing"]]) {
+    const { ctx, screens } = harness();
+    const run = commands["jev-eye"].handler("", ctx);
+    await tick();
+    screens[0].resolve(row);
+    await tick();
+    assert.equal(!!screens[1], true, `${name}: the sub-screen opened from the menu`);
+    screens[1].wrapper.handleInput("\x1b"); // Esc
+    await tick();
+    assert.equal(!!screens[2], true, `${name}: Esc reopens the menu instead of closing the command`);
+    const menu = strip(screens[2].wrapper.render(90).join("\n"));
+    assert.equal(menu.includes("Jev Eye · Menu"), true, `${name}: Esc returned to the menu`);
+    screens[2].resolve(null);
+    await run;
+  }
+
+  const { ctx, screens } = harness();
+  const run = commands["jev-eye"].handler("models", ctx);
+  await tick();
+  screens[0].wrapper.handleInput("\x1b");
+  await run;
+  assert.equal(screens.length, 1, "Esc on a subcommand-opened screen ends the command");
+}
+
 // Every sub-screen opens inside the frame, and the read-only one advertises no toggle it ignores.
 const status = await open("status", "", [2], 80);
-assert.equal(status.includes("Grant folder"), true, "status keeps its last footer key at 80 columns");
-// One legend order on every framed screen: nav/confirm, the screen's keys, then the exits (Back before
-// Esc, because Back stays inside the extension and Esc leaves it).
 {
   const at = (token) => status.indexOf(token);
-  const order = ["[Enter] Done", "[Ctrl+Alt+e] Supervisor", "[Ctrl+Alt+u] Grant folder", "[←] Back", "[Esc] Cancel"].map(at);
+  const order = ["[↑↓] Move", "[Space] Toggle", "[Enter] Done", "[Esc] Back"].map(at);
   assert.equal(order.every((i) => i >= 0), true, `every status footer key is present, got ${order.join(",")}`);
-  assert.deepEqual([...order].sort((x, y) => x - y), order, `the status footer runs confirm → keys → exits, got ${order.join(",")}`);
+  assert.deepEqual([...order].sort((x, y) => x - y), order, `the status footer runs nav → toggle → confirm → exits, got ${order.join(",")}`);
+  const statusRows = status.split("\n").filter((l) => /Backend|Routing|Session|Supervisor|Folder gate/.test(l));
+  assert.equal(statusRows.length, 5, "status shows the five expected rows");
+  // Overview and interactive controls each align their own `·` column so read-only rows are not
+  // mistaken for selectable items.
+  const overviewRows = statusRows.filter((l) => /Backend|Routing|Session/.test(l));
+  const controlRows = statusRows.filter((l) => /Supervisor|Folder gate/.test(l));
+  assert.equal(new Set(overviewRows.map((l) => l.indexOf("·"))).size, 1, "overview dividers align in one column");
+  assert.equal(new Set(controlRows.map((l) => l.indexOf("·"))).size, 1, "control dividers align in one column");
+  assert.equal(status.indexOf("Session") < status.indexOf("Supervisor"), true, "overview sits above the interactive controls");
+  assert.equal(statusRows.some((l) => l.includes("|")), false, "status drops the old pipe separator");
+}
+{
+  const { ctx, screens } = harness();
+  const run = commands["jev-eye"].handler("status", ctx);
+  await tick();
+  const panel = screens[0].wrapper;
+  const view = () => strip(panel.render(80).join("\n"));
+  assert.equal(/→ Supervisor\s+· ENABLED/.test(view()), true, "status opens with cursor on Supervisor");
+  panel.handleInput(" ");
+  assert.equal(/→ Supervisor\s+· REVIEW/.test(view()), true, "Space cycles Supervisor from ENABLED to REVIEW");
+  panel.handleInput("\x1b[B"); // Down
+  assert.equal(/→ Folder gate/.test(view()), true, "Down moves the cursor to Folder gate");
+  const beforeGate = view().split("\n").find((l) => l.includes("Folder gate"));
+  panel.handleInput(" ");
+  const afterGate = view().split("\n").find((l) => l.includes("Folder gate"));
+  assert.notEqual(afterGate, beforeGate, "Space cycles Folder gate when highlighted");
+  panel.handleInput("\x1b\x05"); // Ctrl+Alt+e shortcut still works inside the panel
+  assert.equal(/Supervisor\s+· DISABLED/.test(view()), true, "Ctrl+Alt+e still cycles Supervisor inside Status");
+  // Restore defaults so later checks see the initial state.
+  panel.handleInput("\x1b\x05"); // DISABLED -> ENABLED
+  panel.handleInput(" "); // Folder gate cycle back once more if needed — restore consent file below
+  screens[0].resolve(undefined);
+  await run;
+  const { rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  rmSync(join(process.env.HOME, ".pi", "agent", "pi-jev-eye", "consent.json"), { force: true });
 }
 const usage = await open("usage", "", [3], 80);
 assert.equal(usage.includes("[Enter] Done"), true, "usage advertises its real exits");
+assert.equal(usage.includes("[Tab] Range"), true, "usage advertises range switching");
+assert.equal(usage.includes("[Space] Expand"), true, "usage advertises provider expand/collapse");
+assert.equal(usage.includes("Toggle"), false, "usage must not advertise a toggle it ignores");
 assert.equal(usage.includes("Supervisor"), false, "usage must not advertise a toggle it ignores");
 {
-  const usageOrder = ["[Enter] Done", "[Esc] Cancel"].map((token) => usage.indexOf(token));
-  assert.deepEqual([...usageOrder].sort((x, y) => x - y), usageOrder, "the read-only footer keeps confirm before the exit");
+  const usageOrder = ["[↑↓] Move", "[Tab] Range", "[Space] Expand", "[Enter] Done", "[Esc] Back"].map((token) =>
+    usage.indexOf(token)
+  );
+  assert.deepEqual([...usageOrder].sort((x, y) => x - y), usageOrder, "usage footer keeps navigation before confirm and exit");
+  const usageRows = usage.split("\n");
+  // Session, Blocked, and Clef (today) share one flush-left `label · value` divider column below the Total row.
+  const kvRows = usageRows.filter((l) => /│ (Session|Blocked|Clef \(today\))\s+·/.test(l));
+  assert.equal(kvRows.length, 3, "usage shows Session, Blocked, and Clef (today) on `label · value` rows");
+  assert.equal(new Set(kvRows.map((l) => l.indexOf("·"))).size, 1, "usage summary dividers align in one column");
+  const totalIdx = usageRows.findIndex((l) => /│ Total\s+/.test(l));
+  const firstKvIdx = usageRows.findIndex((l) => /│ Session\s+·\s+gate/.test(l));
+  assert.equal(totalIdx !== -1 && firstKvIdx > totalIdx, true, "summary rows sit below the Total row");
+  assert.equal(usage.includes("All time · Today · 7 day · 30 day"), true, "usage shows the period filter bar");
+  assert.equal(usage.includes("Provider / Model"), true, "usage shows the Provider / Model table header");
+  assert.equal(usage.includes("▸ TypeSafe"), true, "usage lists TypeSafe collapsed by default");
+  assert.equal(usage.includes("▸ Cloudflare"), true, "usage lists Cloudflare collapsed by default");
+  const usageNarrow = await open("usage@68", "usage", [], 68);
+  assert.equal(usageNarrow.includes("…"), false, "the usage panel does not clip at 68 columns");
+}
+// Populated usage: TypeSafe, Cloudflare, and Total share one 4-decimal cost column without
+// precision jitter, and neither table clips at 68 columns. Expanding Cloudflare shows its models.
+{
+  const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const usagePath = join(process.env.HOME, ".pi", "agent", "pi-jev-eye", "usage.json");
+  const day = new Date().toISOString().slice(0, 10);
+  mkdirSync(join(process.env.HOME, ".pi", "agent", "pi-jev-eye"), { recursive: true });
+  writeFileSync(
+    usagePath,
+    JSON.stringify({
+      days: {
+        [day]: {
+          requests: 12,
+          ok: 11,
+          failed: 1,
+          inputTokens: 24500,
+          outputTokens: 320,
+          cost: 0.0145,
+          neurons: 1850,
+          providers: {
+            typesafe: {
+              requests: 4,
+              ok: 4,
+              failed: 0,
+              inputTokens: 10200,
+              outputTokens: 120,
+              cost: 0.0085,
+              neurons: 0,
+              models: {
+                "jev-latest": { requests: 4, ok: 4, failed: 0, inputTokens: 10200, outputTokens: 120, cost: 0.0085, neurons: 0 },
+              },
+            },
+            cloudflare: {
+              requests: 8,
+              ok: 7,
+              failed: 1,
+              inputTokens: 14300,
+              outputTokens: 200,
+              cost: 0.006,
+              neurons: 1850,
+              models: {
+                "clef-flash": { requests: 8, ok: 7, failed: 1, inputTokens: 14300, outputTokens: 200, cost: 0.006, neurons: 1850 },
+              },
+            },
+          },
+        },
+      },
+    })
+  );
+  const populated = await open("usage populated@68", "usage", [], 68);
+  assert.equal(populated.includes("…"), false, "populated usage rows fit inside 68 columns without clipping");
+  const costLines = populated.split("\n").filter((l) => /│ (?:[▸▾] )?(TypeSafe|Cloudflare|Total)\s+\d/.test(l));
+  assert.equal(costLines.length, 3, "populated usage renders TypeSafe, Cloudflare, and Total rows");
+  assert.equal(
+    new Set(costLines.map((l) => l.indexOf("$") + l.slice(l.indexOf("$")).indexOf("."))).size,
+    1,
+    "provider rows and Total align every cost decimal point in one column"
+  );
+
+  // Interactive check: expand Cloudflare (`↓` then `Space`) to reveal `clef (flash)`, and switch period (`→`).
+  const { ctx, screens } = harness();
+  const run = commands["jev-eye"].handler("usage", ctx);
+  await tick();
+  const panel = screens[0].wrapper;
+  panel.handleInput("\x1b[B"); // Down -> Cloudflare
+  panel.handleInput(" "); // Space -> Expand Cloudflare
+  const expanded = strip(panel.render(88).join("\n"));
+  assert.equal(expanded.includes("▾ Cloudflare"), true, "Space expands the highlighted provider");
+  assert.equal(expanded.includes("clef (flash)"), true, "expanded Cloudflare lists clef (flash)");
+  panel.handleInput("\t"); // Tab -> Today
+  const todayView = strip(panel.render(88).join("\n"));
+  assert.equal(/Total\s+12\s+24,500\s+\$0\.0145/.test(todayView), true, "Tab switches range and keeps today's 12 requests");
+  screens[0].resolve(undefined);
+  await run;
+
+  rmSync(usagePath, { force: true });
 }
 await open("routing", "", [4], 80);
 
@@ -274,19 +434,31 @@ await open("routing", "", [4], 80);
 {
   const models = await open("models", "models", [], 100);
   assert.equal(models.includes("[Space] Active"), true, "the active key is advertised from KEY_SETS");
-  assert.equal(models.includes("[Ctrl+f] Fallback"), true, "the fallback key is advertised from KEY_SETS");
+  assert.equal(models.includes("[Tab] Fallback"), true, "the fallback key is advertised from KEY_SETS");
   assert.equal(models.includes("[←] Back"), false, "a subcommand screen has no menu behind it, so it promises no back key");
+  // Slot summary above the table, the first thing read: with nothing picked both read (auto).
+  assert.equal(/Active\s+· \(auto\)/.test(models), true, "the Active summary sits above the table");
+  assert.equal(/Fallback\s+· \(auto\)/.test(models), true, "the Fallback summary sits beside it");
   for (const label of ["jev-latest", "typesafe/jev-1.13", "clef", "clef (flash)"]) {
     assert.equal(models.includes(label), true, `the catalog lists ${label}`);
   }
   // The parenthesised tier is what the footer dims, so it must be on the row verbatim.
   assert.equal(/clef \(flash\)/.test(models), true, "the Clef flash model carries its tier in parentheses");
+  // Rows, not the summary: a row carries a state marker (— or ✓), the summary lines never do.
   const dividerAt = (needle) => {
-    const line = models.split("\n").find((l) => l.includes(needle) && l.includes("·"));
+    const line = models.split("\n").find((l) => l.includes(needle) && l.includes("·") && /[—✓]/.test(l));
     return line.indexOf("·");
   };
   // `typesafe/jev-1.13` is the widest label, so every divider sits in its column.
   assert.equal(new Set(["jev-latest", "typesafe/jev-1.13", "clef (flash)"].map(dividerAt)).size, 1, "model rows put their divider in one column");
+  // One divider per row: the state cell and the provider tag share the line after it.
+  const unassigned = models.split("\n").find((l) => l.includes("typesafe/jev-1.13") && l.includes("·"));
+  assert.equal((unassigned.match(/·/g) ?? []).length, 1, "a model row carries exactly one divider");
+  assert.equal(/· — no key \[OpenRouter\]/.test(models), true, "an unassigned keyless row reads `— no key [provider]`");
+  // Legend order: nav, the slot keys, confirm, exit.
+  const order = ["[↑↓] Move", "[Space] Active", "[Tab] Fallback", "[Enter] Done", "[Esc] Cancel"].map((token) => models.indexOf(token));
+  assert.equal(order.every((at) => at >= 0), true, `every models legend token is present, got ${order.join(",")}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "the models legend runs nav → slot keys → confirm → exit");
 }
 
 // The Models description must fit its own frame. It names the two slot keys, so a clipped one is a
@@ -295,7 +467,7 @@ for (const width of [40, 80, 120]) {
   const screen = await open(`models header@${width}`, "models", [], width);
   assert.equal(screen.includes("…"), false, `the Models description is not clipped at ${width} columns`);
   assert.equal(screen.includes("sets fallback."), true, `the Models description reaches its period at ${width} columns`);
-  assert.equal(screen.includes("[Ctrl+f] sets fallback."), true, `the fallback key stays bracketed at ${width} columns`);
+  assert.equal(screen.includes("[Tab]"), true, `the fallback key stays bracketed at ${width} columns`);
 }
 
 // The slot keys, driven on the real component: `[Space]` assigns active, `[Ctrl+f]` the fallback, a
@@ -306,31 +478,34 @@ for (const width of [40, 80, 120]) {
   const run = commands["jev-eye"].handler("models", ctx);
   await tick();
   const picker = screens[0].wrapper;
-  const rowOf = (needle) => strip(picker.render(100).join("\n")).split("\n").find((l) => l.includes(needle));
-  const notice = () => {
-    const rows = strip(picker.render(100).join("\n")).split("\n").map((l) => l.replace(/^│|│\s*$/g, "").trim());
-    const at = rows.findIndex((l) => /^\(\d+\/\d+\)$/.test(l));
-    return at >= 0 ? rows[at + 1] : "<no counter row>";
-  };
-  assert.equal(notice(), "", "before any key the notice row stays empty");
+  // Table rows only: a row always carries a state marker (— or ✓); the Active/Fallback summary lines
+  // never do, so a summary naming the same model cannot shadow the row.
+  const rowOf = (needle) =>
+    strip(picker.render(100).join("\n")).split("\n").find((l) => l.includes(needle) && /[—✓]/.test(l));
+  // The mock ends the table at the last model: no `(n/m)` counter and no notice row under it — the
+  // Active/Fallback summary above the table is the only feedback a key needs.
+  const bare = strip(picker.render(100).join("\n")).split("\n").map((l) => l.replace(/^│|│\s*$/g, "").trim());
+  assert.equal(bare.some((l) => /^\(\d+\/\d+\)$/.test(l)), false, "Models carries no counter row");
+  assert.equal(bare.some((l) => /cleared/.test(l)), false, "Models carries no notice row");
 
   picker.handleInput(" ");
   assert.equal(rowOf("jev-latest").includes("✓ active"), true, "space makes the highlighted row active");
-  assert.equal(notice().includes("Active → "), true, `the notice names what the key did: ${notice()}`);
+  const assigned = strip(picker.render(100).join("\n")).split("\n").find((l) => l.includes("✓ active"));
+  assert.equal((assigned.match(/·/g) ?? []).length, 1, "the assigned row keeps one divider");
+  assert.equal(/Active\s+· jev-latest/.test(strip(picker.render(100).join("\n"))), true, "the Active summary follows the pending pick");
   picker.handleInput(" ");
   assert.equal(rowOf("jev-latest").includes("✓ active"), false, "a second press clears the slot, so the key is a toggle");
-  assert.equal(notice(), "Active cleared");
+  assert.equal(/Active\s+· \(auto\)/.test(strip(picker.render(100).join("\n"))), true, "the cleared slot reads (auto) in the summary");
 
   picker.handleInput(" ");
   picker.handleInput("\x1b[B"); // down to OpenRouter
-  picker.handleInput("\x06"); // ctrl+f: fallback
-  assert.equal(rowOf("typesafe/jev-1.13").includes("✓ fallback"), true, "ctrl+f assigns the fallback");
+  picker.handleInput("\t"); // tab: fallback
+  assert.equal(rowOf("typesafe/jev-1.13").includes("✓ fallback"), true, "tab assigns the fallback");
   assert.equal(rowOf("jev-latest").includes("✓ active"), true, "and leaves the active slot alone");
   picker.handleInput("\x1b[A"); // back up to TypeSafe
-  picker.handleInput("\x06"); // ctrl+f on the active row: the ref moves, it cannot occupy both
+  picker.handleInput("\t"); // tab on the active row: the ref moves, it cannot occupy both
   assert.equal(rowOf("jev-latest").includes("✓ fallback"), true, "the fallback can be moved onto the other slot");
   assert.equal(rowOf("jev-latest").includes("✓ active"), false, "and the old slot is emptied, not duplicated");
-  assert.equal(notice().includes("active cleared"), true, `the notice explains the move: ${notice()}`);
 
   screens[0].resolve(null);
   await run;
@@ -413,6 +588,7 @@ for (const width of [40, 80, 120]) {
     "\u2265", // ≥
     "\u25cb", "\u25cf", "\u2713", // ○ ● ✓ (status marker, stored marker)
     "\u2588", "\u2591", // █ ░ (usage bar)
+    "\u25b8", "\u25be", // ▸ ▾ (tree expand/collapse)
   ]);
   const rpc = rpcHarness();
   for (const [label, arg] of [["status", "status"], ["usage", "usage"], ["accounts", "accounts"], ["menu", ""]]) {
@@ -432,21 +608,21 @@ for (const width of [40, 80, 120]) {
 // its own explanation in half. Asserted at the widths an operator uses, not just the wide one.
 for (const width of [80, 120]) {
   const header = await open(`routing header@${width}`, "routing", [], width);
-  // It wraps onto more than one row now, so the description is read as the block above the query line.
+  // It wraps onto more than one row now, so the description is read as the block above the summary.
   const rows = header.split("\n");
-  const at = rows.findIndex((l) => l.includes("> type to filter"));
+  const at = rows.findIndex((l) => l.includes("Routing ·"));
   const block = rows
     .slice(1, at)
     .map((l) => l.replace(/^│|│\s*$/g, "").trim())
     .filter(Boolean)
     .join(" ");
-  assert.equal(block.includes("Chores to the"), true, `the routing screen explains itself at ${width} columns: ${block}`);
+  assert.equal(block.includes("Chores run cheap"), true, `the routing screen explains itself at ${width} columns: ${block}`);
   assert.equal(block.includes("…"), false, `the description is not clipped at ${width} columns: ${block}`);
-  assert.equal(block.includes("press again to cycle its thinking"), true, `the description carries the folded thinking step: ${block}`);
+  assert.equal(block.includes("off clears it"), true, `the description carries the walk-to-off step: ${block}`);
   assert.equal(block.split(/\s+/).length <= 30, true, `the description stays two rows at 80 columns, not a paragraph: ${block}`);
   // Every keycap in the description is bracketed (skill: brackets around every key), including the two
-  // slot keys, and the trailing period proves the sentence reached its end instead of being cut.
-  for (const key of ["[Space]", "[Ctrl+h]", "[Ctrl+r]"]) {
+  // slot keys, the reset, and the trailing period proves the sentence reached its end instead of a cut.
+  for (const key of ["[Space]", "[Tab]", "[R]", "[Ctrl+r]"]) {
     assert.equal(block.includes(key), true, `the description names ${key} in brackets: ${block}`);
   }
   assert.equal(block.trimEnd().endsWith("toggles routing."), true, `the description ends with its period, not a cut: ${block}`);
@@ -456,7 +632,7 @@ for (const width of [80, 120]) {
 // a key spelled in two places drifts in one of them, and the footer then lies about what works.
 {
   const routing = await open("routing legend", "routing", [], 120);
-  for (const key of ["routingToggle", "routeLight", "routeHeavy"]) {
+  for (const key of ["routingToggle", "routeLight", "routeHeavy", "routingReset"]) {
     assert.equal(routing.includes(keybind(KEY_SETS[key])), true, `the routing footer advertises ${keybind(KEY_SETS[key])} from KEY_SETS`);
     assert.equal(showsKey(keybind(KEY_SETS[key])), true, `${KEY_SETS[key]} has a key name a frame can draw in every terminal`);
   }
@@ -468,12 +644,14 @@ for (const width of [80, 120]) {
   }
   assert.equal(/(Light Think|Heavy Think)/.test(routing), false, "no legend row advertises a separate thinking chord");
   assert.equal(routing.includes("[Space] Light"), true, "the light key is advertised from KEY_SETS");
-  assert.equal(routing.includes("[Ctrl+h] Heavy"), true, "the heavy key is advertised from KEY_SETS");
+  assert.equal(routing.includes("[Tab] Heavy"), true, "the heavy key is advertised from KEY_SETS");
+  assert.equal(routing.includes("[R] Reset"), true, "the reset key is advertised from KEY_SETS");
   // The legend stays a plain key list: the note about the folded thinking step lives in the description,
   // so a marker like `(×2 thinking)` on two labels (or a pair of thinking chords) must not come back.
   assert.equal(/×2|Light Think|Heavy Think|\(×/.test(routing), false, "the legend carries no duplicate note about the second press");
-  // The ordering rule: navigation, then confirmation, then the screen's own keys, then Back, then Cancel.
-  const order = ["[↑↓] Move", "[Enter] Done", "[Space] Light", "[Ctrl+h] Heavy", "[Ctrl+r] Routing", "[Esc] Cancel"]
+  // The ordering rule, this screen's own contract: navigation, then the filter mode, then the slot
+  // keys, then the exits — `[Enter]` after the screen keys, `[Esc]` last because it leaves the screen.
+  const order = ["[↑↓] Move", "[/] Filter", "[Space] Light", "[Tab] Heavy", "[R] Reset", "[Ctrl+r] Routing", "[Enter] Done", "[Esc] Cancel"]
     .map((token) => routing.indexOf(token));
   assert.equal(order.every((at) => at >= 0), true, `every legend token is present, got ${order.join(",")}`);
   assert.deepEqual([...order].sort((a, b) => a - b), order, `the legend runs nav → confirm → keys → exits, got ${order.join(",")}`);
@@ -491,55 +669,77 @@ for (const width of [80, 120]) {
   ];
   const run = commands["jev-eye"].handler("routing", ctx).catch(() => {});
   await tick();
-  // The needle must not be a substring of the first id, or `find` returns that row instead.
-  const row = (needle) => strip(screens[0].wrapper.render(120).join("\n")).split("\n").find((l) => l.includes(needle));
+  // Filter to table rows (`provider/id` prefix) so the Light/Heavy summary above the table is not matched.
+  const row = (needle) => strip(screens[0].wrapper.render(120).join("\n")).split("\n").find((l) => l.includes(`fireworks/${needle}`));
   const press = (data) => screens[0].wrapper.handleInput(data);
 
-  // The notice row sits directly under the `(n/m)` counter, so it is read by position, not by keyword —
-  // a keyword match also catches the `Light model: … [thinking: …]` summary further down.
-  const notice = () => {
+  // The summary block sits above the filter & table: `Routing ·`, `Light ·`, `Heavy ·` share one divider column.
+  const summaryRow = (label) => {
     const rows = strip(screens[0].wrapper.render(120).join("\n")).split("\n").map((l) => l.replace(/^│|│\s*$/g, "").trim());
-    const at = rows.findIndex((l) => /^\(\d+\/\d+\)$/.test(l));
-    return at >= 0 ? rows[at + 1] : "<no counter row>";
+    return rows.find((l) => l.startsWith(`${label} `) || l.startsWith(`${label}·`)) ?? "";
   };
-  assert.equal(notice(), "", "before any key the notice row stays empty; the legend already names the fold");
+  assert.equal(summaryRow("Light").includes("(unset)"), true, "before any key the Light summary shows (unset)");
 
+  // The slot key walks a closed ring: the first press assigns at the list's first level, each next
+  // press advances, and the press past the last level lands on `off` — the slot leaves the row — so
+  // the key alone can undo what it did.
   press(" "); // light on the highlighted row
-  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light (${SLOT_DEFAULT_THINKING.light})`), true, "the light slot starts at the shared default");
-  assert.equal(notice().includes("press again to cycle"), true, `assigning says what a second press does: ${notice()}`);
-  press(" ");
-  const afterDefault = LIGHT_THINKING_LEVELS[(LIGHT_THINKING_LEVELS.indexOf(SLOT_DEFAULT_THINKING.light) + 1) % LIGHT_THINKING_LEVELS.length];
-  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light (${afterDefault})`), true, "a second press cycles the level after the default, it does not clear the slot");
-  assert.equal(/Light thinking → \w+/.test(notice()), true, `the notice reports the level the key just set: ${notice()}`);
-  const lightCycles = [];
-  for (let i = 0; i < LIGHT_THINKING_LEVELS.length; i++) {
-    lightCycles.push(LIGHT_THINKING_LEVELS.find((level) => row("deepseek-v4p1-flash").includes(`✓ light (${level})`)));
+  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light · ${LIGHT_THINKING_LEVELS[0]}`), true, "the light slot starts at the first level of its list");
+  assert.equal(summaryRow("Light").includes(`· ${LIGHT_THINKING_LEVELS[0]}`), true, `summary reports the light thinking level: ${summaryRow("Light")}`);
+  for (const level of LIGHT_THINKING_LEVELS.slice(1)) {
     press(" ");
+    assert.equal(row("deepseek-v4p1-flash").includes(`✓ light · ${level}`), true, `the light walk reaches ${level}`);
   }
-  assert.equal(lightCycles.includes(undefined), false, "every light level is reachable from the same key");
-  assert.equal(lightCycles[0] === lightCycles[lightCycles.length - 1], false, "the light list wraps without repeating its start early");
+  press(" "); // past the last level: off
+  assert.equal(row("deepseek-v4p1-flash").includes("✓ light"), false, "the press past the last level clears the light slot");
+  assert.equal(summaryRow("Light").includes("(unset)"), true, "the summary mirrors the cleared slot");
+  press(" "); // the ring restarts
+  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light · ${LIGHT_THINKING_LEVELS[0]}`), true, "pressing again assigns anew at the first level");
 
-  // A different row resets the level to the slot's default instead of carrying the previous choice.
+  // A different row starts its own walk from the first level instead of carrying the previous choice.
   press("\x1b[B");
   press(" ");
-  assert.equal(row("solo-model").includes(`✓ light (${SLOT_DEFAULT_THINKING.light})`), true, "moving to another row resets the level to the shared default");
-
-  // Heavy is its own list: it cannot be dropped to `off`, which is the light slot's job.
-  press("\x08");
-  assert.equal(row("solo-model").includes(`✓ heavy (${SLOT_DEFAULT_THINKING.heavy})`), true, "the heavy slot starts at `high`, never `off`");
-  assert.equal(HEAVY_THINKING_LEVELS.includes("off"), false, "the heavy list cannot reach `off`");
+  assert.equal(row("solo-model").includes(`✓ light · ${LIGHT_THINKING_LEVELS[0]}`), true, "moving to another row starts the walk from its first level");
+  assert.equal(HEAVY_THINKING_LEVELS.includes("off"), false, "the heavy list has no off level: off is the unassigned state");
   assert.equal(LIGHT_THINKING_LEVELS.includes("max"), false, "the light list cannot reach `max`");
-  const heavyCycles = [];
-  for (let i = 0; i < HEAVY_THINKING_LEVELS.length; i++) {
-    heavyCycles.push(HEAVY_THINKING_LEVELS.find((level) => row("solo-model").includes(`✓ heavy (${level})`)));
-    press("\x08");
-  }
-  assert.equal(heavyCycles.includes(undefined), false, "every heavy level is reachable from the same key");
 
-  // `ctrl+h` arrives as `\x08`, which is also backspace: the heavy match must win, or the assignment
-  // would be eaten by the filter prompt in every terminal that reports them the same way.
-  assert.equal(screens[0].wrapper.render(120).join("\n").includes("✓ heavy"), true, "ctrl+h/backspace never loses the heavy assignment");
-  screens[0].resolve(null);
+  // Heavy walks the same ring on `tab` (the light walk above ended unassigned, so the row is free).
+  press("\t");
+  assert.equal(row("solo-model").includes(`✓ heavy · ${HEAVY_THINKING_LEVELS[0]}`), true, "the heavy slot starts at the first level of its list");
+  for (const level of HEAVY_THINKING_LEVELS.slice(1)) {
+    press("\t");
+    assert.equal(row("solo-model").includes(`✓ heavy · ${level}`), true, `the heavy walk reaches ${level}`);
+  }
+  press("\t"); // past max: off
+  assert.equal(row("solo-model").includes("✓ heavy"), false, "the press past the last level clears the heavy slot");
+
+  // `[R]` clears the whole configuration at once — both slots, not only the cursor's row. Light on
+  // an earlier row proves the global reach; a row-walk reset could never touch it.
+  press(" "); // light again on this row
+  press("\t"); // heavy again on this row
+  assert.equal(row("solo-model").includes("✓ light"), true, "light is back before the reset");
+  assert.equal(row("solo-model").includes("✓ heavy"), true, "heavy is back before the reset");
+  press("R");
+  assert.equal(row("solo-model").includes("✓ light"), false, "reset clears the light slot");
+  assert.equal(row("solo-model").includes("✓ heavy"), false, "reset clears the heavy slot");
+  assert.equal(row("deepseek-v4p1-flash").includes("✓"), false, "reset clears every row, not only the cursor's");
+  assert.equal(summaryRow("Routing").includes("off"), true, "reset also turns routing off");
+
+  // The filter is a mode, not an always-on field: a letter outside typing never reaches the query,
+  // `/` opens it, every key inside is text, and Esc wipes a typed filter before it may close.
+  press("z");
+  assert.equal(row("solo-model").includes("—"), true, "a letter outside the filter mode never reaches the query");
+  assert.equal(strip(screens[0].wrapper.render(120).join("\n")).includes("> Type to filter models..."), true, "the idle filter names the key-less placeholder");
+  press("/");
+  press("z");
+  assert.equal(strip(screens[0].wrapper.render(120).join("\n")).includes("no model matches this filter"), true, "a letter that matches nothing shows the empty state");
+  assert.equal(strip(screens[0].wrapper.render(120).join("\n")).includes("> z"), true, "typing shows the query with the accent prompt");
+  press("\x08");
+  assert.equal(row("solo-model").includes("—"), true, "backspace edits the query instead of assigning a slot");
+  press("z");
+  press("\x1b");
+  assert.equal(strip(screens[0].wrapper.render(120).join("\n")).includes("solo-model"), true, "Esc cleared the typed filter and the screen stays open");
+  press("\x1b"); // filter already empty: Esc closes the screen
   await run;
 }
 
@@ -565,20 +765,21 @@ for (const width of [80, 120]) {
   await tick();
   screens[0].wrapper.handleInput(" "); // light on the highlighted row
   screens[0].wrapper.handleInput("\x1b[B");
-  screens[0].wrapper.handleInput("\x08"); // ctrl+h: heavy on the second row
+  screens[0].wrapper.handleInput("\t"); // tab: heavy on the second row
   const raw = screens[0].wrapper.render(120).join("\n");
-  const lightOnly = raw.split("\n").find((l) => l.includes("gemini-3.5-flash-lite"));
-  const heavyOnly = raw.split("\n").find((l) => l.includes("gemini-3.8-flash"));
+  const lightOnly = raw.split("\n").find((l) => l.includes("antigravity/gemini-3.5-flash-lite"));
+  const heavyOnly = raw.split("\n").find((l) => l.includes("antigravity/gemini-3.8-flash"));
   const paint = (token, text) => `\x1b[38;5;${TOKEN_CODE[token]}m${text}\x1b[39m`;
   assert.equal(lightOnly.includes(paint(SLOT_TOKEN.light, "✓ light")), true, "the light slot takes SLOT_TOKEN.light");
   assert.equal(lightOnly.includes(paint(SLOT_TOKEN.heavy, "✓ light")), false, "light is never painted as heavy");
   assert.equal(heavyOnly.includes(paint(SLOT_TOKEN.heavy, "✓ heavy")), true, "the heavy slot takes SLOT_TOKEN.heavy (amber)");
   assert.equal(heavyOnly.includes(paint(SLOT_TOKEN.light, "✓ heavy")), false, "heavy is never painted as light");
 
-  // Padding proof: the slot cell keeps exactly one space to each divider, so the column does not drift
-  // when a row gains an assignment. The thinking level rides inside the cell (`✓ heavy (high)`).
+  // ListPicker layout: `provider/model  · ✓ heavy · high` with aligned divider column.
   const stripped = strip(raw).split("\n").find((l) => l.includes("✓ heavy"));
-  assert.equal(/ · ✓ heavy \(\w+\) · \[antigravity\]/.test(stripped), true, `the slot cell is tight against both dividers: ${stripped}`);
+  assert.equal(/antigravity\/gemini-3\.8-flash\s+· ✓ heavy · \w+/.test(stripped), true, `the slot cell matches the ListPicker row shape: ${stripped}`);
+  const summaryCols = dividerColumns(strip(raw), ["Routing", "Light", "Heavy"]);
+  assert.equal(new Set(summaryCols).size, 1, `routing summary dividers sit in one column, got ${summaryCols.join(",")}`);
   screens[0].resolve(null);
   await run;
 }
@@ -620,24 +821,24 @@ for (const width of [80, 120]) {
   await run;
 }
 
-// The frame colour follows the theme: the arnative soft token, else the session's thinking slot.
+// The frame colour follows the session's thinking slot, else dim.
 {
   const { ctx, screens } = harness({ ...ansiTheme, fg: (color, text) => `<${color}>${text}</${color}>` });
   const run = commands["jev-eye"].handler("", ctx);
   await tick();
-  assert.equal(screens[0].wrapper.render(80)[0].includes("<accentSoft>╭"), true, "an arnative theme gets the soft border");
+  assert.equal(screens[0].wrapper.render(80)[0].includes("<thinkingLow>╭"), true, "the frame follows the session's thinking level");
   screens[0].resolve(null);
   await run;
 
-  const builtin = harness({ ...ansiTheme, fg: (color, text) => {
-    if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
+  const noThinking = harness({ ...ansiTheme, fg: (color, text) => {
+    if (color.startsWith("thinking")) throw new Error(`Unknown theme color: ${color}`);
     return `<${color}>${text}</${color}>`;
   } });
-  const runBuiltin = commands["jev-eye"].handler("", builtin.ctx);
+  const runFallback = commands["jev-eye"].handler("", noThinking.ctx);
   await tick();
-  assert.equal(builtin.screens[0].wrapper.render(80)[0].includes("<thinkingLow>╭"), true, "a built-in theme follows the thinking level, not an uncoloured frame");
-  builtin.screens[0].resolve(null);
-  await runBuiltin;
+  assert.equal(noThinking.screens[0].wrapper.render(80)[0].includes("<dim>╭"), true, "a theme rejecting thinking* falls back to dim");
+  noThinking.screens[0].resolve(null);
+  await runFallback;
 }
 
 
@@ -909,7 +1110,7 @@ console.log("render checks OK");
 }
 
 // The Accounts screen owns add and remove. A stored key is not recoverable from the screen, so removal
-// takes two presses of `[Ctrl+d]`, and the second press must be the only thing that writes.
+// takes two presses of `[R]`, and the second press must be the only thing that writes.
 {
   const { mkdirSync, writeFileSync, readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
@@ -922,7 +1123,7 @@ console.log("render checks OK");
     { mode: 0o600 }
   );
   const read = () => (JSON.parse(readFileSync(authPath, "utf8")).providers ?? {});
-  const REMOVE = "\x04"; // ctrl+d
+  const REMOVE = "R"; // the capital: matchesKey reads the uppercase byte as `shift+r`
 
   const openAccounts = async () => {
     const h = harness();
@@ -936,7 +1137,7 @@ console.log("render checks OK");
   const row = () => strip(first.screens[0].wrapper.render(90).join("\n")).split("\n").find((l) => l.includes("TypeSafe account"));
   assert.equal(row().includes("✓ stored"), true, "a stored credential reports its state");
   const legend = () => strip(first.screens[0].wrapper.render(90).join("\n"));
-  assert.equal(legend().includes("[Ctrl+d] Remove"), true, "the remove key is advertised while something is stored");
+  assert.equal(legend().includes("[R] Remove"), true, "the remove key is advertised while something is stored");
 
   first.screens[0].wrapper.handleInput(REMOVE);
   assert.equal(row().includes("again to remove"), true, "the first press asks for confirmation instead of deleting");
@@ -971,7 +1172,64 @@ console.log("render checks OK");
   const runEmpty = commands["jev-eye"].handler("accounts", ctx).catch(() => {});
   await tick();
   const empty = strip(screens[0].wrapper.render(90).join("\n"));
-  assert.equal(empty.includes("[Ctrl+d]"), false, "an empty store advertises no remove key");
+  assert.equal(empty.includes("[R]"), false, "an empty store advertises no remove key");
   screens[0].resolve(null);
   await runEmpty;
+}
+
+// Regression: openMenu rebuilds summaries on [←] Back, built-in themes tint all dialog borders via ctx,
+// and SecretPrompt(reveal=true) renders the inverse-video cursor caret.
+{
+  const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const eyeDir = join(process.env.HOME, ".pi", "agent", "pi-jev-eye");
+  mkdirSync(eyeDir, { recursive: true });
+  writeFileSync(join(eyeDir, "backends.json"), JSON.stringify({ version: 1, primary: "", fallback: "" }), { mode: 0o600 });
+
+  // openMenu summary refresh after [←] Back
+  const h = harness();
+  const runMenu = commands["jev-eye"].handler("", h.ctx);
+  await tick();
+  h.screens[0].resolve(2); // Status
+  await tick();
+  writeFileSync(join(eyeDir, "backends.json"), JSON.stringify({ version: 1, primary: "cloudflare:clef-flash", fallback: "" }), { mode: 0o600 });
+  h.screens[1].resolve(-2); // BACK
+  await tick();
+  const refreshed = strip(h.screens[2].wrapper.render(100).join("\n"));
+  assert.equal(refreshed.includes("active: clef (flash)"), true, "returning to the root menu refreshes row summaries");
+  h.screens[2].resolve(null);
+  await runMenu;
+  rmSync(join(eyeDir, "backends.json"), { force: true });
+
+  // Built-in theme (no accentSoft) passes ctx.thinkingLevel border to Accounts, Models, and SecretPrompt
+  const builtinTheme = {
+    ...ansiTheme,
+    fg: (color, text) => {
+      if (color === "accentSoft") throw new Error("Unknown theme color: accentSoft");
+      return `<${color}>${text}</${color}>`;
+    },
+  };
+  for (const arg of ["accounts", "models"]) {
+    const b = harness(builtinTheme);
+    const runB = commands["jev-eye"].handler(arg, b.ctx);
+    await tick();
+    assert.equal(b.screens[0].wrapper.render(80)[0].includes("<thinkingLow>╭"), true, `${arg} inherits thinking-level border`);
+    b.screens[0].resolve(null);
+    await runB;
+  }
+
+  // SecretPrompt with reveal=true renders the inverse-video caret alongside the typed text
+  const rev = harness(builtinTheme);
+  const runRev = commands["jev-eye"].handler("login", rev.ctx);
+  await tick();
+  rev.screens[0].wrapper.handleInput("\x1b[B");
+  rev.screens[0].wrapper.handleInput("\x1b[B");
+  rev.screens[0].wrapper.handleInput("\r"); // Cloudflare -> account ID (reveal=true)
+  await tick();
+  rev.screens[1].wrapper.handleInput("a1b2c3d4");
+  const revLines = rev.screens[1].wrapper.render(72);
+  assert.equal(revLines[0].includes("<thinkingLow>╭"), true, "SecretPrompt inherits thinking-level border");
+  assert.equal(revLines.join("\n").includes("\x1b[7m"), true, "revealed prompt renders a visible cursor caret");
+  rev.screens[1].resolve(undefined);
+  await runRev;
 }

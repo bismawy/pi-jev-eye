@@ -160,7 +160,8 @@ export default function (pi: ExtensionAPI) {
   // agent_settled, not agent_end: agent_end closes one low-level run while retries, recovery,
   // compaction, or queued follow-ups may still run after it. Settled means Pi will not continue.
   pi.on("agent_settled", async (_event: any, ctx: any) => {
-    if (!state.enabled || !state.pendingRevert) return;
+    // Always restore pendingRevert even if the supervisor was toggled OFF mid-turn.
+    if (!state.pendingRevert) return;
     const { model, thinking } = state.pendingRevert;
     state.pendingRevert = undefined;
     try {
