@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.1] - 2026-11-17
 
 ### Fixed
 - `/jev-eye usage` responds to `[←]` like every other screen: with a menu behind it, the left arrow reopens the menu instead of doing nothing.
