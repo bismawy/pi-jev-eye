@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] - 2026-11-17
 
 ### Changed
 - Accounts removes a stored key with `[R]` (pressed twice) instead of `[Ctrl+d]`; a capital letter keeps the destructive key away from the navigation keys.
