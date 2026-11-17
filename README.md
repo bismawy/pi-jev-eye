@@ -140,12 +140,13 @@ Run `/jev-eye routing` to open the interactive model selector:
 
 | Key | Action |
 | --- | --- |
-| `type` | Filter models by id, provider, or display name |
-| `↑` `↓` | Navigate list |
-| `space` | Assign highlighted model to **Light** slot; press it again on the same row to cycle that slot's thinking level |
-| `ctrl+h` · `ctrl+q` | Assign highlighted model to **Heavy** slot; press it again on the same row to cycle that slot's thinking level |
+| `/` | Open the filter's typing mode; every key is text while it is open, and `Esc` wipes a typed filter before it closes the screen |
+| `↑` `↓` | Navigate list (also while typing) |
+| `space` | Assign highlighted model to **Light** slot; press it again on the same row to cycle that slot's thinking (off clears the slot) |
+| `tab` | Assign highlighted model to **Heavy** slot; press it again on the same row to cycle that slot's thinking (off clears the slot) |
+| `shift+r` | Reset the whole routing configuration: both slots cleared, default thinking, routing off |
 | `ctrl+r` | Toggle routing on / off |
-| `enter` | Save configuration (`~/.pi/agent/pi-jev-eye/routing.json`) |
+| `enter` | Save configuration (`~/.pi/agent/pi-jev-eye/routing.json`); `/` or `Enter` while typing closes the filter |
 | `esc` | Cancel and exit without changes |
 
 </details>

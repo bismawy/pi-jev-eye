@@ -323,9 +323,10 @@ class SecretInput extends Input {
 }
 
 /**
- * One screen for the routing targets, keybind-driven: type to filter, `space` assigns the
- * highlighted model as the light target, `ctrl+h` as the heavy target, `enter` saves,
- * `esc` discards. Rows carry `✓ (light)` / `✓ (heavy)` so both slots stay visible at once.
+ * One screen for the routing targets, keybind-driven: `/` opens the filter's typing mode, `space`
+ * assigns the highlighted model as the light target, `tab` as the heavy target, and pressing the
+ * slot key again walks that slot's thinking until `off` clears it; `enter` saves, `esc` discards.
+ * Rows carry `✓ light · level` / `✓ heavy · level` so both slots stay visible at once.
  */
 const modelRef = (model: any): string => `${model.provider}/${model.id}`;
 
