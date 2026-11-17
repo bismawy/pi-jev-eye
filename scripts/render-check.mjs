@@ -188,7 +188,7 @@ for (const width of [40, 80, 120]) {
 
   // Every key the two global shortcuts announce must survive a narrow, legacy terminal: the frame is
   // drawn with plain ASCII letters, never a ligature or a modifier symbol.
-  for (const key of ["toggle", "gate", "routingToggle", "accountsRemove", "routeLight", "routeHeavy"]) {
+  for (const key of ["toggle", "gate", "routingToggle", "accountsRemove", "routingReset", "routeLight", "routeHeavy"]) {
     assert.equal(showsKey(keybind(KEY_SETS[key])), true, `${KEY_SETS[key]} is a portable keycap: ${keybind(KEY_SETS[key])}`);
   }
   // A ctrl+shift chord is not portable: Ghostty owns ctrl+shift+e/new_split and ctrl+shift+t/new_tab,
@@ -616,13 +616,13 @@ for (const width of [80, 120]) {
     .map((l) => l.replace(/^│|│\s*$/g, "").trim())
     .filter(Boolean)
     .join(" ");
-  assert.equal(block.includes("Chores to the"), true, `the routing screen explains itself at ${width} columns: ${block}`);
+  assert.equal(block.includes("Chores to the cheap"), true, `the routing screen explains itself at ${width} columns: ${block}`);
   assert.equal(block.includes("…"), false, `the description is not clipped at ${width} columns: ${block}`);
-  assert.equal(block.includes("press again to cycle its thinking"), true, `the description carries the folded thinking step: ${block}`);
+  assert.equal(block.includes("off clears it"), true, `the description carries the walk-to-off step: ${block}`);
   assert.equal(block.split(/\s+/).length <= 30, true, `the description stays two rows at 80 columns, not a paragraph: ${block}`);
   // Every keycap in the description is bracketed (skill: brackets around every key), including the two
-  // slot keys, and the trailing period proves the sentence reached its end instead of being cut.
-  for (const key of ["[Space]", "[Ctrl+h]", "[Ctrl+r]"]) {
+  // slot keys, the reset, and the trailing period proves the sentence reached its end instead of a cut.
+  for (const key of ["[Space]", "[Tab]", "[R]", "[Ctrl+r]"]) {
     assert.equal(block.includes(key), true, `the description names ${key} in brackets: ${block}`);
   }
   assert.equal(block.trimEnd().endsWith("toggles routing."), true, `the description ends with its period, not a cut: ${block}`);
@@ -632,7 +632,7 @@ for (const width of [80, 120]) {
 // a key spelled in two places drifts in one of them, and the footer then lies about what works.
 {
   const routing = await open("routing legend", "routing", [], 120);
-  for (const key of ["routingToggle", "routeLight", "routeHeavy"]) {
+  for (const key of ["routingToggle", "routeLight", "routeHeavy", "routingReset"]) {
     assert.equal(routing.includes(keybind(KEY_SETS[key])), true, `the routing footer advertises ${keybind(KEY_SETS[key])} from KEY_SETS`);
     assert.equal(showsKey(keybind(KEY_SETS[key])), true, `${KEY_SETS[key]} has a key name a frame can draw in every terminal`);
   }
@@ -644,12 +644,13 @@ for (const width of [80, 120]) {
   }
   assert.equal(/(Light Think|Heavy Think)/.test(routing), false, "no legend row advertises a separate thinking chord");
   assert.equal(routing.includes("[Space] Light"), true, "the light key is advertised from KEY_SETS");
-  assert.equal(routing.includes("[Ctrl+h] Heavy"), true, "the heavy key is advertised from KEY_SETS");
+  assert.equal(routing.includes("[Tab] Heavy"), true, "the heavy key is advertised from KEY_SETS");
+  assert.equal(routing.includes("[R] Reset"), true, "the reset key is advertised from KEY_SETS");
   // The legend stays a plain key list: the note about the folded thinking step lives in the description,
   // so a marker like `(×2 thinking)` on two labels (or a pair of thinking chords) must not come back.
   assert.equal(/×2|Light Think|Heavy Think|\(×/.test(routing), false, "the legend carries no duplicate note about the second press");
   // The ordering rule: navigation, then confirmation, then the screen's own keys, then Back, then Cancel.
-  const order = ["[↑↓] Move", "[Enter] Done", "[Space] Light", "[Ctrl+h] Heavy", "[Ctrl+r] Routing", "[Esc] Cancel"]
+  const order = ["[↑↓] Move", "[Enter] Done", "[Space] Light", "[Tab] Heavy", "[R] Reset", "[Ctrl+r] Routing", "[Esc] Cancel"]
     .map((token) => routing.indexOf(token));
   assert.equal(order.every((at) => at >= 0), true, `every legend token is present, got ${order.join(",")}`);
   assert.deepEqual([...order].sort((a, b) => a - b), order, `the legend runs nav → confirm → keys → exits, got ${order.join(",")}`);
@@ -678,41 +679,54 @@ for (const width of [80, 120]) {
   };
   assert.equal(summaryRow("Light").includes("(unset)"), true, "before any key the Light summary shows (unset)");
 
+  // The slot key walks a closed ring: the first press assigns at the list's first level, each next
+  // press advances, and the press past the last level lands on `off` — the slot leaves the row — so
+  // the key alone can undo what it did.
   press(" "); // light on the highlighted row
-  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light · ${SLOT_DEFAULT_THINKING.light}`), true, "the light slot starts at the shared default");
-  assert.equal(summaryRow("Light").includes(`· ${SLOT_DEFAULT_THINKING.light}`), true, `summary reports the light thinking level: ${summaryRow("Light")}`);
-  press(" ");
-  const afterDefault = LIGHT_THINKING_LEVELS[(LIGHT_THINKING_LEVELS.indexOf(SLOT_DEFAULT_THINKING.light) + 1) % LIGHT_THINKING_LEVELS.length];
-  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light · ${afterDefault}`), true, "a second press cycles the level after the default, it does not clear the slot");
-  assert.equal(summaryRow("Light").includes(`· ${afterDefault}`), true, `summary reports the cycled level: ${summaryRow("Light")}`);
-  const lightCycles = [];
-  for (let i = 0; i < LIGHT_THINKING_LEVELS.length; i++) {
-    lightCycles.push(LIGHT_THINKING_LEVELS.find((level) => row("deepseek-v4p1-flash").includes(`✓ light · ${level}`)));
+  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light · ${LIGHT_THINKING_LEVELS[0]}`), true, "the light slot starts at the first level of its list");
+  assert.equal(summaryRow("Light").includes(`· ${LIGHT_THINKING_LEVELS[0]}`), true, `summary reports the light thinking level: ${summaryRow("Light")}`);
+  for (const level of LIGHT_THINKING_LEVELS.slice(1)) {
     press(" ");
+    assert.equal(row("deepseek-v4p1-flash").includes(`✓ light · ${level}`), true, `the light walk reaches ${level}`);
   }
-  assert.equal(lightCycles.includes(undefined), false, "every light level is reachable from the same key");
-  assert.equal(lightCycles[0] === lightCycles[lightCycles.length - 1], false, "the light list wraps without repeating its start early");
+  press(" "); // past the last level: off
+  assert.equal(row("deepseek-v4p1-flash").includes("✓ light"), false, "the press past the last level clears the light slot");
+  assert.equal(summaryRow("Light").includes("(unset)"), true, "the summary mirrors the cleared slot");
+  press(" "); // the ring restarts
+  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light · ${LIGHT_THINKING_LEVELS[0]}`), true, "pressing again assigns anew at the first level");
 
-  // A different row resets the level to the slot's default instead of carrying the previous choice.
+  // A different row starts its own walk from the first level instead of carrying the previous choice.
   press("\x1b[B");
   press(" ");
-  assert.equal(row("solo-model").includes(`✓ light · ${SLOT_DEFAULT_THINKING.light}`), true, "moving to another row resets the level to the shared default");
-
-  // Heavy is its own list: it cannot be dropped to `off`, which is the light slot's job.
-  press("\x08");
-  assert.equal(row("solo-model").includes(`✓ heavy · ${SLOT_DEFAULT_THINKING.heavy}`), true, "the heavy slot starts at `high`, never `off`");
-  assert.equal(HEAVY_THINKING_LEVELS.includes("off"), false, "the heavy list cannot reach `off`");
+  assert.equal(row("solo-model").includes(`✓ light · ${LIGHT_THINKING_LEVELS[0]}`), true, "moving to another row starts the walk from its first level");
+  assert.equal(HEAVY_THINKING_LEVELS.includes("off"), false, "the heavy list has no off level: off is the unassigned state");
   assert.equal(LIGHT_THINKING_LEVELS.includes("max"), false, "the light list cannot reach `max`");
-  const heavyCycles = [];
-  for (let i = 0; i < HEAVY_THINKING_LEVELS.length; i++) {
-    heavyCycles.push(HEAVY_THINKING_LEVELS.find((level) => row("solo-model").includes(`✓ heavy · ${level}`)));
-    press("\x08");
-  }
-  assert.equal(heavyCycles.includes(undefined), false, "every heavy level is reachable from the same key");
 
-  // `ctrl+h` arrives as `\x08`, which is also backspace: the heavy match must win, or the assignment
-  // would be eaten by the filter prompt in every terminal that reports them the same way.
-  assert.equal(screens[0].wrapper.render(120).join("\n").includes("✓ heavy"), true, "ctrl+h/backspace never loses the heavy assignment");
+  // Heavy walks the same ring on `tab` (the light walk above ended unassigned, so the row is free).
+  press("\t");
+  assert.equal(row("solo-model").includes(`✓ heavy · ${HEAVY_THINKING_LEVELS[0]}`), true, "the heavy slot starts at the first level of its list");
+  for (const level of HEAVY_THINKING_LEVELS.slice(1)) {
+    press("\t");
+    assert.equal(row("solo-model").includes(`✓ heavy · ${level}`), true, `the heavy walk reaches ${level}`);
+  }
+  press("\t"); // past max: off
+  assert.equal(row("solo-model").includes("✓ heavy"), false, "the press past the last level clears the heavy slot");
+
+  // `[R]` clears every slot on the row at once — the shortcut for a walk that would take several presses.
+  press(" "); // light again on this row
+  press("\t"); // heavy again on this row
+  assert.equal(row("solo-model").includes("✓ light"), true, "light is back before the reset");
+  assert.equal(row("solo-model").includes("✓ heavy"), true, "heavy is back before the reset");
+  press("R");
+  assert.equal(row("solo-model").includes("✓ light"), false, "reset clears the light slot");
+  assert.equal(row("solo-model").includes("✓ heavy"), false, "reset clears the heavy slot");
+
+  // Backspace belongs to the filter again: `tab` shares no keycode with it, so a letter that matches
+  // nothing can be removed without touching the slots.
+  press("z");
+  assert.equal(strip(screens[0].wrapper.render(120).join("\n")).includes("no model matches this filter"), true, "a letter that matches nothing shows the empty state");
+  press("\x08");
+  assert.equal(row("solo-model").includes("—"), true, "backspace edits the query instead of assigning a slot");
   screens[0].resolve(null);
   await run;
 }
@@ -739,7 +753,7 @@ for (const width of [80, 120]) {
   await tick();
   screens[0].wrapper.handleInput(" "); // light on the highlighted row
   screens[0].wrapper.handleInput("\x1b[B");
-  screens[0].wrapper.handleInput("\x08"); // ctrl+h: heavy on the second row
+  screens[0].wrapper.handleInput("\t"); // tab: heavy on the second row
   const raw = screens[0].wrapper.render(120).join("\n");
   const lightOnly = raw.split("\n").find((l) => l.includes("antigravity/gemini-3.5-flash-lite"));
   const heavyOnly = raw.split("\n").find((l) => l.includes("antigravity/gemini-3.8-flash"));

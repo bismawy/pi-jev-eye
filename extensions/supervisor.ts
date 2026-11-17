@@ -33,11 +33,14 @@ export const KEY_SETS = {
    *  One key for both steps keeps the screen free of a second chord — `ctrl+t` / `ctrl+shift+t` were
    *  exactly the unportable pair the two separate keys needed. */
   routeLight: "space",
-  /** Assign the highlighted model to the heavy slot; pressing it again walks its thinking level. */
-  routeHeavy: "ctrl+h",
-  /** Alias for `ctrl+h`: some terminals report ctrl+h as backspace (`\x08` satisfies both keys), so a
-   *  handler that matches the two in order never loses the assignment. */
-  routeHeavyAlias: "ctrl+q",
+  /** Assign the highlighted model to the heavy slot; pressing it again walks its thinking level
+   *  (low → … → max, then off clears the slot). `tab` is the same walk-to-the-next-slot gesture
+   *  the Models screen uses for its fallback; `ctrl+h` shared a keycode with backspace, so the
+   *  filter prompt could eat the assignment in terminals that report them as one key. */
+  routeHeavy: "tab",
+  /** Routing screen: clear the highlighted row's slot assignments at once. Capital R on purpose,
+   *  the same destructive-key shape as `accountsRemove`: the filter field owns the lowercase keys. */
+  routingReset: "shift+r",
   /** Models screen: make the highlighted backend the active one. `space` is the same
    *  "assign the highlighted row" gesture the routing screen uses; `[[` and `]]` on screen say which slot. */
   modelsPrimary: "space",

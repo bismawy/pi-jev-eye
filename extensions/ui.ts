@@ -407,36 +407,60 @@ export class RoutingPicker {
     this.index = (this.index + delta + rows.length) % rows.length;
   }
 
+  /** The slot's thinking list — the ring the slot key walks, one entry per press. */
+  private levels(slot: "light" | "heavy"): ThinkingLevel[] {
+    return slot === "light" ? LIGHT_THINKING_LEVELS : HEAVY_THINKING_LEVELS;
+  }
+
   private assign(slot: "light" | "heavy"): void {
     const row = this.filtered()[this.index];
     if (!row) return;
     const ref = modelRef(row);
-    // Already assigned to this row: the key walks that slot's thinking level instead of clearing it.
-    // Removing an assignment is `[Ctrl+r] Routing` + `[Enter]` (routing needs both targets), so no key
-    // needs to unset a slot — and the pair of thinking chords this replaces cannot come back.
+    // Already assigned to this row: the key walks the slot's thinking, and the walk ends at `off`,
+    // which clears the slot — so the key alone can undo what it did, and `[R]` is the shortcut.
     if (this.pending[slot] === ref) return this.cycleThinking(slot);
     const field = slot === "light" ? "lightThinking" : "heavyThinking";
-    this.pending = { ...this.pending, [slot]: ref, [field]: SLOT_DEFAULT_THINKING[slot] };
+    // The walk starts at the list's first level (light: off-thinking, heavy: low), so every level
+    // and the off at the end is reachable from the key alone — no second chord, no dead end.
+    this.pending = { ...this.pending, [slot]: ref, [field]: this.levels(slot)[0] };
   }
 
-  /** Walks one slot's thinking level through the list its default lives in. */
+  /** Advances one slot's thinking; past the last level the walk lands on `off` and clears the slot. */
   private cycleThinking(slot: "light" | "heavy"): void {
     const field = slot === "light" ? "lightThinking" : "heavyThinking";
-    const levels = slot === "light" ? LIGHT_THINKING_LEVELS : HEAVY_THINKING_LEVELS;
-    const current = (this.pending[field as keyof Routing] as ThinkingLevel | undefined) ?? SLOT_DEFAULT_THINKING[slot];
-    const next = levels[(levels.indexOf(current) + 1) % levels.length];
-    this.pending = { ...this.pending, [field]: next };
+    const levels = this.levels(slot);
+    const at = levels.indexOf(this.pending[field as keyof Routing] as ThinkingLevel);
+    if (at < 0 || at + 1 >= levels.length) {
+      // Off: the slot leaves this row. The thinking field returns to the store default, so a
+      // re-assign starts clean.
+      this.pending = { ...this.pending, [slot]: "", [field]: SLOT_DEFAULT_THINKING[slot] };
+      return;
+    }
+    this.pending = { ...this.pending, [field]: levels[at + 1] };
+  }
+
+  /** `[R]`: clear this row's slot assignments at once — the shortcut for a walk that would take
+   *  several presses. Rows without an assignment are untouched. */
+  private resetRow(): void {
+    const row = this.filtered()[this.index];
+    if (!row) return;
+    const ref = modelRef(row);
+    const clear = (slot: "light" | "heavy"): Record<string, string> =>
+      this.pending[slot] === ref
+        ? { [slot]: "", [slot === "light" ? "lightThinking" : "heavyThinking"]: SLOT_DEFAULT_THINKING[slot] }
+        : {};
+    this.pending = { ...this.pending, ...clear("light"), ...clear("heavy") } as Routing;
   }
 
   handleInput(data: string): void {
     if (matchesKey(data, Key.up)) return this.move(-1);
     if (matchesKey(data, Key.down)) return this.move(1);
-    // `\x08` satisfies BOTH `Key.backspace` and `ctrl+h` in pi's parser, so the heavy chord is matched
-    // (with its alias) before backspace: otherwise the filter prompt would eat the heavy assignment in
-    // every terminal that reports ctrl+h as backspace. Backspace is the less destructive match here,
-    // because the query is recoverable and a slot assignment is what the operator asked for.
-    if (matchesKey(data, KEY_SETS.routeHeavy) || matchesKey(data, KEY_SETS.routeHeavyAlias)) return this.assign("heavy");
+    // `tab` carries the heavy assignment — the same walk-to-the-next-slot gesture the Models screen
+    // uses. Unlike the `ctrl+h` it replaces, tab shares no keycode with backspace, so the filter
+    // prompt below keeps backspace for itself and can never eat an assignment.
+    if (matchesKey(data, KEY_SETS.routeHeavy)) return this.assign("heavy");
     if (matchesKey(data, Key.space) || data === " ") return this.assign("light");
+    if (matchesKey(data, KEY_SETS.routingReset)) return this.resetRow();
     if (matchesKey(data, KEY_SETS.routingToggle)) {
       this.pending = { ...this.pending, enabled: !this.pending.enabled };
       return;
@@ -483,7 +507,7 @@ export class RoutingPicker {
       // twice the work. The table and the legend below stay pure (rows, keys, labels) — no `×2` marker
       // duplicating this sentence in the legend.
       ...wrapWords(
-        `Chores to the cheap model, real work to the strongest. ${keybind(KEY_SETS.routeLight)} / ${keybind(KEY_SETS.routeHeavy)} assign a slot; press again to cycle its thinking. ${keybind(KEY_SETS.routingToggle)} toggles routing.`,
+        `Chores to the cheap model, work to the strongest. ${keybind(KEY_SETS.routeLight)} / ${keybind(KEY_SETS.routeHeavy)} assign a slot and cycle thinking; off clears it. ${keybind(KEY_SETS.routingReset)} resets. ${keybind(KEY_SETS.routingToggle)} toggles routing.`,
         inner
       ).map((line) => t.fg("muted", line)),
       "",
@@ -541,6 +565,7 @@ export class RoutingPicker {
       "[Enter] Done",
       `${keybind(KEY_SETS.routeLight)} Light`,
       `${keybind(KEY_SETS.routeHeavy)} Heavy`,
+      `${keybind(KEY_SETS.routingReset)} Reset`,
       `${keybind(KEY_SETS.routingToggle)} Routing`,
       `[Esc] ${this.back ? "Back" : "Cancel"}`,
     ];
