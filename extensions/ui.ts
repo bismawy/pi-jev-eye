@@ -358,9 +358,15 @@ export const modelLabelFor = (models: any[], ref: string): string => {
  */
 export const SLOT_TOKEN = { light: "accent", heavy: "warning" } as const;
 
+/** The idle filter placeholder, capitalised: it is a sentence in the operator's language. */
+const FILTER_PLACEHOLDER = "Type to filter models...";
+
 export class RoutingPicker {
   private pending: Routing;
-  private query = "";
+  /** The filter field (ListPicker's filter line): a real cursor while typing; the idle state is
+   *  drawn by `render`, because pi-tui's Input paints a fake block cursor whatever `focused` says. */
+  private readonly field: Input;
+  private typing = false;
   private index = 0;
   private readonly models: any[];
   private readonly theme: any;
@@ -387,17 +393,34 @@ export class RoutingPicker {
     this.paint = paint;
     this.soft = chosenRowPainter(theme);
     this.back = back;
+    this.field = new Input({
+      prompt: theme.fg("accent", "> "),
+      placeholder: FILTER_PLACEHOLDER,
+      placeholderStyle: (s: string) => theme.fg("muted", s),
+    });
     const preferred = focus === "light" ? initial.light : initial.heavy;
     const at = models.findIndex((m) => modelRef(m) === preferred);
     this.index = at >= 0 ? at : 0;
   }
 
+  /** What the filter field holds — the source of truth for `filtered()`. */
+  private get query(): string {
+    return this.field.getValue();
+  }
+
+  /** Fuzzy match, spaces ignored: the query's characters must appear in order (ListPicker's rule),
+   *  so `agy gem` still finds `remote/agy-cli/gemini-…` where a plain `includes` finds nothing. */
   private filtered(): any[] {
-    const terms = this.query.toLowerCase().split(/\s+/).filter(Boolean);
-    if (terms.length === 0) return this.models;
+    const q = this.query.toLowerCase().replace(/\s+/g, "");
+    if (!q) return this.models;
     return this.models.filter((m) => {
-      const haystack = `${m.id} ${m.provider} ${m.name ?? ""}`.toLowerCase();
-      return terms.every((t) => haystack.includes(t));
+      const haystack = `${m.provider}/${m.id} ${m.name ?? ""}`.toLowerCase();
+      let at = 0;
+      for (const ch of haystack) {
+        if (ch === q[at]) at++;
+        if (at === q.length) return true;
+      }
+      return at === q.length;
     });
   }
 
@@ -439,20 +462,46 @@ export class RoutingPicker {
     this.pending = { ...this.pending, [field]: levels[at + 1] };
   }
 
-  /** `[R]`: clear this row's slot assignments at once — the shortcut for a walk that would take
-   *  several presses. Rows without an assignment are untouched. */
-  private resetRow(): void {
-    const row = this.filtered()[this.index];
-    if (!row) return;
-    const ref = modelRef(row);
-    const clear = (slot: "light" | "heavy"): Record<string, string> =>
-      this.pending[slot] === ref
-        ? { [slot]: "", [slot === "light" ? "lightThinking" : "heavyThinking"]: SLOT_DEFAULT_THINKING[slot] }
-        : {};
-    this.pending = { ...this.pending, ...clear("light"), ...clear("heavy") } as Routing;
+  /** `[R]`: clear the whole routing configuration at once — both slots, thinking back to the
+   *  defaults, routing off. A row-scoped reset would need a second key for the other slot; the
+   *  walk-to-off already undoes one slot, so Reset owns the whole screen instead. */
+  private resetAll(): void {
+    this.pending = {
+      enabled: false,
+      light: "",
+      heavy: "",
+      lightThinking: SLOT_DEFAULT_THINKING.light,
+      heavyThinking: SLOT_DEFAULT_THINKING.heavy,
+    };
+  }
+
+  /** The filter is a mode, not a guess: `/` turns typing on, and while it is on every key is text
+   *  (Space and digits included), so the slot keys cannot fire mid-word. `/` or Enter ends typing
+   *  and keeps the filter; Esc wipes a typed filter first and closes the screen only when it is
+   *  empty. `↑↓` moves the list even while typing. */
+  private searchKey(data: string): boolean {
+    const setTyping = (on: boolean): true => {
+      this.typing = on;
+      this.field.focused = on;
+      return true;
+    };
+    if (!this.typing) return data === "/" && setTyping(true);
+    if (data === "/" || matchesKey(data, Key.enter)) return setTyping(false);
+    if (matchesKey(data, Key.escape)) {
+      if (!this.query) return false; // filter already empty: the screen's own Esc (Back/Cancel) runs
+      this.field.setValue("");
+      this.index = 0;
+      return setTyping(false);
+    }
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) return false;
+    const before = this.query;
+    this.field.handleInput(data);
+    if (this.query !== before) this.index = 0;
+    return true;
   }
 
   handleInput(data: string): void {
+    if (this.searchKey(data)) return;
     if (matchesKey(data, Key.up)) return this.move(-1);
     if (matchesKey(data, Key.down)) return this.move(1);
     // `tab` carries the heavy assignment — the same walk-to-the-next-slot gesture the Models screen
@@ -460,14 +509,9 @@ export class RoutingPicker {
     // prompt below keeps backspace for itself and can never eat an assignment.
     if (matchesKey(data, KEY_SETS.routeHeavy)) return this.assign("heavy");
     if (matchesKey(data, Key.space) || data === " ") return this.assign("light");
-    if (matchesKey(data, KEY_SETS.routingReset)) return this.resetRow();
+    if (matchesKey(data, KEY_SETS.routingReset)) return this.resetAll();
     if (matchesKey(data, KEY_SETS.routingToggle)) {
       this.pending = { ...this.pending, enabled: !this.pending.enabled };
-      return;
-    }
-    if (matchesKey(data, Key.backspace)) {
-      this.query = this.query.slice(0, -1);
-      this.index = 0;
       return;
     }
     if (matchesKey(data, Key.enter)) {
@@ -478,10 +522,6 @@ export class RoutingPicker {
     if (this.back && matchesKey(data, Key.left)) return this.done(BACK);
     // From the menu, Esc steps back to it; a direct subcommand has nothing behind it, so Esc cancels.
     if (matchesKey(data, Key.escape)) return this.done(this.back ? BACK : null);
-    if (data.length === 1 && data >= " ") {
-      this.query += data;
-      this.index = 0;
-    }
   }
 
   render(width: number): string[] {
@@ -507,7 +547,7 @@ export class RoutingPicker {
       // twice the work. The table and the legend below stay pure (rows, keys, labels) — no `×2` marker
       // duplicating this sentence in the legend.
       ...wrapWords(
-        `Chores to the cheap model, work to the strongest. ${keybind(KEY_SETS.routeLight)} / ${keybind(KEY_SETS.routeHeavy)} assign a slot and cycle thinking; off clears it. ${keybind(KEY_SETS.routingReset)} resets. ${keybind(KEY_SETS.routingToggle)} toggles routing.`,
+        `Chores run cheap, work runs strong. ${keybind(KEY_SETS.routeLight)} / ${keybind(KEY_SETS.routeHeavy)} assign a slot and cycle thinking; off clears it. ${keybind(KEY_SETS.routingReset)} resets all. ${keybind(KEY_SETS.routingToggle)} toggles routing.`,
         inner
       ).map((line) => t.fg("muted", line)),
       "",
@@ -515,10 +555,12 @@ export class RoutingPicker {
       summaryRow("Light", targetValue(this.pending.light, SLOT_TOKEN.light, this.pending.lightThinking ?? "low")),
       summaryRow("Heavy", targetValue(this.pending.heavy, SLOT_TOKEN.heavy, this.pending.heavyThinking ?? "high")),
       "",
-      // The query is one line, but a stray paste must never break the frame: spread it first.
-      ...`${t.fg("accent", "> ")}${this.query}${this.query ? "" : t.fg("dim", "Type to filter models...")}`.split("\n"),
-      "",
     ];
+    // The filter line, two painted states (ListPicker's rule): idle draws the muted prompt and no
+    // cursor — pi-tui's Input would paint a fake one — while typing hands the row to the real field.
+    const idle = `${t.fg("borderMuted", "> ")}${this.query ? t.fg("text", this.query) : t.fg("dim", FILTER_PLACEHOLDER)}`;
+    lines.push(...(this.typing ? this.field.render(Math.max(1, inner)) : [truncateToWidth(idle, inner, "")]));
+    lines.push("");
 
     const start = Math.max(0, Math.min(this.index - Math.floor(RoutingPicker.WINDOW / 2), Math.max(0, rows.length - RoutingPicker.WINDOW)));
     const slice = rows.slice(start, start + RoutingPicker.WINDOW);
@@ -562,11 +604,12 @@ export class RoutingPicker {
     // legend remains a plain key list.
     const legend = [
       "[↑↓] Move",
-      "[Enter] Done",
+      `${keybind(KEY_SETS.routingFilter)} Filter`,
       `${keybind(KEY_SETS.routeLight)} Light`,
       `${keybind(KEY_SETS.routeHeavy)} Heavy`,
       `${keybind(KEY_SETS.routingReset)} Reset`,
       `${keybind(KEY_SETS.routingToggle)} Routing`,
+      "[Enter] Done",
       `[Esc] ${this.back ? "Back" : "Cancel"}`,
     ];
     // The count rides the first legend row, so the wrapping budget is what is left after that prefix.

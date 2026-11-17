@@ -33,7 +33,7 @@ const { keybind } = await import(new URL("../extensions/supervisor.ts", import.m
  * symbols are not portable: a key the terminal cannot draw is advertised as a control it is not, and
  * one the operator cannot read is worse than no legend. `Ctrl+Shift+T` is the pair this replaces.
  */
-const showsKey = (text) => /^\[[^\]]*[A-Za-z][^\]]*\]$/.test(text) && /\bshift\b/i.test(text) === false;
+const showsKey = (text) => /^\[[^\]]*[A-Za-z/][^\]]*\]$/.test(text) && /\bshift\b/i.test(text) === false;
 
 const commands = {};
 const sent = [];
@@ -51,7 +51,7 @@ install({
 // correctly and would count the tags as columns.
 const TOKEN_CODE = {
   accent: 1, accentSoft: 2, tint: 3, text: 4, muted: 5, dim: 6, success: 7, warning: 8, error: 9,
-  thinkingOff: 10, thinkingLow: 11, thinkingHigh: 12, thinkingText: 13,
+  thinkingOff: 10, thinkingLow: 11, thinkingHigh: 12, thinkingText: 13, borderMuted: 14,
 };
 const ansiTheme = {
   fg: (color, text) => {
@@ -188,7 +188,7 @@ for (const width of [40, 80, 120]) {
 
   // Every key the two global shortcuts announce must survive a narrow, legacy terminal: the frame is
   // drawn with plain ASCII letters, never a ligature or a modifier symbol.
-  for (const key of ["toggle", "gate", "routingToggle", "accountsRemove", "routingReset", "routeLight", "routeHeavy"]) {
+  for (const key of ["toggle", "gate", "routingToggle", "accountsRemove", "routingReset", "routingFilter", "routeLight", "routeHeavy"]) {
     assert.equal(showsKey(keybind(KEY_SETS[key])), true, `${KEY_SETS[key]} is a portable keycap: ${keybind(KEY_SETS[key])}`);
   }
   // A ctrl+shift chord is not portable: Ghostty owns ctrl+shift+e/new_split and ctrl+shift+t/new_tab,
@@ -616,7 +616,7 @@ for (const width of [80, 120]) {
     .map((l) => l.replace(/^│|│\s*$/g, "").trim())
     .filter(Boolean)
     .join(" ");
-  assert.equal(block.includes("Chores to the cheap"), true, `the routing screen explains itself at ${width} columns: ${block}`);
+  assert.equal(block.includes("Chores run cheap"), true, `the routing screen explains itself at ${width} columns: ${block}`);
   assert.equal(block.includes("…"), false, `the description is not clipped at ${width} columns: ${block}`);
   assert.equal(block.includes("off clears it"), true, `the description carries the walk-to-off step: ${block}`);
   assert.equal(block.split(/\s+/).length <= 30, true, `the description stays two rows at 80 columns, not a paragraph: ${block}`);
@@ -649,8 +649,9 @@ for (const width of [80, 120]) {
   // The legend stays a plain key list: the note about the folded thinking step lives in the description,
   // so a marker like `(×2 thinking)` on two labels (or a pair of thinking chords) must not come back.
   assert.equal(/×2|Light Think|Heavy Think|\(×/.test(routing), false, "the legend carries no duplicate note about the second press");
-  // The ordering rule: navigation, then confirmation, then the screen's own keys, then Back, then Cancel.
-  const order = ["[↑↓] Move", "[Enter] Done", "[Space] Light", "[Tab] Heavy", "[R] Reset", "[Ctrl+r] Routing", "[Esc] Cancel"]
+  // The ordering rule, this screen's own contract: navigation, then the filter mode, then the slot
+  // keys, then the exits — `[Enter]` after the screen keys, `[Esc]` last because it leaves the screen.
+  const order = ["[↑↓] Move", "[/] Filter", "[Space] Light", "[Tab] Heavy", "[R] Reset", "[Ctrl+r] Routing", "[Enter] Done", "[Esc] Cancel"]
     .map((token) => routing.indexOf(token));
   assert.equal(order.every((at) => at >= 0), true, `every legend token is present, got ${order.join(",")}`);
   assert.deepEqual([...order].sort((a, b) => a - b), order, `the legend runs nav → confirm → keys → exits, got ${order.join(",")}`);
@@ -712,7 +713,8 @@ for (const width of [80, 120]) {
   press("\t"); // past max: off
   assert.equal(row("solo-model").includes("✓ heavy"), false, "the press past the last level clears the heavy slot");
 
-  // `[R]` clears every slot on the row at once — the shortcut for a walk that would take several presses.
+  // `[R]` clears the whole configuration at once — both slots, not only the cursor's row. Light on
+  // an earlier row proves the global reach; a row-walk reset could never touch it.
   press(" "); // light again on this row
   press("\t"); // heavy again on this row
   assert.equal(row("solo-model").includes("✓ light"), true, "light is back before the reset");
@@ -720,14 +722,24 @@ for (const width of [80, 120]) {
   press("R");
   assert.equal(row("solo-model").includes("✓ light"), false, "reset clears the light slot");
   assert.equal(row("solo-model").includes("✓ heavy"), false, "reset clears the heavy slot");
+  assert.equal(row("deepseek-v4p1-flash").includes("✓"), false, "reset clears every row, not only the cursor's");
+  assert.equal(summaryRow("Routing").includes("off"), true, "reset also turns routing off");
 
-  // Backspace belongs to the filter again: `tab` shares no keycode with it, so a letter that matches
-  // nothing can be removed without touching the slots.
+  // The filter is a mode, not an always-on field: a letter outside typing never reaches the query,
+  // `/` opens it, every key inside is text, and Esc wipes a typed filter before it may close.
+  press("z");
+  assert.equal(row("solo-model").includes("—"), true, "a letter outside the filter mode never reaches the query");
+  assert.equal(strip(screens[0].wrapper.render(120).join("\n")).includes("> Type to filter models..."), true, "the idle filter names the key-less placeholder");
+  press("/");
   press("z");
   assert.equal(strip(screens[0].wrapper.render(120).join("\n")).includes("no model matches this filter"), true, "a letter that matches nothing shows the empty state");
+  assert.equal(strip(screens[0].wrapper.render(120).join("\n")).includes("> z"), true, "typing shows the query with the accent prompt");
   press("\x08");
   assert.equal(row("solo-model").includes("—"), true, "backspace edits the query instead of assigning a slot");
-  screens[0].resolve(null);
+  press("z");
+  press("\x1b");
+  assert.equal(strip(screens[0].wrapper.render(120).join("\n")).includes("solo-model"), true, "Esc cleared the typed filter and the screen stays open");
+  press("\x1b"); // filter already empty: Esc closes the screen
   await run;
 }
 

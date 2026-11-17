@@ -38,9 +38,13 @@ export const KEY_SETS = {
    *  the Models screen uses for its fallback; `ctrl+h` shared a keycode with backspace, so the
    *  filter prompt could eat the assignment in terminals that report them as one key. */
   routeHeavy: "tab",
-  /** Routing screen: clear the highlighted row's slot assignments at once. Capital R on purpose,
-   *  the same destructive-key shape as `accountsRemove`: the filter field owns the lowercase keys. */
+  /** Routing screen: clear the routing configuration at once — both slots, thinking back to the
+   *  defaults, routing off. Capital R on purpose, the same destructive-key shape as `accountsRemove`:
+   *  while the filter is typing, every key is text, so a lowercase `r` could not fire anyway. */
   routingReset: "shift+r",
+  /** Routing screen: open the filter's typing mode. While typing, every key is text, so the slot
+   *  keys wait; `/` or Enter keeps the filter and hands the keys back to the list. */
+  routingFilter: "/",
   /** Models screen: make the highlighted backend the active one. `space` is the same
    *  "assign the highlighted row" gesture the routing screen uses; `[[` and `]]` on screen say which slot. */
   modelsPrimary: "space",
