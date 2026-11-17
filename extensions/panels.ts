@@ -99,18 +99,23 @@ const buildUsage = (
   const totalBlocked = s.destructiveBlocked + s.secretsBlocked + s.slopBlocked;
   const contextTokens = ctx?.getContextUsage?.()?.tokens;
   const budget = clefBudget(neuronsSpentOn(days, today()));
-  const barWidth = innerWidth < 68 ? 18 : 20;
+  const compact = innerWidth < 72;
+  const barWidth = compact ? 10 : 16;
   const filled = Math.min(barWidth, Math.round((budget.used / budget.free) * barWidth));
   const exhausted = budget.used >= budget.free;
-  const tierStatus = budget.overageUsd > 0 ? paint("warning", `over ${usd(budget.overageUsd)}`) : paint("success", "free-tier");
-  const clefBarLine = `${paint(exhausted ? "warning" : "success", "█".repeat(filled))}${paint("dim", "░".repeat(barWidth - filled))}  ${paint("text", `${n(Math.round(budget.used))}/${n(budget.free)}`)} ${paint("muted", "neurons")} ${paint("dim", "·")} ${tierStatus}${paint("dim", " (resets 00:00 UTC)")}`;
+  const tierStatus =
+    budget.overageUsd > 0 ? paint("warning", `over ${usd(budget.overageUsd)}`) : paint("success", compact ? "free" : "free-tier");
+  const clefBarLine =
+    `${paint(exhausted ? "warning" : "success", "█".repeat(filled))}${paint("dim", "░".repeat(barWidth - filled))}  ` +
+    `${paint("text", `${n(Math.round(budget.used))}/${n(budget.free)}`)}` +
+    `${compact ? "" : ` ${paint("muted", "neurons")}`} ${paint("dim", "·")} ${tierStatus} ${paint("dim", "· 00:00 UTC")}`;
 
   const kvRows: [string, string][] = [
     [
       "Session",
       `${paint(
         "text",
-        `gate ${Math.min(s.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} · routing ${Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} · reviewed ${s.reviewTurns}`
+        `gate ${Math.min(s.jevRequests, JEV_MAX_REQUESTS)}/${JEV_MAX_REQUESTS} · ${compact ? "route" : "routing"} ${Math.min(s.jevRoutingCalls, JEV_MAX_ROUTING_CALLS)}/${JEV_MAX_ROUTING_CALLS} · reviewed ${s.reviewTurns}`
       )}${typeof contextTokens === "number" ? paint("dim", ` · ctx ${n(contextTokens)}`) : ""}`,
     ],
     [
@@ -121,11 +126,11 @@ const buildUsage = (
     ...(balance ? [["Balance", paint("text", balance)] as [string, string]] : []),
   ];
 
-  // 2. Period filter bar between horizontal rules. Each rule wraps only its own content: the bar
-  //    hugs the period labels, the table rule hugs the column grid — not the full frame width.
-  const plainPeriodBar = USAGE_PERIODS.map((p, i) => (i === periodIndex ? `[${p.label}]` : p.label)).join(" · ");
+  // 2. Provider / Model table geometry and period filter bar. The rule hugs the 5-column grid.
+  const wide = innerWidth >= 76;
+  const W = wide ? { label: 22, req: 8, tok: 10, cost: 10, out: 9 } : { label: 20, req: 7, tok: 10, cost: 10, out: 9 };
+  const gridWidth = W.label + W.req + W.tok + W.cost + W.out;
   const rule = (width: number) => paint("dim", "─".repeat(Math.max(20, width)));
-  lines.push(rule(plainPeriodBar.length));
   lines.push(
     USAGE_PERIODS.map((p, idx) =>
       idx === periodIndex
@@ -135,52 +140,44 @@ const buildUsage = (
         : paint("dim", p.label)
     ).join(paint("dim", " · "))
   );
-  lines.push(rule(plainPeriodBar.length));
+  lines.push(rule(gridWidth));
 
   // 3. Provider / Model table.
-  const W = { label: 19, req: 8, tok: 11, cost: 10 };
-  const gridWidth = W.label + W.req + W.tok + W.cost;
   const cell = (text: string, width: number, alignRight = true) => {
     const s = text.length > width ? `${text.slice(0, width - 1)}…` : text;
     return alignRight ? s.padStart(width) : s.padEnd(width);
   };
-  const outcomeSuffix = (t: Pick<ModelTotals, "requests" | "ok" | "failed" | "outputTokens">): string => {
-    if (t.requests <= 0) return "";
-    const failPart = t.failed > 0 ? ` · ${n(t.failed)} fail` : "";
-    const full = ` (${n(t.ok)} ok${failPart} · out ${n(t.outputTokens)})`;
-    if (gridWidth + full.length <= innerWidth) {
-      return (
-        paint("dim", " (") +
-        paint("muted", `${n(t.ok)} ok`) +
-        (t.failed > 0 ? `${paint("dim", " · ")}${paint("warning", `${n(t.failed)} fail`)}` : "") +
-        paint("dim", " · ") +
-        paint("muted", `out ${n(t.outputTokens)}`) +
-        paint("dim", ")")
-      );
-    }
-    const compact = ` (${n(t.ok)} ok)`;
-    if (gridWidth + compact.length <= innerWidth) {
-      return `${paint("dim", " (")}${paint("muted", `${n(t.ok)} ok`)}${paint("dim", ")")}`;
-    }
-    return "";
+  const failSuffix = (t: Pick<ModelTotals, "failed">): string => {
+    if (t.failed <= 0) return "";
+    const text = `  ${n(t.failed)} fail`;
+    return gridWidth + text.length <= innerWidth ? `  ${paint("warning", `${n(t.failed)} fail`)}` : "";
   };
   const renderRow = (
     label: string,
     t: Pick<ModelTotals, "requests" | "ok" | "failed" | "inputTokens" | "outputTokens" | "cost">,
     labelColor: "text" | "muted" | "dim" | "soft" = t.requests > 0 ? "text" : "muted",
-    withOutcome = true
+    withFail = true
   ) => {
     const active = t.requests > 0;
     const styledLabel =
       labelColor === "soft" ? soft(cell(label, W.label, false)) : paint(labelColor, cell(label, W.label, false));
     const numbers = paint(
       active ? "text" : "dim",
-      cell(n(t.requests), W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost)
+      cell(n(t.requests), W.req) + cell(n(t.inputTokens), W.tok) + cell(usd(t.cost), W.cost) + cell(n(t.outputTokens), W.out)
     );
-    return `${styledLabel}${numbers}${withOutcome ? outcomeSuffix(t) : ""}`;
+    return `${styledLabel}${numbers}${withFail ? failSuffix(t) : ""}`;
   };
 
-  lines.push(paint("dim", cell("Provider / Model", W.label, false) + cell("Request", W.req) + cell("In-tok", W.tok) + cell("Cost", W.cost)));
+  lines.push(
+    paint(
+      "dim",
+      cell("Provider / Model", W.label, false) +
+        cell("Request", W.req) +
+        cell("In-tok", W.tok) +
+        cell("Cost", W.cost) +
+        cell("Out-tok", W.out)
+    )
+  );
 
   const EMPTY_BUCKET: ProviderTotals = { requests: 0, ok: 0, failed: 0, inputTokens: 0, outputTokens: 0, cost: 0, neurons: 0 };
   const providersMap = totals?.providers ?? {};
@@ -226,6 +223,7 @@ const buildUsage = (
       const recordedSum = Object.values(pTotals.models ?? {}).reduce((acc, m) => acc + m.requests, 0);
       const unsplitReq = Math.max(0, pTotals.requests - recordedSum);
 
+      const modelRows: { displayModel: string; mTotals: ModelTotals }[] = [];
       for (const modelId of modelIds) {
         let mTotals: ModelTotals = pTotals.models?.[modelId] ?? EMPTY_BUCKET;
         // Single-model providers have no ambiguity for pre-split ledger rows: attribute directly.
@@ -246,7 +244,12 @@ const buildUsage = (
           };
         }
         const displayModel = provider.id === "cloudflare" ? clefRowLabel(modelId) : modelId;
-        lines.push(renderRow(`   ${displayModel}`, mTotals, mTotals.requests > 0 ? "muted" : "dim", false));
+        modelRows.push({ displayModel, mTotals });
+      }
+      // Show active models above 0-request entries while keeping catalog order within each group.
+      modelRows.sort((a, b) => (b.mTotals.requests > 0 ? 1 : 0) - (a.mTotals.requests > 0 ? 1 : 0));
+      for (const { displayModel, mTotals } of modelRows) {
+        lines.push(renderRow(`  ${displayModel}`, mTotals, mTotals.requests > 0 ? "muted" : "dim", true));
       }
 
       if (modelIds.length > 1 && unsplitReq > 0) {
@@ -257,7 +260,7 @@ const buildUsage = (
         const sumCost = Object.values(pTotals.models ?? {}).reduce((acc, m) => acc + m.cost, 0);
         lines.push(
           renderRow(
-            "   earlier",
+            "  earlier",
             {
               requests: unsplitReq,
               ok: Math.max(0, pTotals.ok - sumOk),
@@ -267,7 +270,7 @@ const buildUsage = (
               cost: Math.max(0, pTotals.cost - sumCost),
             },
             "dim",
-            false
+            true
           )
         );
       }
