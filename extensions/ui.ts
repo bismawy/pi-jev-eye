@@ -492,18 +492,18 @@ export class RoutingPicker {
       summaryRow("Heavy", targetValue(this.pending.heavy, SLOT_TOKEN.heavy, this.pending.heavyThinking ?? "high")),
       "",
       // The query is one line, but a stray paste must never break the frame: spread it first.
-      ...`${t.fg("accent", "> ")}${this.query}${this.query ? "" : t.fg("dim", "type to filter")}`.split("\n"),
+      ...`${t.fg("accent", "> ")}${this.query}${this.query ? "" : t.fg("dim", "Type to filter models...")}`.split("\n"),
       "",
     ];
 
     const start = Math.max(0, Math.min(this.index - Math.floor(RoutingPicker.WINDOW / 2), Math.max(0, rows.length - RoutingPicker.WINDOW)));
     const slice = rows.slice(start, start + RoutingPicker.WINDOW);
-    if (slice.length === 0) lines.push(t.fg("warning", "  no model matches this filter"));
-    if (start > 0) lines.push(t.fg("dim", `  ↑ ${start} more`));
+    if (slice.length === 0) lines.push(t.fg("warning", "no model matches this filter"));
+    if (start > 0) lines.push(t.fg("dim", `↑ ${start} more`));
 
-    // One divider per row, matching ModelsPicker: `model id  · state [provider]`. The id is padded to
-    // the widest id so every divider lands in one column. Only the slot cell carries its own colours.
-    const column = Math.max(...rows.map((m) => visibleWidth(String(m.id))), 0);
+    // ListPicker layout from pi-arnative: `provider/model` padded to the widest full catalog ref so
+    // the `·` divider stays in one steady column even while filtering, followed by the slot state.
+    const column = Math.max(0, ...this.models.map((m) => visibleWidth(modelRef(m))));
     const slotCell = (ref: string) => {
       const slots = [
         this.pending.light === ref ? ["light", SLOT_TOKEN.light, this.pending.lightThinking ?? ""] : null,
@@ -513,24 +513,23 @@ export class RoutingPicker {
       // The thinking level rides in the slot cell: it is the one setting a second press of this key
       // changes, so hiding it elsewhere would make that press look like nothing happened.
       return slots
-        .map(([label, token, thinking]) => `${t.fg(token, `✓ ${label}`)}${thinking ? t.fg("muted", ` (${thinking})`) : ""}`)
+        .map(([label, token, thinking]) => `${t.fg(token, `✓ ${label}`)}${thinking ? `${t.fg("dim", " · ")}${t.fg("muted", thinking)}` : ""}`)
         .join(t.fg("dim", " · "));
     };
     for (const model of slice) {
       const ref = modelRef(model);
       const cursor = rows[this.index] === model;
-      const pad = " ".repeat(Math.max(0, column - visibleWidth(String(model.id))));
-      // Chosen row: the arrow keeps the accent, the model id takes the soft tint, the provider tag stays muted.
+      const pad = " ".repeat(Math.max(0, column - visibleWidth(ref)));
+      // Chosen row: the arrow keeps the accent, the model ref takes the soft tint.
       const prefix = cursor ? t.fg("accent", "→ ") : "  ";
-      const name = cursor ? this.soft(model.id) : t.fg("text", model.id);
-      const provider = t.fg("muted", `[${model.provider}]`);
-      lines.push(`${prefix}${name}${pad} ${t.fg("dim", "·")} ${slotCell(ref)} ${provider}`);
+      const name = cursor ? this.soft(ref) : t.fg("text", ref);
+      lines.push(truncateToWidth(`${prefix}${name}${pad} ${t.fg("dim", "·")} ${slotCell(ref)}`, inner, ""));
     }
 
     const below = rows.length - start - slice.length;
-    if (below > 0) lines.push(t.fg("dim", `  ↓ ${below} more`));
+    if (below > 0) lines.push(t.fg("dim", `↓ ${below} more`));
     lines.push("");
-    const count = `${this.models.length} models`;
+    const count = `${rows.length}/${this.models.length} models`;
     const prefix = `${count} · `;
     // The skill's legend order, nav first and exits last: what the screen always acts on, then the
     // screen's own keys, then `[←] Back` (only when there is a menu behind it), then cancel. Each

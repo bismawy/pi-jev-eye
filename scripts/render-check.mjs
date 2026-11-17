@@ -667,8 +667,8 @@ for (const width of [80, 120]) {
   ];
   const run = commands["jev-eye"].handler("routing", ctx).catch(() => {});
   await tick();
-  // Filter to table rows (`[provider]` suffix) so the Light/Heavy summary above the table is not matched.
-  const row = (needle) => strip(screens[0].wrapper.render(120).join("\n")).split("\n").find((l) => l.includes(needle) && l.includes("["));
+  // Filter to table rows (`provider/id` prefix) so the Light/Heavy summary above the table is not matched.
+  const row = (needle) => strip(screens[0].wrapper.render(120).join("\n")).split("\n").find((l) => l.includes(`fireworks/${needle}`));
   const press = (data) => screens[0].wrapper.handleInput(data);
 
   // The summary block sits above the filter & table: `Routing ·`, `Light ·`, `Heavy ·` share one divider column.
@@ -679,15 +679,15 @@ for (const width of [80, 120]) {
   assert.equal(summaryRow("Light").includes("(unset)"), true, "before any key the Light summary shows (unset)");
 
   press(" "); // light on the highlighted row
-  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light (${SLOT_DEFAULT_THINKING.light})`), true, "the light slot starts at the shared default");
+  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light · ${SLOT_DEFAULT_THINKING.light}`), true, "the light slot starts at the shared default");
   assert.equal(summaryRow("Light").includes(`· ${SLOT_DEFAULT_THINKING.light}`), true, `summary reports the light thinking level: ${summaryRow("Light")}`);
   press(" ");
   const afterDefault = LIGHT_THINKING_LEVELS[(LIGHT_THINKING_LEVELS.indexOf(SLOT_DEFAULT_THINKING.light) + 1) % LIGHT_THINKING_LEVELS.length];
-  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light (${afterDefault})`), true, "a second press cycles the level after the default, it does not clear the slot");
+  assert.equal(row("deepseek-v4p1-flash").includes(`✓ light · ${afterDefault}`), true, "a second press cycles the level after the default, it does not clear the slot");
   assert.equal(summaryRow("Light").includes(`· ${afterDefault}`), true, `summary reports the cycled level: ${summaryRow("Light")}`);
   const lightCycles = [];
   for (let i = 0; i < LIGHT_THINKING_LEVELS.length; i++) {
-    lightCycles.push(LIGHT_THINKING_LEVELS.find((level) => row("deepseek-v4p1-flash").includes(`✓ light (${level})`)));
+    lightCycles.push(LIGHT_THINKING_LEVELS.find((level) => row("deepseek-v4p1-flash").includes(`✓ light · ${level}`)));
     press(" ");
   }
   assert.equal(lightCycles.includes(undefined), false, "every light level is reachable from the same key");
@@ -696,16 +696,16 @@ for (const width of [80, 120]) {
   // A different row resets the level to the slot's default instead of carrying the previous choice.
   press("\x1b[B");
   press(" ");
-  assert.equal(row("solo-model").includes(`✓ light (${SLOT_DEFAULT_THINKING.light})`), true, "moving to another row resets the level to the shared default");
+  assert.equal(row("solo-model").includes(`✓ light · ${SLOT_DEFAULT_THINKING.light}`), true, "moving to another row resets the level to the shared default");
 
   // Heavy is its own list: it cannot be dropped to `off`, which is the light slot's job.
   press("\x08");
-  assert.equal(row("solo-model").includes(`✓ heavy (${SLOT_DEFAULT_THINKING.heavy})`), true, "the heavy slot starts at `high`, never `off`");
+  assert.equal(row("solo-model").includes(`✓ heavy · ${SLOT_DEFAULT_THINKING.heavy}`), true, "the heavy slot starts at `high`, never `off`");
   assert.equal(HEAVY_THINKING_LEVELS.includes("off"), false, "the heavy list cannot reach `off`");
   assert.equal(LIGHT_THINKING_LEVELS.includes("max"), false, "the light list cannot reach `max`");
   const heavyCycles = [];
   for (let i = 0; i < HEAVY_THINKING_LEVELS.length; i++) {
-    heavyCycles.push(HEAVY_THINKING_LEVELS.find((level) => row("solo-model").includes(`✓ heavy (${level})`)));
+    heavyCycles.push(HEAVY_THINKING_LEVELS.find((level) => row("solo-model").includes(`✓ heavy · ${level}`)));
     press("\x08");
   }
   assert.equal(heavyCycles.includes(undefined), false, "every heavy level is reachable from the same key");
@@ -741,18 +741,17 @@ for (const width of [80, 120]) {
   screens[0].wrapper.handleInput("\x1b[B");
   screens[0].wrapper.handleInput("\x08"); // ctrl+h: heavy on the second row
   const raw = screens[0].wrapper.render(120).join("\n");
-  const lightOnly = raw.split("\n").find((l) => l.includes("gemini-3.5-flash-lite") && l.includes("[antigravity]"));
-  const heavyOnly = raw.split("\n").find((l) => l.includes("gemini-3.8-flash") && l.includes("[antigravity]"));
+  const lightOnly = raw.split("\n").find((l) => l.includes("antigravity/gemini-3.5-flash-lite"));
+  const heavyOnly = raw.split("\n").find((l) => l.includes("antigravity/gemini-3.8-flash"));
   const paint = (token, text) => `\x1b[38;5;${TOKEN_CODE[token]}m${text}\x1b[39m`;
   assert.equal(lightOnly.includes(paint(SLOT_TOKEN.light, "✓ light")), true, "the light slot takes SLOT_TOKEN.light");
   assert.equal(lightOnly.includes(paint(SLOT_TOKEN.heavy, "✓ light")), false, "light is never painted as heavy");
   assert.equal(heavyOnly.includes(paint(SLOT_TOKEN.heavy, "✓ heavy")), true, "the heavy slot takes SLOT_TOKEN.heavy (amber)");
   assert.equal(heavyOnly.includes(paint(SLOT_TOKEN.light, "✓ heavy")), false, "heavy is never painted as light");
 
-  // Padding proof: the slot cell keeps one space after the divider and sits directly before `[provider]`,
-  // matching ModelsPicker's single-divider row shape. The thinking level rides inside the cell (`✓ heavy (high)`).
+  // ListPicker layout: `provider/model  · ✓ heavy · high` with aligned divider column.
   const stripped = strip(raw).split("\n").find((l) => l.includes("✓ heavy"));
-  assert.equal(/ · ✓ heavy \(\w+\) \[antigravity\]/.test(stripped), true, `the slot cell matches the single-divider row shape: ${stripped}`);
+  assert.equal(/antigravity\/gemini-3\.8-flash\s+· ✓ heavy · \w+/.test(stripped), true, `the slot cell matches the ListPicker row shape: ${stripped}`);
   const summaryCols = dividerColumns(strip(raw), ["Routing", "Light", "Heavy"]);
   assert.equal(new Set(summaryCols).size, 1, `routing summary dividers sit in one column, got ${summaryCols.join(",")}`);
   screens[0].resolve(null);
