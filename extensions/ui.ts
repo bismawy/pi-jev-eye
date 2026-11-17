@@ -362,8 +362,6 @@ export class RoutingPicker {
   private pending: Routing;
   private query = "";
   private index = 0;
-  /** Last thing a key did, shown under the table so the folded thinking step is not invisible. */
-  private notice = "";
   private readonly models: any[];
   private readonly theme: any;
   private readonly done: (value: Routing | typeof BACK | null) => void;
@@ -419,8 +417,6 @@ export class RoutingPicker {
     if (this.pending[slot] === ref) return this.cycleThinking(slot);
     const field = slot === "light" ? "lightThinking" : "heavyThinking";
     this.pending = { ...this.pending, [slot]: ref, [field]: SLOT_DEFAULT_THINKING[slot] };
-    // One sentence, once: what the key assigned and what pressing it again will cycle.
-    this.notice = `${slot === "light" ? "Light" : "Heavy"} slot → ${ref} · thinking ${this.pending[field as keyof Routing]} · press again to cycle`;
   }
 
   /** Walks one slot's thinking level through the list its default lives in. */
@@ -430,7 +426,6 @@ export class RoutingPicker {
     const current = (this.pending[field as keyof Routing] as ThinkingLevel | undefined) ?? SLOT_DEFAULT_THINKING[slot];
     const next = levels[(levels.indexOf(current) + 1) % levels.length];
     this.pending = { ...this.pending, [field]: next };
-    this.notice = `${slot === "light" ? "Light" : "Heavy"} thinking → ${next}`;
   }
 
   handleInput(data: string): void {
@@ -470,6 +465,18 @@ export class RoutingPicker {
     const paint = this.paint;
     const inner = width - 4; // two walls, two spaces
     const rows = this.filtered();
+    // Summary sits ABOVE the filter & table (like ModelsPicker) so it stays rock-steady while typing.
+    const slotColumn = Math.max("Routing".length, "Light".length, "Heavy".length);
+    const summaryRow = (label: string, value: string): string =>
+      `${t.fg("dim", label.padEnd(slotColumn))}${t.fg("dim", " · ")}${value}`;
+    const routingValue = `${this.pending.enabled ? t.fg("success", "ON") : t.fg("muted", "off")}${
+      this.pending.enabled && (!this.pending.light || !this.pending.heavy) ? t.fg("warning", " (needs both targets)") : ""
+    }`;
+    const targetValue = (ref: string | undefined, token: string, thinking: string) => {
+      const name = ref ? t.fg(token, modelLabelFor(this.models, ref)) : t.fg("muted", "(unset)");
+      return `${name}${t.fg("dim", " · ")}${t.fg("muted", thinking)}`;
+    };
+
     const lines: string[] = [
       t.fg("accent", t.bold("Jev Eye · Routing")),
       // The description carries both facts the screen needs: what routing does, and that the slot key does
@@ -480,6 +487,10 @@ export class RoutingPicker {
         inner
       ).map((line) => t.fg("muted", line)),
       "",
+      summaryRow("Routing", routingValue),
+      summaryRow("Light", targetValue(this.pending.light, SLOT_TOKEN.light, this.pending.lightThinking ?? "low")),
+      summaryRow("Heavy", targetValue(this.pending.heavy, SLOT_TOKEN.heavy, this.pending.heavyThinking ?? "high")),
+      "",
       // The query is one line, but a stray paste must never break the frame: spread it first.
       ...`${t.fg("accent", "> ")}${this.query}${this.query ? "" : t.fg("dim", "type to filter")}`.split("\n"),
       "",
@@ -488,10 +499,10 @@ export class RoutingPicker {
     const start = Math.max(0, Math.min(this.index - Math.floor(RoutingPicker.WINDOW / 2), Math.max(0, rows.length - RoutingPicker.WINDOW)));
     const slice = rows.slice(start, start + RoutingPicker.WINDOW);
     if (slice.length === 0) lines.push(t.fg("warning", "  no model matches this filter"));
+    if (start > 0) lines.push(t.fg("dim", `  ↑ ${start} more`));
 
-    // One model row = `model id  ·  assigned slots  ·  [provider]`: the id is padded to the widest id so
-    // every divider lands in one column, exactly as the list menus do. Only the slot column carries its
-    // own colours (light accent, heavy amber) and no surrounding padding, so `✓ light` reads as one unit.
+    // One divider per row, matching ModelsPicker: `model id  · state [provider]`. The id is padded to
+    // the widest id so every divider lands in one column. Only the slot cell carries its own colours.
     const column = Math.max(...rows.map((m) => visibleWidth(String(m.id))), 0);
     const slotCell = (ref: string) => {
       const slots = [
@@ -513,26 +524,11 @@ export class RoutingPicker {
       const prefix = cursor ? t.fg("accent", "→ ") : "  ";
       const name = cursor ? this.soft(model.id) : t.fg("text", model.id);
       const provider = t.fg("muted", `[${model.provider}]`);
-      lines.push(`${prefix}${name}${pad} ${t.fg("dim", "·")} ${slotCell(ref)} ${t.fg("dim", "·")} ${provider}`);
+      lines.push(`${prefix}${name}${pad} ${t.fg("dim", "·")} ${slotCell(ref)} ${provider}`);
     }
 
-    const position = rows.length === 0 ? 0 : Math.min(this.index + 1, rows.length);
-    lines.push(t.fg("muted", `  (${position}/${rows.length})`));
-    // After a key, this row reports what just changed; before any key it stays empty, because the
-    // description above already names the fold. One line, one job.
-    lines.push(this.notice ? t.fg("muted", `  ${this.notice}`) : "");
-    lines.push("");
-    lines.push(
-      `${t.fg("dim", "Routing: ")}${this.pending.enabled ? t.fg("success", "ON") : t.fg("muted", "off")}${
-        this.pending.enabled && (!this.pending.light || !this.pending.heavy) ? t.fg("warning", "  (needs both targets)") : ""
-      }`
-    );
-    lines.push(
-      `${t.fg("dim", "Light model: ")}${this.pending.light ? t.fg(SLOT_TOKEN.light, modelLabelFor(this.models, this.pending.light)) : t.fg("muted", "(unset)")} ${t.fg("muted", `[thinking: ${this.pending.lightThinking ?? "low"}]`)}`
-    );
-    lines.push(
-      `${t.fg("dim", "Heavy model: ")}${this.pending.heavy ? t.fg(SLOT_TOKEN.heavy, modelLabelFor(this.models, this.pending.heavy)) : t.fg("muted", "(unset)")} ${t.fg("muted", `[thinking: ${this.pending.heavyThinking ?? "high"}]`)}`
-    );
+    const below = rows.length - start - slice.length;
+    if (below > 0) lines.push(t.fg("dim", `  ↓ ${below} more`));
     lines.push("");
     const count = `${this.models.length} models`;
     const prefix = `${count} · `;

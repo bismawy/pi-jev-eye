@@ -608,9 +608,9 @@ for (const width of [40, 80, 120]) {
 // its own explanation in half. Asserted at the widths an operator uses, not just the wide one.
 for (const width of [80, 120]) {
   const header = await open(`routing header@${width}`, "routing", [], width);
-  // It wraps onto more than one row now, so the description is read as the block above the query line.
+  // It wraps onto more than one row now, so the description is read as the block above the summary.
   const rows = header.split("\n");
-  const at = rows.findIndex((l) => l.includes("> type to filter"));
+  const at = rows.findIndex((l) => l.includes("Routing ·"));
   const block = rows
     .slice(1, at)
     .map((l) => l.replace(/^│|│\s*$/g, "").trim())
@@ -667,26 +667,24 @@ for (const width of [80, 120]) {
   ];
   const run = commands["jev-eye"].handler("routing", ctx).catch(() => {});
   await tick();
-  // The needle must not be a substring of the first id, or `find` returns that row instead.
-  const row = (needle) => strip(screens[0].wrapper.render(120).join("\n")).split("\n").find((l) => l.includes(needle));
+  // Filter to table rows (`[provider]` suffix) so the Light/Heavy summary above the table is not matched.
+  const row = (needle) => strip(screens[0].wrapper.render(120).join("\n")).split("\n").find((l) => l.includes(needle) && l.includes("["));
   const press = (data) => screens[0].wrapper.handleInput(data);
 
-  // The notice row sits directly under the `(n/m)` counter, so it is read by position, not by keyword —
-  // a keyword match also catches the `Light model: … [thinking: …]` summary further down.
-  const notice = () => {
+  // The summary block sits above the filter & table: `Routing ·`, `Light ·`, `Heavy ·` share one divider column.
+  const summaryRow = (label) => {
     const rows = strip(screens[0].wrapper.render(120).join("\n")).split("\n").map((l) => l.replace(/^│|│\s*$/g, "").trim());
-    const at = rows.findIndex((l) => /^\(\d+\/\d+\)$/.test(l));
-    return at >= 0 ? rows[at + 1] : "<no counter row>";
+    return rows.find((l) => l.startsWith(`${label} `) || l.startsWith(`${label}·`)) ?? "";
   };
-  assert.equal(notice(), "", "before any key the notice row stays empty; the legend already names the fold");
+  assert.equal(summaryRow("Light").includes("(unset)"), true, "before any key the Light summary shows (unset)");
 
   press(" "); // light on the highlighted row
   assert.equal(row("deepseek-v4p1-flash").includes(`✓ light (${SLOT_DEFAULT_THINKING.light})`), true, "the light slot starts at the shared default");
-  assert.equal(notice().includes("press again to cycle"), true, `assigning says what a second press does: ${notice()}`);
+  assert.equal(summaryRow("Light").includes(`· ${SLOT_DEFAULT_THINKING.light}`), true, `summary reports the light thinking level: ${summaryRow("Light")}`);
   press(" ");
   const afterDefault = LIGHT_THINKING_LEVELS[(LIGHT_THINKING_LEVELS.indexOf(SLOT_DEFAULT_THINKING.light) + 1) % LIGHT_THINKING_LEVELS.length];
   assert.equal(row("deepseek-v4p1-flash").includes(`✓ light (${afterDefault})`), true, "a second press cycles the level after the default, it does not clear the slot");
-  assert.equal(/Light thinking → \w+/.test(notice()), true, `the notice reports the level the key just set: ${notice()}`);
+  assert.equal(summaryRow("Light").includes(`· ${afterDefault}`), true, `summary reports the cycled level: ${summaryRow("Light")}`);
   const lightCycles = [];
   for (let i = 0; i < LIGHT_THINKING_LEVELS.length; i++) {
     lightCycles.push(LIGHT_THINKING_LEVELS.find((level) => row("deepseek-v4p1-flash").includes(`✓ light (${level})`)));
@@ -743,18 +741,20 @@ for (const width of [80, 120]) {
   screens[0].wrapper.handleInput("\x1b[B");
   screens[0].wrapper.handleInput("\x08"); // ctrl+h: heavy on the second row
   const raw = screens[0].wrapper.render(120).join("\n");
-  const lightOnly = raw.split("\n").find((l) => l.includes("gemini-3.5-flash-lite"));
-  const heavyOnly = raw.split("\n").find((l) => l.includes("gemini-3.8-flash"));
+  const lightOnly = raw.split("\n").find((l) => l.includes("gemini-3.5-flash-lite") && l.includes("[antigravity]"));
+  const heavyOnly = raw.split("\n").find((l) => l.includes("gemini-3.8-flash") && l.includes("[antigravity]"));
   const paint = (token, text) => `\x1b[38;5;${TOKEN_CODE[token]}m${text}\x1b[39m`;
   assert.equal(lightOnly.includes(paint(SLOT_TOKEN.light, "✓ light")), true, "the light slot takes SLOT_TOKEN.light");
   assert.equal(lightOnly.includes(paint(SLOT_TOKEN.heavy, "✓ light")), false, "light is never painted as heavy");
   assert.equal(heavyOnly.includes(paint(SLOT_TOKEN.heavy, "✓ heavy")), true, "the heavy slot takes SLOT_TOKEN.heavy (amber)");
   assert.equal(heavyOnly.includes(paint(SLOT_TOKEN.light, "✓ heavy")), false, "heavy is never painted as light");
 
-  // Padding proof: the slot cell keeps exactly one space to each divider, so the column does not drift
-  // when a row gains an assignment. The thinking level rides inside the cell (`✓ heavy (high)`).
+  // Padding proof: the slot cell keeps one space after the divider and sits directly before `[provider]`,
+  // matching ModelsPicker's single-divider row shape. The thinking level rides inside the cell (`✓ heavy (high)`).
   const stripped = strip(raw).split("\n").find((l) => l.includes("✓ heavy"));
-  assert.equal(/ · ✓ heavy \(\w+\) · \[antigravity\]/.test(stripped), true, `the slot cell is tight against both dividers: ${stripped}`);
+  assert.equal(/ · ✓ heavy \(\w+\) \[antigravity\]/.test(stripped), true, `the slot cell matches the single-divider row shape: ${stripped}`);
+  const summaryCols = dividerColumns(strip(raw), ["Routing", "Light", "Heavy"]);
+  assert.equal(new Set(summaryCols).size, 1, `routing summary dividers sit in one column, got ${summaryCols.join(",")}`);
   screens[0].resolve(null);
   await run;
 }
